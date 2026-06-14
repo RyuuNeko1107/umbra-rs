@@ -44,6 +44,12 @@ impl JulianDate2 {
         self.part1 + self.part2
     }
 
+    /// `self − earlier` を日数で返す。2要素のまま差を取り桁落ちを避ける
+    /// （`jd()` 同士の差は巨大 JD の合算で精度を失うため、間隔計算にはこちらを使う）。
+    pub fn days_since(self, earlier: JulianDate2) -> f64 {
+        (self.part1 - earlier.part1) + (self.part2 - earlier.part2)
+    }
+
     /// 日数オフセットを加算（光行時間など）。`part2` へ足して再正規化する。
     pub fn add_days(self, days: f64) -> Self {
         JulianDate2 {
@@ -90,6 +96,15 @@ mod tests {
         // 相対誤差で厳密一致に近いこと（part2 が独立保持されるため）。
         assert!((centuries - expected).abs() < expected * 1e-9);
         assert!(centuries > 0.0);
+    }
+
+    #[test]
+    fn days_since_preserves_subsecond_offset() {
+        // 巨大 JD 近傍の 1 秒差を桁落ちなく取り出せる（jd() 同士の差では失われる）。
+        let base = JulianDate2::new(2_460_000.5, 0.0);
+        let plus_one_sec = base.add_days(1.0 / 86_400.0);
+        let d = plus_one_sec.days_since(base) * 86_400.0;
+        assert!((d - 1.0).abs() < 1e-9, "d = {d}");
     }
 
     #[test]

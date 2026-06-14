@@ -17,6 +17,21 @@ pub enum DomainError {
     },
 }
 
+/// 時刻系変換に必要なデータの欠落・不正。
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TimeError {
+    /// 暦フィールドが不正（範囲外など）。
+    #[error("invalid date/time field")]
+    InvalidDate,
+    /// 当該時刻の閏秒（TAI−UTC）データが無い（例: 1972 年より前）。
+    #[error("leap-second (TAI-UTC) data unavailable for this instant")]
+    MissingLeapSecondData,
+    /// 当該時刻の地球姿勢（UT1/極運動）データが無い。
+    #[error("Earth-orientation (UT1/polar motion) data unavailable for this instant")]
+    MissingEarthOrientationData,
+}
+
 /// 数値解法（求根・最小化）の失敗。
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
