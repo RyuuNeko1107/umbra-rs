@@ -11,6 +11,7 @@ pub mod constants;
 pub mod ellipsoid;
 pub mod error;
 pub mod julian;
+pub mod matrix;
 pub mod solver;
 pub mod vector;
 
@@ -19,5 +20,6 @@ pub use calendar::{gregorian_to_jd2, jd2_to_gregorian};
 pub use ellipsoid::{Ellipsoid, GeocentricObserver};
 pub use error::{DomainError, SolverError};
 pub use julian::JulianDate2;
+pub use matrix::Matrix3;
 pub use solver::{brent_root, minimize_golden};
 pub use vector::Vector3;
