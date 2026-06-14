@@ -6,6 +6,7 @@
 //! 規約は `docs/conventions.md`、数値方針は `docs/numerical-policy.md` を参照。
 
 pub mod angle;
+pub mod calendar;
 pub mod constants;
 pub mod ellipsoid;
 pub mod error;
@@ -14,6 +15,7 @@ pub mod solver;
 pub mod vector;
 
 pub use angle::{Degrees, Radians};
+pub use calendar::{gregorian_to_jd2, jd2_to_gregorian};
 pub use ellipsoid::{Ellipsoid, GeocentricObserver};
 pub use error::{DomainError, SolverError};
 pub use julian::JulianDate2;
