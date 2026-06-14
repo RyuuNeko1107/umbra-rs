@@ -27,7 +27,7 @@ pub struct ToleranceProfile {            // plan §18・モデル別
     pub altitude_degrees: f64,
     pub note_utc_is_delta_t_limited: bool, // §0(b): UTC 絶対は ΔT 律速
 }
-impl ToleranceProfile { pub fn standard() -> Self; pub fn reference() -> Self; pub fn fast() -> Self; }
+impl ToleranceProfile { pub fn standard() -> Self; pub fn reference() -> Self; }
 
 /// 1 項目の誤差統計。
 #[derive(Clone, Debug)]

@@ -24,7 +24,8 @@ pub struct AstrometryOptions {
 }
 impl AstrometryOptions {
     pub fn standard() -> Self;  // light_time/aberration/precession_nutation = true, deflection = false
-    pub fn fast() -> Self;      // 低次・一部 OFF 許容（accuracy.md Fast）
+    // fast() は公開 API から削除。低次・一部 OFF の簡易評価は内部粗スキャン（非公開・候補棄却専用）が
+    // 私的設定（個別 bool）で構成する（AstrometryOptions 型自体は残す）。
 }
 ```
 
@@ -45,11 +46,11 @@ impl AstrometryOptions {
 - 座標系: 入力 GCRS（ICRS 軸・地心）→ 出力 GCRS の見かけ位置、または CIRS（of date）まで（ISSUE-035 連鎖、conventions §5）。返却フレームを型で明示。
 
 ## アルゴリズム概要
-1. opts に従い分岐（Standard は前3つ強制 ON。Fast は緩和、Reference は DE + 全補正）。
+1. opts に従い分岐（Standard は前3つ強制 ON。内部粗スキャン（非公開・候補棄却専用）は緩和、Reference は DE + 全補正）。
 2. light_time: τ を反復（初期 τ0 = |r(t)|/c、2–3反復で収束）。放射時刻で暦再評価し方向ベクトル確定。
 3. **（D3 順序確定: SOFA `iauAtciq`）** GCRS 内で relativistic_deflection: opts で ON のとき `iauLd`、OFF なら metadata に省略記録（既定 OFF, M1 扱い）。
 4. **（同・GCRS 内）** aberration: 地球重心速度で SOFA `iauAb` 式を適用。
-5. precession_nutation: ISSUE-035 の GCRS→CIRS 回転を**最後に**適用（frame bias + IAU2006 歳差 + IAU2000A 章動。Fast は IAU2000B 許容）。
+5. precession_nutation: ISSUE-035 の GCRS→CIRS 回転を**最後に**適用（frame bias + IAU2006 歳差 + IAU2000A 章動。内部粗スキャン（非公開）は IAU2000B 許容。公開出力は 2000A）。
 6. 出力 `Position<F>` と適用補正の記録を返す。
 
 ## 受け入れテスト

@@ -22,7 +22,7 @@ umbra search --from <DATE> --to <DATE> [--accuracy <fast|standard|reference>]
              [--format <text|json>] [--kind <all|total|annular|partial|hybrid>]
 ```
 - `--from/--to`: 日付（RFC3339 or `YYYY-MM-DD`。UTC 既定、`UtcInstant::from_rfc3339`/`from_gregorian`・api-draft §1.3）。`UtcRange { start, end }`。
-- `--accuracy`: `AccuracyProfile`（api-draft §3.1。既定 standard）。`EngineConfig::{fast,standard,reference}`。
+- `--accuracy`: `AccuracyProfile`（api-draft §3.1。公開2層 `standard`/`reference`、既定 standard）。`EngineConfig::{standard,reference}`。
 - 内部: `standard_engine(TimeData::bundled())`（api-draft §3.2/§5）→ `engine.search(range)`。
 - 出力（text）: 1 日食 1 行 + 詳細。出力（json）: `SolarEclipse` の serde（feature `serde`・api-draft §0）＋ `CalculationMetadata`（accuracy.md §0）。
 ```rust

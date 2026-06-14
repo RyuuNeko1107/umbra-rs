@@ -146,7 +146,7 @@ pub struct AstrometryOptions {
     pub light_time: bool, pub aberration: bool,
     pub precession_nutation: bool, pub relativistic_deflection: bool,
 }
-impl AstrometryOptions { pub fn standard() -> Self; pub fn fast() -> Self; }  // standard は前3つ true
+impl AstrometryOptions { pub fn standard() -> Self; }  // standard は前3つ true。内部粗スキャン（非公開・候補棄却専用）は私的設定を使うため fast() は公開 API に置かない
 
 #[non_exhaustive] #[derive(Debug)] pub enum EphemerisError {
     OutOfSupportedRange, DataUnavailable, Io(/* ... */),
@@ -171,7 +171,10 @@ pub struct EspenakMeeusDeltaT;   // 長期外挿
 
 ### 3.1 精度・設定
 ```rust
-#[non_exhaustive] #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum AccuracyProfile { Fast, Standard, Reference }
+#[non_exhaustive] #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum AccuracyProfile { Standard, Reference }
+// 公開プロファイルは Standard / Reference の2層。探索段の高速化は「内部粗スキャン（coarse scan）」
+// という非公開の実装 detail（候補棄却専用・偽陰性ゼロのマージンで保証・報告される日食/接触は
+// すべて Standard で再計算）として扱い、公開プロファイルには出さない（accuracy.md §1）。
 
 #[non_exhaustive] #[derive(Clone, Copy, Debug)] pub enum LunarRadiusModel {
     IauMean,            // k = 0.2725076（既定）
@@ -191,7 +194,7 @@ pub struct EngineConfig {
     pub root_tolerance_seconds: f64,        // 目標の 1/10 以下
     pub path_sample_interval_seconds: f64,
 }
-impl EngineConfig { pub fn standard() -> Self; pub fn fast() -> Self; pub fn reference() -> Self; }
+impl EngineConfig { pub fn standard() -> Self; pub fn reference() -> Self; }  // fast() は公開 API から削除（内部粗スキャンは私的設定を使う）
 impl Default for EngineConfig { fn default() -> Self; }   // = standard()
 ```
 

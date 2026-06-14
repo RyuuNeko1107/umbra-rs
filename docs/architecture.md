@@ -109,7 +109,7 @@ pub struct AstrometryOptions {
 ```
 
 - **Standard プロファイルは light_time / aberration / precession_nutation を必須 ON で固定**（accuracy.md §1）。
-- 歳差章動は **IAU2006 歳差 + IAU2000A 章動**（Fast のみ IAU2000B 許容）。
+- 歳差章動は **IAU2006 歳差 + IAU2000A 章動**（内部粗スキャンのみ IAU2000B 許容。公開出力は常に IAU2006/2000A）。
 - フレーム連鎖（conventions §5）: `GCRS → CIRS → TIRS → ITRS`（ERA は UT1、極運動は EOP）。
 - 相対論偏向は初期は省略可。**省略は metadata に残す**。
 

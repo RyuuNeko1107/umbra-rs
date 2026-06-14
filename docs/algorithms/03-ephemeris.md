@@ -176,7 +176,7 @@ s_moon = asin( k · Re / R_moon )   ≈ k · Re / R_moon
    1. light-time (E7): 後退時刻で暦再評価 → 幾何方向確定。
    2. deflection (E8): opts ON 時のみ（既定 OFF, 太陽のみ）。OFF は metadata 記録。
    3. aberration (E9): 地球重心速度 (E10 解析微分) で `iauAb`。
-   4. frame bias + 歳差 + 章動 (E11, §2 `Q(t)`): **最後に**適用。Fast は IAU2000B 許容。
+   4. frame bias + 歳差 + 章動 (E11, §2 `Q(t)`): **最後に**適用。内部粗スキャン（非公開）は IAU2000B 許容（公開出力は 2000A）。
 4. **視半径** (E12/E13): 見かけ距離から。k 選択を metadata。
 5. **出力**: `Position<F>` と適用補正記録。Standard は light_time/aberration/precession_nutation を**強制 ON**（型/エンジンで固定, ISSUE-015）。
 

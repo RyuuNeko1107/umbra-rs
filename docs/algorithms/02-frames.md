@@ -78,8 +78,8 @@ Q(t) = R3(s)· ⎢  −a·X·Y      1 − a·Y²      Y ⎥        (a = 1/(1 + Z
 - `X, Y`: NPB 行列第3行から `X = NPB[2][0]`, `Y = NPB[2][1]`（SOFA `iaubpn2xy`）。**要確認**: 行列要素の並び（行優先/列優先）を実装規約と一致させる。
 - `s`: CIO locator 級数 SOFA `iauS06(date, X, Y)`（IERS Conventions 2010, table 5.2c の級数）。`s` は `XY/2` 項を含む（`s = s(t) − X·Y/2` の形, IERS eq. (5.11)）。**要確認**: 級数表の打切りと符号。
 
-**(F3) Fast 用（IAU2000B 章動）**
-出典: SOFA `iauNut00b`（77 項）。Standard では使用せず Fast のみ。`gcrs_to_cirs_matrix_2000b` で X,Y を近似（ISSUE-035）。追加誤差 ~1mas 級（accuracy §2.1 で 0.05″ 配分に余裕）。
+**(F3) 内部粗スキャン用（IAU2000B 章動・非公開）**
+出典: SOFA `iauNut00b`（77 項）。**公開出力（Standard = IAU2006/2000A）では使用せず、内部粗スキャン（候補棄却専用・非公開）でのみ任意（非既定）に許容**する。`gcrs_to_cirs_matrix_2000b` で X,Y を近似（ISSUE-035, 内部粗スキャン用として存置）。追加誤差 ~1mas 級（accuracy §2.1 で 0.05″ 配分に余裕）。
 
 ### 2.2 CIRS → TIRS（Earth Rotation Angle）
 
@@ -170,7 +170,7 @@ EO = s − atan2( NPB[0][1], NPB[0][0] )      (SOFA iauEors の構成)
 ## 手順（実装順・数値注意・適用順序）
 
 1. **t 生成**（TT 世紀）と `JD_UT1`（UT1）を `JulianDate2` から生成。エポック 2451545.0 の減算は整数部側で厳密（numerical-policy §A1）。**生 f64 の JD を渡さない**（conventions §6, §11）。
-2. **Q(t)**（GCRS→CIRS）: `iauPnm06a` 相当で NPB を構成 → X,Y を抽出 → `iauS06` で s → (F1) で `Q`。Standard は IAU2006/2000A 固定、Fast のみ 2000B（F3）。選択を `CalculationMetadata` に記録（ISSUE-035）。
+2. **Q(t)**（GCRS→CIRS）: `iauPnm06a` 相当で NPB を構成 → X,Y を抽出 → `iauS06` で s → (F1) で `Q`。**公開出力（Standard）は IAU2006/2000A 固定、内部粗スキャン（非公開）のみ 2000B（F3）**。選択を `CalculationMetadata` に記録（ISSUE-035）。
 3. **θ_ERA**（UT1）: (F4)。`[0,2π)` 正規化。
 4. **W(t)**（TIRS→ITRS）: `iauSp00` で s′ → (F6)。xp,yp は EOP から（データ層, ISSUE-035 非目的）。
 5. **連鎖合成** (F8)。逆は転置。
@@ -201,7 +201,7 @@ accuracy §3.1 / §3.3、ISSUE-035/039/040 受入テスト準拠。基準値は 
   - **CIO 統一の証明**: `GAST`（F9）が分点 GST（`iauGst06a`）と「CIO−分点の既知量（EO の差・赤経起点差）」だけ差を持つことを確認 = 内部で分点経路を使っていない証明（ISSUE-039）。差は誤差でなく系統差として accuracy.md に記録（I4/I5）。
 - **ラウンドトリップ**: GCRS→ITRS→GCRS が恒等（≲数 µas, ISSUE-035）。μ→μ+2π 不変（ISSUE-039）。
 - **時刻系分離**: ERA は UT1、CIP/s は TT で評価していること（TT を ERA に渡すと既知量ずれる回帰, ISSUE-039）。
-- **2000A vs 2000B 差分**が既知オーダー（~1mas 級）に収まる（Fast 許容の根拠, ISSUE-035）。
+- **2000A vs 2000B 差分**が既知オーダー（~1mas 級）に収まる（内部粗スキャンで 2000B を許容する根拠。公開出力は 2000A, ISSUE-035）。
 - **M10 DE 確定**: DE 差分パイプライン（accuracy §3.1）に組み込み、フレーム由来残差が層分解で **0.05″ 以下**に帰属（accuracy §3.3, §4）。
 
 ---
