@@ -90,10 +90,19 @@ mod tests {
     }
 
     #[test]
-    fn y_axis_points_toward_celestial_north() {
-        // 軸が赤道近く（低赤緯）なら ŷ は北半球側（z 成分 > 0）。
-        let b = fundamental_plane_basis(unit(1.0, 0.0, 0.1)).unwrap();
-        assert!(b.y_axis.get().z > 0.0);
+    fn y_axis_equals_north_projection_oracle() {
+        // 独立オラクル: ŷ = normalize(北極 − (北極·ẑ)ẑ)（基本面への北極射影）。
+        // 実装の ẑ×x̂ とは別経路なので追認にならない。
+        let z = unit(0.3, -0.5, 0.8);
+        let b = fundamental_plane_basis(z).unwrap();
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let zv = z.get();
+        let proj = (n - zv.scale(n.dot(zv))).normalized().unwrap().get();
+        let y = b.y_axis.get();
+        assert!((y.x - proj.x).abs() < 1e-12);
+        assert!((y.y - proj.y).abs() < 1e-12);
+        assert!((y.z - proj.z).abs() < 1e-12);
+        assert!(y.z > 0.0); // 北半球側
     }
 
     #[test]

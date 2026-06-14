@@ -43,8 +43,9 @@ pub fn shadow_cone(
     let sin_f2 = ((r_sun_km - r_moon_km) / dist).clamp(-1.0, 1.0); // 本影
     let f1 = sin_f1.asin();
     let f2 = sin_f2.asin();
-    // sin_f1 は正の半径・正の距離で常に >0。sin_f2 は R_sun==R_moon で 0 になり本影頂点が無限遠。
-    if sin_f2 == 0.0 {
+    // sin_f1 は正の半径・正の距離で常に >0。sin_f2 ≤ 0 は R_sun ≤ R_moon（非物理含む）で
+    // 本影頂点が無限遠/裏返る → 退化（仕様 05-shadow-cone §境界）。
+    if sin_f2 <= 0.0 {
         return Err(EclipseError::DegenerateGeometry);
     }
 
@@ -161,5 +162,28 @@ mod tests {
             shadow_cone(pos(&m, Body::Sun), pos(&m, Body::Moon), R_SUN, R_SUN).unwrap_err(),
             EclipseError::DegenerateGeometry
         );
+    }
+
+    #[test]
+    fn degenerate_when_moon_larger_than_sun() {
+        // 非物理 R_moon > R_sun → sin f2 < 0 → DegenerateGeometry（不等号 <= の検証）。
+        let m = MockEphemeris::central_total();
+        assert_eq!(
+            shadow_cone(pos(&m, Body::Sun), pos(&m, Body::Moon), R_MOON, R_SUN).unwrap_err(),
+            EclipseError::DegenerateGeometry
+        );
+    }
+
+    #[test]
+    fn tilted_axis_apex_offsets_match_definition() {
+        // 斜め配置（一般軸）でも頂点 = 月 ± (R_moon/sin f)·軸 が各成分で一致。
+        let sun = Vector3::new(120_000_000.0, 80_000_000.0, 20_000_000.0);
+        let moon = Vector3::new(300_000.0, 150_000.0, 40_000.0);
+        let c = shadow_cone(sun, moon, R_SUN, R_MOON).unwrap();
+        let axis = c.axis_direction.get();
+        let u_expected = moon + axis.scale(R_MOON / c.umbra_half_angle.0.sin());
+        let p_expected = moon - axis.scale(R_MOON / c.penumbra_half_angle.0.sin());
+        assert!((c.umbra_apex - u_expected).norm() < 1e-6);
+        assert!((c.penumbra_apex - p_expected).norm() < 1e-6);
     }
 }

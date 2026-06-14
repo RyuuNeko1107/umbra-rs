@@ -112,6 +112,8 @@ mod tests {
         assert!(e.gamma() < 1e-6, "gamma = {}", e.gamma());
         assert!(e.l2 < 0.0, "l2 = {} (皆既は負)", e.l2);
         assert!(e.l1 > 0.0);
+        // |l2| は実日食域（~0.005–0.05 Re）。符号だけでなく大きさも縛る（H3）。
+        assert!((0.005..0.05).contains(&e.l2.abs()), "|l2| = {}", e.l2.abs());
     }
 
     #[test]
@@ -119,6 +121,7 @@ mod tests {
         let e = elems(&MockEphemeris::clear_annular());
         assert!(e.gamma() < 1e-6, "gamma = {}", e.gamma());
         assert!(e.l2 > 0.0, "l2 = {} (金環は正)", e.l2);
+        assert!((0.005..0.05).contains(&e.l2.abs()), "|l2| = {}", e.l2.abs());
     }
 
     #[test]
@@ -172,12 +175,37 @@ mod tests {
 
     #[test]
     fn out_of_plane_moon_sets_y_and_negative_declination() {
-        // 月を +z へオフセット → 軸 ẑ=(sun−moon) は −z 成分 → d<0、射影は ŷ 方向（y≠0）。
+        // 月を +z へオフセット → 軸 ẑ=(sun−moon) は −z 成分 → d<0、射影は ŷ 方向（y≠0, x=0）。
+        let re_km = EARTH_EQUATORIAL_RADIUS_M / 1000.0;
         let sun = Vector3::new(149_597_870.7, 0.0, 0.0);
         let moon = Vector3::new(384_400.0, 0.0, 8_000.0);
         let e = besselian_elements(sun, moon, R_SUN, R_MOON).unwrap();
         assert!(e.declination.0 < 0.0, "d = {}", e.declination.0);
-        assert!((1.2..1.3).contains(&e.y), "y = {}", e.y);
         assert!(e.x.abs() < 1e-6, "x = {}", e.x);
+        // 独立オラクル: ŷ≈天の北(z軸)なので y ≈ moon.z/Re（マジック値でなく入力から導出）。
+        assert!((e.y - 8_000.0 / re_km).abs() < 0.01, "y = {}", e.y);
+    }
+
+    #[test]
+    fn minus_z_moon_gives_positive_declination() {
+        // 月を −z へ → ẑ は +z 成分 → d>0（d 符号の両方向を踏む, L3）。
+        let sun = Vector3::new(149_597_870.7, 0.0, 0.0);
+        let moon = Vector3::new(384_400.0, 0.0, -8_000.0);
+        let e = besselian_elements(sun, moon, R_SUN, R_MOON).unwrap();
+        assert!(e.declination.0 > 0.0, "d = {}", e.declination.0);
+    }
+
+    #[test]
+    fn both_x_and_y_nonzero_match_independent_oracle() {
+        // 月を +y(赤道東) と +z(北) の両方へオフセット → x,y とも非ゼロ。
+        // 独立オラクル: x̂≈+y_eq, ŷ≈+z_eq なので x≈moon.y/Re, y≈moon.z/Re。
+        // これで x̂/ŷ の取り違え・Re 割り忘れを検出する（H2）。
+        let re_km = EARTH_EQUATORIAL_RADIUS_M / 1000.0;
+        let sun = Vector3::new(149_597_870.7, 0.0, 0.0);
+        let moon = Vector3::new(384_400.0, 5_000.0, 8_000.0);
+        let e = besselian_elements(sun, moon, R_SUN, R_MOON).unwrap();
+        assert!((e.x - 5_000.0 / re_km).abs() < 0.01, "x = {}", e.x);
+        assert!((e.y - 8_000.0 / re_km).abs() < 0.01, "y = {}", e.y);
+        assert!(e.x < e.y, "x={} should differ from y={}", e.x, e.y);
     }
 }

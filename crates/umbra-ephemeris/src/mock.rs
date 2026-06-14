@@ -49,6 +49,14 @@ impl MockEphemeris {
         }
     }
 
+    /// 非中心の皆既（近地点＋地球縁すれすれのオフセット ⇒ |gamma|≈1.002、本影が縁に接触）。
+    pub fn non_central_total() -> Self {
+        MockEphemeris {
+            sun: Vector3::new(AU_KM, 0.0, 0.0),
+            moon: Vector3::new(MOON_PERIGEE_KM, 6_390.0, 0.0),
+        }
+    }
+
     /// 日食なし（影軸を地球から大きく外す ⇒ 意図 |gamma| > 1 + l1）。
     pub fn shadow_misses_earth() -> Self {
         MockEphemeris {
