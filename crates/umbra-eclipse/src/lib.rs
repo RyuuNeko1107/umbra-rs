@@ -5,7 +5,9 @@
 //! 幾何ロジックは [`umbra_ephemeris::MockEphemeris`] 上で検証する（accuracy.md §3.1）。
 
 pub mod error;
+pub mod fundamental;
 pub mod shadow;
 
 pub use error::EclipseError;
+pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use shadow::{shadow_cone, ShadowCone};
