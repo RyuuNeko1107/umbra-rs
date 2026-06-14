@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/vector.rs
++++ replace * with + in Vector3::scale
+@@ -42,17 +42,17 @@
+         self.dot(self).sqrt()
+     }
+ 
+     /// スカラ倍。
+     pub fn scale(self, s: f64) -> Vector3 {
+         Vector3 {
+             x: self.x * s,
+             y: self.y * s,
+-            z: self.z * s,
++            z: self.z + /* ~ changed by cargo-mutants ~ */ s,
+         }
+     }
+ }
+ 
+ impl core::ops::Add for Vector3 {
+     type Output = Vector3;
+     fn add(self, o: Vector3) -> Vector3 {
+         Vector3::new(self.x + o.x, self.y + o.y, self.z + o.z)

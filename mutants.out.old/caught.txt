@@ -1,0 +1,527 @@
+crates/umbra-core/src/angle.rs:9:25: replace * with +
+crates/umbra-core/src/angle.rs:9:25: replace * with /
+crates/umbra-core/src/angle.rs:27:32: replace / with % in Radians::to_degrees
+crates/umbra-core/src/angle.rs:27:32: replace / with * in Radians::to_degrees
+crates/umbra-core/src/angle.rs:27:24: replace * with + in Radians::to_degrees
+crates/umbra-core/src/angle.rs:27:24: replace * with / in Radians::to_degrees
+crates/umbra-core/src/angle.rs:33:22: replace >= with < in Radians::normalized_signed
+crates/umbra-core/src/angle.rs:33:32: replace - with + in Radians::normalized_signed
+crates/umbra-core/src/angle.rs:33:32: replace - with / in Radians::normalized_signed
+crates/umbra-core/src/angle.rs:50:29: replace / with % in Degrees::to_radians
+crates/umbra-core/src/angle.rs:50:29: replace / with * in Degrees::to_radians
+crates/umbra-core/src/angle.rs:50:24: replace * with + in Degrees::to_radians
+crates/umbra-core/src/angle.rs:50:24: replace * with / in Degrees::to_radians
+crates/umbra-core/src/calendar.rs:21:8: delete ! in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:24:8: delete ! in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:27:13: replace >= with < in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:30:15: replace >= with < in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:33:8: delete ! in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:38:27: replace <= with > in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:39:15: replace - with + in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:39:15: replace - with / in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:39:37: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:39:37: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:43:27: replace / with % in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:43:27: replace / with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:44:21: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:44:21: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:44:17: replace - with + in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:44:17: replace - with / in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:44:26: replace / with % in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:44:26: replace / with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:50:9: replace - with + in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:50:9: replace - with / in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:49:9: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:49:9: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:48:9: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:48:9: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:47:9: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:47:9: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:46:23: replace * with + in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:46:23: replace * with / in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:46:39: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:46:39: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:47:20: replace * with + in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:47:20: replace * with / in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:47:36: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:47:36: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:76: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:76: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:47: replace + with - in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:47: replace + with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:40: replace / with % in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:40: replace / with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:67: replace / with % in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:67: replace / with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:85: replace / with % in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:51:85: replace / with * in gregorian_to_jd2
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 0, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 0, 1, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 0, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (0, 1, 1, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 0, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 0, 1, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 0, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 0, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 0, 1, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 0, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 0, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 0, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 0, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 0, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 0, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 0, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 1, 0, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 1, 0, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 1, 0, -1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 1, 1, 0.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 1, 1, 1.0)
+crates/umbra-core/src/calendar.rs:62:5: replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (-1, 1, 1, 1, 1, -1.0)
+crates/umbra-core/src/calendar.rs:62:23: replace + with - in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:62:23: replace + with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:64:16: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:64:16: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:67:37: replace / with % in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:67:37: replace / with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:67:21: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:67:21: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:68:29: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:68:29: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:68:21: replace + with - in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:68:21: replace + with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:68:15: replace + with - in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:68:15: replace + with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:68:38: replace / with % in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:68:38: replace / with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:69:15: replace + with - in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:69:15: replace + with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:70:26: replace / with % in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:70:26: replace / with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:70:17: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:70:17: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:71:21: replace * with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:71:21: replace * with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:72:22: replace / with % in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:72:22: replace / with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:72:17: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:72:17: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:74:55: replace + with - in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:74:55: replace + with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:74:31: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:74:31: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:74:27: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:74:27: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:74:42: replace * with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:74:42: replace * with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:76:24: replace < with == in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:76:24: replace < with > in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:76:24: replace < with <= in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:76:35: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:76:35: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:76:52: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:76:52: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:77:29: replace > with == in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:77:29: replace > with < in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:77:29: replace > with >= in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:78:11: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:78:11: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:80:11: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:80:11: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:83:49: replace * with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:83:49: replace * with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:83:42: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:83:42: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:84:29: replace / with % in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:84:29: replace / with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:85:17: replace -= with += in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:85:17: replace -= with /= in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:85:25: replace * with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:85:25: replace * with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:86:31: replace / with % in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:86:31: replace / with * in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:87:30: replace - with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:87:30: replace - with / in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:87:39: replace * with + in jd2_to_gregorian
+crates/umbra-core/src/calendar.rs:87:39: replace * with / in jd2_to_gregorian
+crates/umbra-core/src/constants.rs:20:39: replace / with %
+crates/umbra-core/src/constants.rs:20:39: replace / with *
+crates/umbra-core/src/ellipsoid.rs:27:9: replace Ellipsoid::b_m -> f64 with 0.0
+crates/umbra-core/src/ellipsoid.rs:27:9: replace Ellipsoid::b_m -> f64 with 1.0
+crates/umbra-core/src/ellipsoid.rs:27:9: replace Ellipsoid::b_m -> f64 with -1.0
+crates/umbra-core/src/ellipsoid.rs:27:18: replace * with + in Ellipsoid::b_m
+crates/umbra-core/src/ellipsoid.rs:27:18: replace * with / in Ellipsoid::b_m
+crates/umbra-core/src/ellipsoid.rs:27:25: replace - with + in Ellipsoid::b_m
+crates/umbra-core/src/ellipsoid.rs:27:25: replace - with / in Ellipsoid::b_m
+crates/umbra-core/src/ellipsoid.rs:32:9: replace Ellipsoid::e2 -> f64 with 0.0
+crates/umbra-core/src/ellipsoid.rs:32:9: replace Ellipsoid::e2 -> f64 with 1.0
+crates/umbra-core/src/ellipsoid.rs:32:9: replace Ellipsoid::e2 -> f64 with -1.0
+crates/umbra-core/src/ellipsoid.rs:32:16: replace * with + in Ellipsoid::e2
+crates/umbra-core/src/ellipsoid.rs:32:16: replace * with / in Ellipsoid::e2
+crates/umbra-core/src/ellipsoid.rs:32:23: replace - with + in Ellipsoid::e2
+crates/umbra-core/src/ellipsoid.rs:32:23: replace - with / in Ellipsoid::e2
+crates/umbra-core/src/ellipsoid.rs:55:24: replace - with + in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:55:24: replace - with / in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:56:23: replace * with + in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:56:23: replace * with / in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:57:29: replace / with % in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:57:29: replace / with * in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:59:47: replace + with - in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:59:47: replace + with * in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:59:37: replace * with + in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:59:37: replace * with / in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:59:58: replace * with + in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:59:58: replace * with / in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:60:36: replace + with - in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:60:36: replace + with * in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:60:47: replace * with + in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:60:47: replace * with / in observer_geocentric
+crates/umbra-core/src/ellipsoid.rs:66:5: replace geodetic_to_geocentric_latitude -> f64 with 0.0
+crates/umbra-core/src/ellipsoid.rs:66:5: replace geodetic_to_geocentric_latitude -> f64 with 1.0
+crates/umbra-core/src/ellipsoid.rs:66:5: replace geodetic_to_geocentric_latitude -> f64 with -1.0
+crates/umbra-core/src/ellipsoid.rs:66:29: replace * with + in geodetic_to_geocentric_latitude
+crates/umbra-core/src/ellipsoid.rs:66:29: replace * with / in geodetic_to_geocentric_latitude
+crates/umbra-core/src/ellipsoid.rs:66:11: replace - with + in geodetic_to_geocentric_latitude
+crates/umbra-core/src/ellipsoid.rs:66:11: replace - with / in geodetic_to_geocentric_latitude
+crates/umbra-core/src/ellipsoid.rs:81:27: replace / with % in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:81:27: replace / with * in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:81:34: replace - with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:81:34: replace - with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:81:49: replace * with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:81:49: replace * with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:81:39: replace * with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:81:39: replace * with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:82:40: replace * with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:82:40: replace * with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:82:30: replace * with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:82:30: replace * with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:82:18: replace + with - in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:82:18: replace + with * in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:83:40: replace * with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:83:40: replace * with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:83:30: replace * with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:83:30: replace * with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:83:18: replace + with - in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:83:18: replace + with * in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:84:43: replace * with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:84:43: replace * with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:84:31: replace + with - in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:84:31: replace + with * in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:84:18: replace * with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:84:18: replace * with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:84:25: replace - with + in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:84:25: replace - with / in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:85:22: replace / with % in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:85:22: replace / with * in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:85:36: replace / with % in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:85:36: replace / with * in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:85:50: replace / with % in geodetic_to_ecef_km
+crates/umbra-core/src/ellipsoid.rs:85:50: replace / with * in geodetic_to_ecef_km
+crates/umbra-core/src/julian.rs:37:31: replace + with - in JulianDate2::normalized
+crates/umbra-core/src/julian.rs:37:31: replace + with * in JulianDate2::normalized
+crates/umbra-core/src/julian.rs:38:31: replace - with + in JulianDate2::normalized
+crates/umbra-core/src/julian.rs:38:31: replace - with / in JulianDate2::normalized
+crates/umbra-core/src/julian.rs:44:9: replace JulianDate2::jd -> f64 with 0.0
+crates/umbra-core/src/julian.rs:44:9: replace JulianDate2::jd -> f64 with 1.0
+crates/umbra-core/src/julian.rs:44:9: replace JulianDate2::jd -> f64 with -1.0
+crates/umbra-core/src/julian.rs:44:20: replace + with - in JulianDate2::jd
+crates/umbra-core/src/julian.rs:44:20: replace + with * in JulianDate2::jd
+crates/umbra-core/src/julian.rs:51:31: replace + with - in JulianDate2::add_days
+crates/umbra-core/src/julian.rs:51:31: replace + with * in JulianDate2::add_days
+crates/umbra-core/src/julian.rs:58:9: replace JulianDate2::julian_centuries_since_j2000 -> f64 with 0.0
+crates/umbra-core/src/julian.rs:58:9: replace JulianDate2::julian_centuries_since_j2000 -> f64 with 1.0
+crates/umbra-core/src/julian.rs:58:9: replace JulianDate2::julian_centuries_since_j2000 -> f64 with -1.0
+crates/umbra-core/src/julian.rs:58:48: replace / with % in JulianDate2::julian_centuries_since_j2000
+crates/umbra-core/src/julian.rs:58:48: replace / with * in JulianDate2::julian_centuries_since_j2000
+crates/umbra-core/src/julian.rs:58:34: replace + with - in JulianDate2::julian_centuries_since_j2000
+crates/umbra-core/src/julian.rs:58:34: replace + with * in JulianDate2::julian_centuries_since_j2000
+crates/umbra-core/src/julian.rs:58:22: replace - with + in JulianDate2::julian_centuries_since_j2000
+crates/umbra-core/src/julian.rs:58:22: replace - with / in JulianDate2::julian_centuries_since_j2000
+crates/umbra-core/src/julian.rs:63:9: replace JulianDate2::julian_millennia_since_j2000 -> f64 with 0.0
+crates/umbra-core/src/julian.rs:63:9: replace JulianDate2::julian_millennia_since_j2000 -> f64 with 1.0
+crates/umbra-core/src/julian.rs:63:9: replace JulianDate2::julian_millennia_since_j2000 -> f64 with -1.0
+crates/umbra-core/src/julian.rs:63:48: replace / with % in JulianDate2::julian_millennia_since_j2000
+crates/umbra-core/src/julian.rs:63:48: replace / with * in JulianDate2::julian_millennia_since_j2000
+crates/umbra-core/src/julian.rs:63:34: replace + with - in JulianDate2::julian_millennia_since_j2000
+crates/umbra-core/src/julian.rs:63:34: replace + with * in JulianDate2::julian_millennia_since_j2000
+crates/umbra-core/src/julian.rs:63:22: replace - with + in JulianDate2::julian_millennia_since_j2000
+crates/umbra-core/src/julian.rs:63:22: replace - with / in JulianDate2::julian_millennia_since_j2000
+crates/umbra-core/src/matrix.rs:35:59: delete - in Matrix3::rotation_x
+crates/umbra-core/src/matrix.rs:41:32: delete - in Matrix3::rotation_y
+crates/umbra-core/src/matrix.rs:47:37: delete - in Matrix3::rotation_z
+crates/umbra-core/src/matrix.rs:54:43: replace + with - in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:43: replace + with * in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:27: replace + with - in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:27: replace + with * in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:21: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:21: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:37: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:37: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:53: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:54:53: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:43: replace + with - in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:43: replace + with * in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:27: replace + with - in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:27: replace + with * in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:21: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:21: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:37: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:37: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:53: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:55:53: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:43: replace + with - in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:43: replace + with * in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:27: replace + with - in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:27: replace + with * in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:21: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:21: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:37: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:37: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:53: replace * with + in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:56:53: replace * with / in Matrix3::mul_vec
+crates/umbra-core/src/matrix.rs:67:21: replace + with - in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:67:21: replace + with * in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:66:21: replace + with - in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:66:21: replace + with * in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:65:41: replace * with + in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:65:41: replace * with / in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:66:39: replace * with + in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:66:39: replace * with / in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:67:39: replace * with + in Matrix3::mul_mat
+crates/umbra-core/src/matrix.rs:67:39: replace * with / in Matrix3::mul_mat
+crates/umbra-core/src/solver.rs:26:5: replace brent_root -> Result<f64, SolverError> with Ok(0.0)
+crates/umbra-core/src/solver.rs:26:5: replace brent_root -> Result<f64, SolverError> with Ok(1.0)
+crates/umbra-core/src/solver.rs:26:5: replace brent_root -> Result<f64, SolverError> with Ok(-1.0)
+crates/umbra-core/src/solver.rs:28:11: replace == with != in brent_root
+crates/umbra-core/src/solver.rs:31:11: replace == with != in brent_root
+crates/umbra-core/src/solver.rs:34:16: replace > with == in brent_root
+crates/umbra-core/src/solver.rs:34:16: replace > with < in brent_root
+crates/umbra-core/src/solver.rs:34:11: replace * with + in brent_root
+crates/umbra-core/src/solver.rs:48:22: replace || with && in brent_root
+crates/umbra-core/src/solver.rs:48:15: replace == with != in brent_root
+crates/umbra-core/src/solver.rs:48:39: replace < with == in brent_root
+crates/umbra-core/src/solver.rs:48:39: replace < with > in brent_root
+crates/umbra-core/src/solver.rs:48:28: replace - with + in brent_root
+crates/umbra-core/src/solver.rs:48:28: replace - with / in brent_root
+crates/umbra-core/src/solver.rs:51:12: delete ! in brent_root
+crates/umbra-core/src/solver.rs:51:31: delete ! in brent_root
+crates/umbra-core/src/solver.rs:66:43: replace * with + in brent_root
+crates/umbra-core/src/solver.rs:68:13: replace || with && in brent_root
+crates/umbra-core/src/solver.rs:73:25: replace / with % in brent_root
+crates/umbra-core/src/solver.rs:73:25: replace / with * in brent_root
+crates/umbra-core/src/solver.rs:73:20: replace + with - in brent_root
+crates/umbra-core/src/solver.rs:73:20: replace + with * in brent_root
+crates/umbra-core/src/solver.rs:83:20: replace < with == in brent_root
+crates/umbra-core/src/solver.rs:83:20: replace < with > in brent_root
+crates/umbra-core/src/solver.rs:83:15: replace * with + in brent_root
+crates/umbra-core/src/solver.rs:90:21: replace < with == in brent_root
+crates/umbra-core/src/solver.rs:90:21: replace < with > in brent_root
+crates/umbra-core/src/solver.rs:106:5: replace minimize_golden -> f64 with 0.0
+crates/umbra-core/src/solver.rs:106:5: replace minimize_golden -> f64 with 1.0
+crates/umbra-core/src/solver.rs:106:5: replace minimize_golden -> f64 with -1.0
+crates/umbra-core/src/solver.rs:106:37: replace / with % in minimize_golden
+crates/umbra-core/src/solver.rs:106:37: replace / with * in minimize_golden
+crates/umbra-core/src/solver.rs:106:30: replace - with + in minimize_golden
+crates/umbra-core/src/solver.rs:106:30: replace - with / in minimize_golden
+crates/umbra-core/src/solver.rs:107:19: replace - with + in minimize_golden
+crates/umbra-core/src/solver.rs:107:19: replace - with / in minimize_golden
+crates/umbra-core/src/solver.rs:107:24: replace * with + in minimize_golden
+crates/umbra-core/src/solver.rs:107:24: replace * with / in minimize_golden
+crates/umbra-core/src/solver.rs:107:29: replace - with / in minimize_golden
+crates/umbra-core/src/solver.rs:108:19: replace + with - in minimize_golden
+crates/umbra-core/src/solver.rs:108:19: replace + with * in minimize_golden
+crates/umbra-core/src/solver.rs:108:24: replace * with + in minimize_golden
+crates/umbra-core/src/solver.rs:108:24: replace * with / in minimize_golden
+crates/umbra-core/src/solver.rs:108:29: replace - with / in minimize_golden
+crates/umbra-core/src/solver.rs:112:26: replace < with > in minimize_golden
+crates/umbra-core/src/solver.rs:115:15: replace < with == in minimize_golden
+crates/umbra-core/src/solver.rs:115:15: replace < with > in minimize_golden
+crates/umbra-core/src/solver.rs:119:19: replace - with + in minimize_golden
+crates/umbra-core/src/solver.rs:119:19: replace - with / in minimize_golden
+crates/umbra-core/src/solver.rs:119:24: replace * with + in minimize_golden
+crates/umbra-core/src/solver.rs:119:24: replace * with / in minimize_golden
+crates/umbra-core/src/solver.rs:119:29: replace - with + in minimize_golden
+crates/umbra-core/src/solver.rs:119:29: replace - with / in minimize_golden
+crates/umbra-core/src/solver.rs:125:19: replace + with - in minimize_golden
+crates/umbra-core/src/solver.rs:125:19: replace + with * in minimize_golden
+crates/umbra-core/src/solver.rs:125:24: replace * with + in minimize_golden
+crates/umbra-core/src/solver.rs:125:24: replace * with / in minimize_golden
+crates/umbra-core/src/solver.rs:125:29: replace - with + in minimize_golden
+crates/umbra-core/src/solver.rs:125:29: replace - with / in minimize_golden
+crates/umbra-core/src/solver.rs:129:13: replace / with % in minimize_golden
+crates/umbra-core/src/solver.rs:129:13: replace / with * in minimize_golden
+crates/umbra-core/src/solver.rs:129:8: replace + with - in minimize_golden
+crates/umbra-core/src/solver.rs:129:8: replace + with * in minimize_golden
+crates/umbra-core/src/vector.rs:28:9: replace Vector3::dot -> f64 with 0.0
+crates/umbra-core/src/vector.rs:28:9: replace Vector3::dot -> f64 with 1.0
+crates/umbra-core/src/vector.rs:28:9: replace Vector3::dot -> f64 with -1.0
+crates/umbra-core/src/vector.rs:28:45: replace + with - in Vector3::dot
+crates/umbra-core/src/vector.rs:28:45: replace + with * in Vector3::dot
+crates/umbra-core/src/vector.rs:28:26: replace + with - in Vector3::dot
+crates/umbra-core/src/vector.rs:28:26: replace + with * in Vector3::dot
+crates/umbra-core/src/vector.rs:28:16: replace * with + in Vector3::dot
+crates/umbra-core/src/vector.rs:28:16: replace * with / in Vector3::dot
+crates/umbra-core/src/vector.rs:28:35: replace * with + in Vector3::dot
+crates/umbra-core/src/vector.rs:28:35: replace * with / in Vector3::dot
+crates/umbra-core/src/vector.rs:28:54: replace * with + in Vector3::dot
+crates/umbra-core/src/vector.rs:28:54: replace * with / in Vector3::dot
+crates/umbra-core/src/vector.rs:34:33: replace - with + in Vector3::cross
+crates/umbra-core/src/vector.rs:34:33: replace - with / in Vector3::cross
+crates/umbra-core/src/vector.rs:34:23: replace * with + in Vector3::cross
+crates/umbra-core/src/vector.rs:34:23: replace * with / in Vector3::cross
+crates/umbra-core/src/vector.rs:34:42: replace * with + in Vector3::cross
+crates/umbra-core/src/vector.rs:34:42: replace * with / in Vector3::cross
+crates/umbra-core/src/vector.rs:35:33: replace - with + in Vector3::cross
+crates/umbra-core/src/vector.rs:35:33: replace - with / in Vector3::cross
+crates/umbra-core/src/vector.rs:35:23: replace * with + in Vector3::cross
+crates/umbra-core/src/vector.rs:35:23: replace * with / in Vector3::cross
+crates/umbra-core/src/vector.rs:35:42: replace * with + in Vector3::cross
+crates/umbra-core/src/vector.rs:35:42: replace * with / in Vector3::cross
+crates/umbra-core/src/vector.rs:36:33: replace - with + in Vector3::cross
+crates/umbra-core/src/vector.rs:36:33: replace - with / in Vector3::cross
+crates/umbra-core/src/vector.rs:36:23: replace * with + in Vector3::cross
+crates/umbra-core/src/vector.rs:36:23: replace * with / in Vector3::cross
+crates/umbra-core/src/vector.rs:36:42: replace * with + in Vector3::cross
+crates/umbra-core/src/vector.rs:36:42: replace * with / in Vector3::cross
+crates/umbra-core/src/vector.rs:42:9: replace Vector3::norm -> f64 with 0.0
+crates/umbra-core/src/vector.rs:42:9: replace Vector3::norm -> f64 with 1.0
+crates/umbra-core/src/vector.rs:42:9: replace Vector3::norm -> f64 with -1.0
+crates/umbra-core/src/vector.rs:48:23: replace * with + in Vector3::scale
+crates/umbra-core/src/vector.rs:48:23: replace * with / in Vector3::scale
+crates/umbra-core/src/vector.rs:49:23: replace * with + in Vector3::scale
+crates/umbra-core/src/vector.rs:49:23: replace * with / in Vector3::scale
+crates/umbra-core/src/vector.rs:50:23: replace * with + in Vector3::scale
+crates/umbra-core/src/vector.rs:50:23: replace * with / in Vector3::scale
+crates/umbra-core/src/vector.rs:58:29: replace + with - in <impl core::ops::Add for Vector3>::add
+crates/umbra-core/src/vector.rs:58:29: replace + with * in <impl core::ops::Add for Vector3>::add
+crates/umbra-core/src/vector.rs:58:43: replace + with - in <impl core::ops::Add for Vector3>::add
+crates/umbra-core/src/vector.rs:58:43: replace + with * in <impl core::ops::Add for Vector3>::add
+crates/umbra-core/src/vector.rs:58:57: replace + with - in <impl core::ops::Add for Vector3>::add
+crates/umbra-core/src/vector.rs:58:57: replace + with * in <impl core::ops::Add for Vector3>::add
+crates/umbra-core/src/vector.rs:65:29: replace - with + in <impl core::ops::Sub for Vector3>::sub
+crates/umbra-core/src/vector.rs:65:29: replace - with / in <impl core::ops::Sub for Vector3>::sub
+crates/umbra-core/src/vector.rs:65:43: replace - with + in <impl core::ops::Sub for Vector3>::sub
+crates/umbra-core/src/vector.rs:65:43: replace - with / in <impl core::ops::Sub for Vector3>::sub
+crates/umbra-core/src/vector.rs:65:57: replace - with + in <impl core::ops::Sub for Vector3>::sub
+crates/umbra-core/src/vector.rs:65:57: replace - with / in <impl core::ops::Sub for Vector3>::sub

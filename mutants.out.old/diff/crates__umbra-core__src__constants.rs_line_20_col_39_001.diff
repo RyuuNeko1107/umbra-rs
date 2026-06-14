@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/constants.rs
++++ replace / with *
+@@ -12,17 +12,17 @@
+ 
+ /// TT − TAI \[s\]。IAU 1991 による定数オフセット（閏秒は UTC↔TAI 側で別途扱う）。
+ pub const TT_MINUS_TAI_SECONDS: f64 = 32.184;
+ 
+ /// 地球赤道半径（WGS84 長半径 a）\[m\]。ベッセル無次元化の基準 Re。
+ pub const EARTH_EQUATORIAL_RADIUS_M: f64 = 6_378_137.0;
+ 
+ /// WGS84 扁平率 f。
+-pub const WGS84_FLATTENING: f64 = 1.0 / 298.257_223_563;
++pub const WGS84_FLATTENING: f64 = 1.0 * /* ~ changed by cargo-mutants ~ */ 298.257_223_563;
+ 
+ /// J2000.0 のユリウス日（TT, 2000-01-01 12:00:00 TT）。
+ pub const J2000_JD: f64 = 2_451_545.0;
+ 
+ /// 1 ユリウス世紀の日数。
+ pub const JULIAN_CENTURY_DAYS: f64 = 36_525.0;
+ 
+ /// 1 ユリウス千年の日数（VSOP87 の引数 T で使用）。

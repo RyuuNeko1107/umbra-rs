@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/calendar.rs
++++ delete ! in gregorian_to_jd2
+@@ -16,17 +16,17 @@
+     day: u8,
+     hour: u8,
+     minute: u8,
+     second: f64,
+ ) -> Result<JulianDate2, DomainError> {
+     if !(1..=12).contains(&month) {
+         return Err(DomainError::OutOfRange { what: "month" });
+     }
+-    if !(1..=31).contains(&day) {
++    if  /* ~ changed by cargo-mutants ~ */(1..=31).contains(&day) {
+         return Err(DomainError::OutOfRange { what: "day" });
+     }
+     if hour >= 24 {
+         return Err(DomainError::OutOfRange { what: "hour" });
+     }
+     if minute >= 60 {
+         return Err(DomainError::OutOfRange { what: "minute" });
+     }

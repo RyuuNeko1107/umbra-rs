@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/vector.rs
++++ replace Vector3::norm -> f64 with -1.0
+@@ -34,17 +34,17 @@
+             x: self.y * other.z - self.z * other.y,
+             y: self.z * other.x - self.x * other.z,
+             z: self.x * other.y - self.y * other.x,
+         }
+     }
+ 
+     /// ノルム（ユークリッド長）。
+     pub fn norm(self) -> f64 {
+-        self.dot(self).sqrt()
++        -1.0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// スカラ倍。
+     pub fn scale(self, s: f64) -> Vector3 {
+         Vector3 {
+             x: self.x * s,
+             y: self.y * s,
+             z: self.z * s,

@@ -97,6 +97,15 @@ mod tests {
     }
 
     #[test]
+    fn mul_vec_sums_every_term() {
+        // 非対称・全非ゼロの一般行列で各積項の取り違えを区別する。
+        let m = Matrix3::new([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        // (1+4+9, 4+10+18, 7+16+27)
+        assert_eq!(m.mul_vec(v), Vector3::new(14.0, 32.0, 50.0));
+    }
+
+    #[test]
     fn rotation_z_is_coordinate_rotation() {
         // R3(+90°) で x 軸ベクトルの座標は (0, -1, 0) になる（受動回転）。
         let r = Matrix3::rotation_z(PI / 2.0);

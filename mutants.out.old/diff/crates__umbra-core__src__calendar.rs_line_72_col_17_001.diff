@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/calendar.rs
++++ replace - with / in jd2_to_gregorian
+@@ -64,17 +64,17 @@
+     let f = jd - z;
+ 
+     // プロレプティック・グレゴリオ: z の大小に関わらず Gregorian 補正を適用。
+     let alpha = ((z - 1_867_216.25) / 36_524.25).floor();
+     let a = z + 1.0 + alpha - (alpha / 4.0).floor();
+     let b = a + 1524.0;
+     let c = ((b - 122.1) / 365.25).floor();
+     let d = (365.25 * c).floor();
+-    let e = ((b - d) / 30.6001).floor();
++    let e = ((b / /* ~ changed by cargo-mutants ~ */ d) / 30.6001).floor();
+ 
+     let day_with_frac = b - d - (30.6001 * e).floor() + f;
+     let day = day_with_frac.floor();
+     let month_f = if e < 14.0 { e - 1.0 } else { e - 13.0 };
+     let year_f = if month_f > 2.0 {
+         c - 4716.0
+     } else {
+         c - 4715.0

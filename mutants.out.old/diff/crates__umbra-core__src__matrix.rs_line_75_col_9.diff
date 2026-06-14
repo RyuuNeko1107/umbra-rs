@@ -1,0 +1,26 @@
+--- crates/umbra-core/src/matrix.rs
++++ replace Matrix3::transpose -> Matrix3 with Default::default()
+@@ -67,22 +67,17 @@
+                     + self.rows[i][2] * other.rows[2][j];
+             }
+         }
+         Matrix3::new(out)
+     }
+ 
+     /// 転置（回転行列では逆回転に等しい）。
+     pub fn transpose(&self) -> Matrix3 {
+-        let r = &self.rows;
+-        Matrix3::new([
+-            [r[0][0], r[1][0], r[2][0]],
+-            [r[0][1], r[1][1], r[2][1]],
+-            [r[0][2], r[1][2], r[2][2]],
+-        ])
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use core::f64::consts::PI;
+ 

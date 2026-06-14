@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace - with / in minimize_golden
+@@ -111,17 +111,17 @@
+     for _ in 0..max_iter {
+         if (b - a).abs() < tol {
+             break;
+         }
+         if fc < fd {
+             b = d;
+             d = c;
+             fd = fc;
+-            c = b - gr * (b - a);
++            c = b / /* ~ changed by cargo-mutants ~ */ gr * (b - a);
+             fc = f(c);
+         } else {
+             a = c;
+             c = d;
+             fc = fd;
+             d = a + gr * (b - a);
+             fd = f(d);
+         }

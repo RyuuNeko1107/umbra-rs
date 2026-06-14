@@ -104,26 +104,107 @@ mod tests {
     }
 
     #[test]
-    fn observer_at_equator_sea_level() {
-        let o = observer_geocentric(&WGS84, 0.0, 0.0);
-        assert!((o.rho_cos_phi_prime - 1.0).abs() < 1e-12);
-        assert!(o.rho_sin_phi_prime.abs() < 1e-12);
+    fn observer_matches_meeus_palomar_example() {
+        // Meeus Ch.11 例: Palomar φ=33°21'22"、h=1706 m → ρsinφ'=0.546861, ρcosφ'=0.836339。
+        // h≠0・中緯度で全項を励起する具体オラクル（WGS84 と Meeus a の差は ~1e-5）。
+        let phi = (33.0_f64 + 21.0 / 60.0 + 22.0 / 3600.0).to_radians();
+        let o = observer_geocentric(&WGS84, phi, 1706.0);
+        assert!(
+            (o.rho_sin_phi_prime - 0.546_861).abs() < 1e-3,
+            "ρsinφ'={}",
+            o.rho_sin_phi_prime
+        );
+        assert!(
+            (o.rho_cos_phi_prime - 0.836_339).abs() < 1e-3,
+            "ρcosφ'={}",
+            o.rho_cos_phi_prime
+        );
     }
 
     #[test]
-    fn observer_at_pole_uses_b_over_a() {
-        let o = observer_geocentric(&WGS84, PI / 2.0, 0.0);
-        assert!(o.rho_cos_phi_prime.abs() < 1e-9);
-        assert!((o.rho_sin_phi_prime - (1.0 - WGS84.f)).abs() < 1e-9);
+    fn observer_lies_on_meridian_ellipse_at_sea_level() {
+        // h=0 では (ρcosφ', ρsinφ'/(b/a)) は単位円上: 各項の取り違えを区別する不変量。
+        let b_over_a = 1.0 - WGS84.f;
+        let o = observer_geocentric(&WGS84, 50.0_f64.to_radians(), 0.0);
+        let inv = o.rho_cos_phi_prime.powi(2) + (o.rho_sin_phi_prime / b_over_a).powi(2);
+        assert!((inv - 1.0).abs() < 1e-12, "inv = {inv}");
     }
 
     #[test]
-    fn geocentric_latitude_is_smaller_at_mid_latitude() {
-        let phi = 45.0_f64.to_radians();
-        let phi_prime = geodetic_to_geocentric_latitude(&WGS84, phi);
-        assert!(phi_prime < phi);
-        // 45°では差は約 11.5′
-        assert!((phi - phi_prime).to_degrees() * 60.0 > 11.0);
+    fn observer_at_equator_and_pole() {
+        let eq = observer_geocentric(&WGS84, 0.0, 0.0);
+        assert!((eq.rho_cos_phi_prime - 1.0).abs() < 1e-12 && eq.rho_sin_phi_prime.abs() < 1e-12);
+        let pole = observer_geocentric(&WGS84, PI / 2.0, 0.0);
+        assert!(pole.rho_cos_phi_prime.abs() < 1e-9);
+        assert!((pole.rho_sin_phi_prime - (1.0 - WGS84.f)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn geocentric_latitude_satisfies_defining_relation() {
+        // tan φ' = (1 − e²) tan φ（定義関係）。* と / の取り違え・定数化を区別する。
+        for deg in [30.0_f64, 45.0, 60.0] {
+            let phi = deg.to_radians();
+            let phi_prime = geodetic_to_geocentric_latitude(&WGS84, phi);
+            assert!(phi_prime < phi);
+            assert!((phi_prime.tan() / phi.tan() - (1.0 - WGS84.e2())).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn ecef_on_ellipsoid_surface_when_height_zero() {
+        // h=0 の点は楕円体面上: (X²+Y²)/a² + Z²/b² = 1。各項の取り違えを破る不変量。
+        let a = WGS84.a_m / 1000.0;
+        let b = WGS84.b_m() / 1000.0;
+        let p = geodetic_to_ecef_km(&WGS84, 37.0_f64.to_radians(), 140.0_f64.to_radians(), 0.0);
+        let rel = (p.x * p.x + p.y * p.y) / (a * a) + p.z * p.z / (b * b);
+        assert!((rel - 1.0).abs() < 1e-12, "rel = {rel}");
+    }
+
+    #[test]
+    fn ecef_recovers_longitude() {
+        let lon = 140.0_f64.to_radians();
+        let p = geodetic_to_ecef_km(&WGS84, 37.0_f64.to_radians(), lon, 0.0);
+        assert!((p.y.atan2(p.x) - lon).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ecef_height_moves_along_normal_by_exactly_h() {
+        let (lat, lon) = (37.0_f64.to_radians(), 140.0_f64.to_radians());
+        let p0 = geodetic_to_ecef_km(&WGS84, lat, lon, 0.0);
+        let ph = geodetic_to_ecef_km(&WGS84, lat, lon, 1000.0);
+        // 変位は h·(法線ベクトル) に厳密一致。各成分の +h 符号を区別する。
+        let disp = ph - p0; // km
+        let h_km = 1.0; // 1000 m
+        assert!(
+            (disp.x - h_km * lat.cos() * lon.cos()).abs() < 1e-12,
+            "dx = {}",
+            disp.x
+        );
+        assert!(
+            (disp.y - h_km * lat.cos() * lon.sin()).abs() < 1e-12,
+            "dy = {}",
+            disp.y
+        );
+        assert!((disp.z - h_km * lat.sin()).abs() < 1e-12, "dz = {}", disp.z);
+    }
+
+    #[test]
+    fn observer_height_term_is_additive_and_signed() {
+        // h 項は線形・加算的: rho(h) − rho(0) = (h/a)·sin/cos φ（厳密関係）。
+        // + の符号と * の演算（vs /）を精密に区別する。
+        let lat = 50.0_f64.to_radians();
+        let h = 100_000.0;
+        let base = observer_geocentric(&WGS84, lat, 0.0);
+        let high = observer_geocentric(&WGS84, lat, h);
+        let h_over_a = h / WGS84.a_m;
+        assert!(
+            ((high.rho_sin_phi_prime - base.rho_sin_phi_prime) - h_over_a * lat.sin()).abs()
+                < 1e-12
+        );
+        assert!(
+            ((high.rho_cos_phi_prime - base.rho_cos_phi_prime) - h_over_a * lat.cos()).abs()
+                < 1e-12
+        );
     }
 
     #[test]
@@ -131,7 +212,6 @@ mod tests {
         let eq = geodetic_to_ecef_km(&WGS84, 0.0, 0.0, 0.0);
         assert!((eq.x - 6378.137).abs() < 1e-3);
         assert!(eq.y.abs() < 1e-9 && eq.z.abs() < 1e-9);
-
         let pole = geodetic_to_ecef_km(&WGS84, PI / 2.0, 0.0, 0.0);
         assert!((pole.z - WGS84.b_m() / 1000.0).abs() < 1e-6);
         assert!(pole.x.abs() < 1e-6);

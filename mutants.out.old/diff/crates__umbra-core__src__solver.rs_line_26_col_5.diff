@@ -1,0 +1,90 @@
+--- crates/umbra-core/src/solver.rs
++++ replace brent_root -> Result<f64, SolverError> with Ok(0.0)
+@@ -18,86 +18,17 @@
+     mut a: f64,
+     mut b: f64,
+     tol: f64,
+     max_iter: usize,
+ ) -> Result<f64, SolverError>
+ where
+     F: FnMut(f64) -> f64,
+ {
+-    let mut fa = f(a);
+-    let mut fb = f(b);
+-    if fa == 0.0 {
+-        return Ok(a);
+-    }
+-    if fb == 0.0 {
+-        return Ok(b);
+-    }
+-    if fa * fb > 0.0 {
+-        return Err(SolverError::RootNotBracketed);
+-    }
+-    // b を最良推定（|f| 最小）に保つ。
+-    if fa.abs() < fb.abs() {
+-        core::mem::swap(&mut a, &mut b);
+-        core::mem::swap(&mut fa, &mut fb);
+-    }
+-    let mut c = a;
+-    let mut fc = fa;
+-    let mut d = a; // !mflag のときのみ参照される。初期 mflag=true。
+-    let mut mflag = true;
+-
+-    for _ in 0..max_iter {
+-        if fb == 0.0 || (b - a).abs() < tol {
+-            return Ok(b);
+-        }
+-        if !fa.is_finite() || !fb.is_finite() {
+-            return Err(SolverError::NumericalInstability);
+-        }
+-
+-        // 逆二次補間、不可なら割線。
+-        let mut s = if fa != fc && fb != fc {
+-            a * fb * fc / ((fa - fb) * (fa - fc))
+-                + b * fa * fc / ((fb - fa) * (fb - fc))
+-                + c * fa * fb / ((fc - fa) * (fc - fb))
+-        } else {
+-            b - fb * (b - a) / (fb - fa)
+-        };
+-
+-        // 補間が不適なら二分法へ切替。
+-        let lo = (3.0 * a + b) / 4.0;
+-        let s_between_lo_and_b = (s - lo) * (s - b) < 0.0;
+-        let reject = !s_between_lo_and_b
+-            || (mflag && (s - b).abs() >= (b - c).abs() / 2.0)
+-            || (!mflag && (s - b).abs() >= (c - d).abs() / 2.0)
+-            || (mflag && (b - c).abs() < tol)
+-            || (!mflag && (c - d).abs() < tol);
+-        if reject {
+-            s = (a + b) / 2.0;
+-            mflag = true;
+-        } else {
+-            mflag = false;
+-        }
+-
+-        let fs = f(s);
+-        d = c;
+-        c = b;
+-        fc = fb;
+-        if fa * fs < 0.0 {
+-            b = s;
+-            fb = fs;
+-        } else {
+-            a = s;
+-            fa = fs;
+-        }
+-        if fa.abs() < fb.abs() {
+-            core::mem::swap(&mut a, &mut b);
+-            core::mem::swap(&mut fa, &mut fb);
+-        }
+-    }
+-    Err(SolverError::DidNotConverge)
++    Ok(0.0) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// 黄金分割による一次元最小化（区間 `[a, b]` で単峰を仮定）。最小点の推定値を返す。
+ ///
+ /// 線形収束のため精密化には不向き（numerical-policy §A5: 最大食は `dm/dt = 0` 求根を正式手法とし、
+ /// 本関数は粗いブラケット取りに使う）。
+ pub fn minimize_golden<F>(mut f: F, mut a: f64, mut b: f64, tol: f64, max_iter: usize) -> f64
+ where

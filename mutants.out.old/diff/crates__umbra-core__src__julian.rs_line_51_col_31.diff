@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/julian.rs
++++ replace + with - in JulianDate2::add_days
+@@ -43,17 +43,17 @@
+     pub fn jd(self) -> f64 {
+         self.part1 + self.part2
+     }
+ 
+     /// 日数オフセットを加算（光行時間など）。`part2` へ足して再正規化する。
+     pub fn add_days(self, days: f64) -> Self {
+         JulianDate2 {
+             part1: self.part1,
+-            part2: self.part2 + days,
++            part2: self.part2 - /* ~ changed by cargo-mutants ~ */ days,
+         }
+         .normalized()
+     }
+ 
+     /// J2000.0 からの経過ユリウス世紀。エポック減算を整数部側で厳密に行う。
+     pub fn julian_centuries_since_j2000(self) -> f64 {
+         ((self.part1 - J2000_JD) + self.part2) / JULIAN_CENTURY_DAYS
+     }

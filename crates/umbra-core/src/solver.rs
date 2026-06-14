@@ -171,4 +171,42 @@ mod tests {
         let m = minimize_golden(|x| x.cos(), 0.0, 2.0 * PI, 1e-10, 200);
         assert!((m - PI).abs() < 1e-5, "m = {m}");
     }
+
+    #[test]
+    fn golden_minimizes_asymmetric_min_off_center() {
+        // 最小が中央でない非対称関数。bracket 計算 (c=b−gr·w, d=a+gr·w) が壊れると外れる。
+        // f = (x−0.3)² + 0.1x → 解析最小 x = 0.25。
+        let m = minimize_golden(|x| (x - 0.3).powi(2) + 0.1 * x, 0.0, 5.0, 1e-10, 500);
+        assert!((m - 0.25).abs() < 1e-4, "m = {m}");
+    }
+
+    #[test]
+    fn golden_result_not_worse_than_endpoints() {
+        let f = |x: f64| (x - 1.7).powi(2);
+        let m = minimize_golden(f, 0.0, 5.0, 1e-9, 500);
+        assert!(f(m) <= f(0.0) && f(m) <= f(5.0));
+        assert!((m - 1.7).abs() < 1e-4, "m = {m}");
+    }
+
+    #[test]
+    fn brent_diverse_roots_converge_accurately() {
+        // 多様な関数・区間で、根が tol 精度で求まり収束する（未収束なら unwrap が panic）。
+        type Case = (fn(f64) -> f64, f64, f64, f64);
+        let cases: &[Case] = &[
+            (|x| x * x * x - x - 2.0, 1.0, 2.0, 1.521_379_706_804_567_6),
+            (
+                |x| x.exp() - 3.0,
+                0.0,
+                2.0,
+                core::f64::consts::LN_2 + 0.405_465_108_108_164_4,
+            ),
+            (|x| x - (-x).exp(), 0.0, 1.0, 0.567_143_290_409_783_8),
+            (|x| (x - 4.2) * (x + 1.0), 0.0, 10.0, 4.2),
+        ];
+        for &(f, a, b, expected) in cases {
+            let r = brent_root(f, a, b, 1e-12, 100).unwrap();
+            assert!((r - expected).abs() < 1e-9, "root {r} vs {expected}");
+            assert!(f(r).abs() < 1e-9, "f(root) = {}", f(r));
+        }
+    }
 }

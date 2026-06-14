@@ -1,0 +1,55 @@
+--- crates/umbra-core/src/calendar.rs
++++ replace jd2_to_gregorian -> (i32, u8, u8, u8, u8, f64) with (1, 1, 1, 0, 1, -1.0)
+@@ -54,51 +54,17 @@
+ 
+ /// [`JulianDate2`] → グレゴリオ暦 `(year, month, day, hour, minute, second)`。
+ ///
+ /// Meeus Ch.7（Gregorian 分岐を常用）。
+ // 出力は有界な暦フィールド（年は i32、月日時分は小範囲）。値域は floor 演算で保証されるため、
+ // f64→整数の切り詰め/符号落ちは意図的であり安全。
+ #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+ pub fn jd2_to_gregorian(jd2: JulianDate2) -> (i32, u8, u8, u8, u8, f64) {
+-    let jd = jd2.jd() + 0.5;
+-    let z = jd.floor();
+-    let f = jd - z;
+-
+-    // プロレプティック・グレゴリオ: z の大小に関わらず Gregorian 補正を適用。
+-    let alpha = ((z - 1_867_216.25) / 36_524.25).floor();
+-    let a = z + 1.0 + alpha - (alpha / 4.0).floor();
+-    let b = a + 1524.0;
+-    let c = ((b - 122.1) / 365.25).floor();
+-    let d = (365.25 * c).floor();
+-    let e = ((b - d) / 30.6001).floor();
+-
+-    let day_with_frac = b - d - (30.6001 * e).floor() + f;
+-    let day = day_with_frac.floor();
+-    let month_f = if e < 14.0 { e - 1.0 } else { e - 13.0 };
+-    let year_f = if month_f > 2.0 {
+-        c - 4716.0
+-    } else {
+-        c - 4715.0
+-    };
+-
+-    let mut rem_seconds = (day_with_frac - day) * 86400.0;
+-    let hour = (rem_seconds / 3600.0).floor();
+-    rem_seconds -= hour * 3600.0;
+-    let minute = (rem_seconds / 60.0).floor();
+-    let second = rem_seconds - minute * 60.0;
+-
+-    (
+-        year_f as i32,
+-        month_f as u8,
+-        day as u8,
+-        hour as u8,
+-        minute as u8,
+-        second,
+-    )
++    (1, 1, 1, 0, 1, -1.0) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn j2000_noon() {

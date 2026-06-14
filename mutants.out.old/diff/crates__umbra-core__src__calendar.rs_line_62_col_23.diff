@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/calendar.rs
++++ replace + with - in jd2_to_gregorian
+@@ -54,17 +54,17 @@
+ 
+ /// [`JulianDate2`] → グレゴリオ暦 `(year, month, day, hour, minute, second)`。
+ ///
+ /// Meeus Ch.7（Gregorian 分岐を常用）。
+ // 出力は有界な暦フィールド（年は i32、月日時分は小範囲）。値域は floor 演算で保証されるため、
+ // f64→整数の切り詰め/符号落ちは意図的であり安全。
+ #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+ pub fn jd2_to_gregorian(jd2: JulianDate2) -> (i32, u8, u8, u8, u8, f64) {
+-    let jd = jd2.jd() + 0.5;
++    let jd = jd2.jd() - /* ~ changed by cargo-mutants ~ */ 0.5;
+     let z = jd.floor();
+     let f = jd - z;
+ 
+     // プロレプティック・グレゴリオ: z の大小に関わらず Gregorian 補正を適用。
+     let alpha = ((z - 1_867_216.25) / 36_524.25).floor();
+     let a = z + 1.0 + alpha - (alpha / 4.0).floor();
+     let b = a + 1524.0;
+     let c = ((b - 122.1) / 365.25).floor();

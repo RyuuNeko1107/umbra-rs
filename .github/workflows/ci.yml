@@ -1,0 +1,41 @@
+name: CI
+
+# 実験・検証は Docker 内で実行する（docs 方針）。fmt / clippy / test はローカルと同一の
+# docker compose サービス上で回し、cargo-deny でライセンス/サプライチェーンを検査する。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: fmt / clippy / test (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build verification image
+        run: docker compose -p umbra-rs build rust
+
+      - name: rustfmt
+        run: docker compose -p umbra-rs run --rm rust cargo fmt --all --check
+
+      - name: clippy
+        run: docker compose -p umbra-rs run --rm rust cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: docker compose -p umbra-rs run --rm rust cargo test --workspace
+
+  deny:
+    name: cargo-deny (licenses / advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

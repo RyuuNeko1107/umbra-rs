@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace == with != in brent_root
+@@ -20,17 +20,17 @@
+     tol: f64,
+     max_iter: usize,
+ ) -> Result<f64, SolverError>
+ where
+     F: FnMut(f64) -> f64,
+ {
+     let mut fa = f(a);
+     let mut fb = f(b);
+-    if fa == 0.0 {
++    if fa != /* ~ changed by cargo-mutants ~ */ 0.0 {
+         return Ok(a);
+     }
+     if fb == 0.0 {
+         return Ok(b);
+     }
+     if fa * fb > 0.0 {
+         return Err(SolverError::RootNotBracketed);
+     }

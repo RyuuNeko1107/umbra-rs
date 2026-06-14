@@ -1,0 +1,25 @@
+--- crates/umbra-core/src/vector.rs
++++ replace Vector3::cross -> Vector3 with Default::default()
+@@ -25,21 +25,17 @@
+ 
+     /// 内積。
+     pub fn dot(self, other: Vector3) -> f64 {
+         self.x * other.x + self.y * other.y + self.z * other.z
+     }
+ 
+     /// 外積（右手系）。
+     pub fn cross(self, other: Vector3) -> Vector3 {
+-        Vector3 {
+-            x: self.y * other.z - self.z * other.y,
+-            y: self.z * other.x - self.x * other.z,
+-            z: self.x * other.y - self.y * other.x,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// ノルム（ユークリッド長）。
+     pub fn norm(self) -> f64 {
+         self.dot(self).sqrt()
+     }
+ 
+     /// スカラ倍。

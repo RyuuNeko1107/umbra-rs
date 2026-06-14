@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace < with > in brent_root
+@@ -75,17 +75,17 @@
+         } else {
+             mflag = false;
+         }
+ 
+         let fs = f(s);
+         d = c;
+         c = b;
+         fc = fb;
+-        if fa * fs < 0.0 {
++        if fa * fs > /* ~ changed by cargo-mutants ~ */ 0.0 {
+             b = s;
+             fb = fs;
+         } else {
+             a = s;
+             fa = fs;
+         }
+         if fa.abs() < fb.abs() {
+             core::mem::swap(&mut a, &mut b);

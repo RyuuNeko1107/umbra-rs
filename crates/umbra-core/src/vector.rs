@@ -71,28 +71,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dot_and_norm() {
-        let a = Vector3::new(3.0, 4.0, 0.0);
-        assert_eq!(a.norm(), 5.0);
-        assert_eq!(a.dot(Vector3::new(1.0, 0.0, 0.0)), 3.0);
+    fn dot_uses_every_component() {
+        // 全成分が非ゼロかつ非対称: 各項の符号・積の取り違えを区別できる。
+        let a = Vector3::new(1.0, 2.0, 3.0);
+        let b = Vector3::new(4.0, 5.0, 6.0);
+        assert_eq!(a.dot(b), 4.0 + 10.0 + 18.0); // 32
+    }
+
+    #[test]
+    fn norm_uses_every_component() {
+        // (1,2,2) の各成分が二乗和に寄与（z=0 にしない）。
+        assert_eq!(Vector3::new(1.0, 2.0, 2.0).norm(), 3.0);
+    }
+
+    #[test]
+    fn cross_all_nonzero_and_orthogonal() {
+        let a = Vector3::new(1.0, 2.0, 3.0);
+        let b = Vector3::new(4.0, 5.0, 6.0);
+        // (2*6-3*5, 3*4-1*6, 1*5-2*4) = (-3, 6, -3)
+        assert_eq!(a.cross(b), Vector3::new(-3.0, 6.0, -3.0));
+        assert_eq!(b.cross(a), Vector3::new(3.0, -6.0, 3.0)); // 反交換
+        assert_eq!(a.cross(b).dot(a), 0.0); // 直交
+        assert_eq!(a.cross(b).dot(b), 0.0);
     }
 
     #[test]
     fn cross_is_right_handed() {
         let x = Vector3::new(1.0, 0.0, 0.0);
         let y = Vector3::new(0.0, 1.0, 0.0);
-        // x × y = z
-        assert_eq!(x.cross(y), Vector3::new(0.0, 0.0, 1.0));
-        // y × x = -z（反交換性）
-        assert_eq!(y.cross(x), Vector3::new(0.0, 0.0, -1.0));
+        assert_eq!(x.cross(y), Vector3::new(0.0, 0.0, 1.0)); // x × y = z
     }
 
     #[test]
-    fn add_sub_scale() {
+    fn add_sub() {
         let a = Vector3::new(1.0, 2.0, 3.0);
         let b = Vector3::new(4.0, 5.0, 6.0);
         assert_eq!(a + b, Vector3::new(5.0, 7.0, 9.0));
         assert_eq!(b - a, Vector3::new(3.0, 3.0, 3.0));
-        assert_eq!(a.scale(2.0), Vector3::new(2.0, 4.0, 6.0));
+    }
+
+    #[test]
+    fn scale_factor_differs_from_every_component() {
+        // 係数 10 はどの成分とも一致しないので * と + を区別できる。
+        let a = Vector3::new(1.0, 2.0, 3.0);
+        assert_eq!(a.scale(10.0), Vector3::new(10.0, 20.0, 30.0));
     }
 }

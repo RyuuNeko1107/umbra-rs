@@ -2,6 +2,8 @@
 
 **An experimental, pure-Rust solar eclipse prediction engine — where the design, implementation, and verification are all carried out by an AI agent.**
 
+[![CI](https://github.com/RyuuNeko1107/umbra-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/RyuuNeko1107/umbra-rs/actions/workflows/ci.yml)
+
 *(日本語: [README.ja.md](README.ja.md))*
 
 > ⚠️ **Experimental / work in progress.** This is a research experiment in AI-driven software engineering. It is **not** ready for use and must **not** be used for research, surveying, navigation, or any safety-critical purpose.

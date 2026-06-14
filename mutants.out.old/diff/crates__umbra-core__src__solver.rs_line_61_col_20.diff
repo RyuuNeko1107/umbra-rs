@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace * with + in brent_root
+@@ -53,17 +53,17 @@
+         }
+ 
+         // 逆二次補間、不可なら割線。
+         let mut s = if fa != fc && fb != fc {
+             a * fb * fc / ((fa - fb) * (fa - fc))
+                 + b * fa * fc / ((fb - fa) * (fb - fc))
+                 + c * fa * fb / ((fc - fa) * (fc - fb))
+         } else {
+-            b - fb * (b - a) / (fb - fa)
++            b - fb + /* ~ changed by cargo-mutants ~ */ (b - a) / (fb - fa)
+         };
+ 
+         // 補間が不適なら二分法へ切替。
+         let lo = (3.0 * a + b) / 4.0;
+         let s_between_lo_and_b = (s - lo) * (s - b) < 0.0;
+         let reject = !s_between_lo_and_b
+             || (mflag && (s - b).abs() >= (b - c).abs() / 2.0)
+             || (!mflag && (s - b).abs() >= (c - d).abs() / 2.0)

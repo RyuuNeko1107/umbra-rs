@@ -104,4 +104,26 @@ mod tests {
         let t = JulianDate2::from_jd(2_460_000.25);
         assert!((t.jd() - 2_460_000.25).abs() < 1e-9);
     }
+
+    #[test]
+    fn millennia_at_j2000_is_zero() {
+        assert_eq!(
+            JulianDate2::new(J2000_JD, 0.0).julian_millennia_since_j2000(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn one_millennium_after_j2000() {
+        let t = JulianDate2::new(J2000_JD + JULIAN_MILLENNIUM_DAYS, 0.0);
+        assert!((t.julian_millennia_since_j2000() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn millennia_is_one_tenth_of_centuries() {
+        let t = JulianDate2::new(J2000_JD + 12_345.0, 0.25);
+        let m = t.julian_millennia_since_j2000();
+        let c = t.julian_centuries_since_j2000();
+        assert!(m != 0.0 && (m * 10.0 - c).abs() < 1e-15);
+    }
 }

@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/matrix.rs
++++ replace + with - in Matrix3::mul_mat
+@@ -59,17 +59,17 @@
+ 
+     /// 行列 × 行列（self を後段に適用: `self * other`）。
+     pub fn mul_mat(&self, other: &Matrix3) -> Matrix3 {
+         let mut out = [[0.0; 3]; 3];
+         for (i, row) in out.iter_mut().enumerate() {
+             for (j, cell) in row.iter_mut().enumerate() {
+                 *cell = self.rows[i][0] * other.rows[0][j]
+                     + self.rows[i][1] * other.rows[1][j]
+-                    + self.rows[i][2] * other.rows[2][j];
++                    - /* ~ changed by cargo-mutants ~ */ self.rows[i][2] * other.rows[2][j];
+             }
+         }
+         Matrix3::new(out)
+     }
+ 
+     /// 転置（回転行列では逆回転に等しい）。
+     pub fn transpose(&self) -> Matrix3 {
+         let r = &self.rows;

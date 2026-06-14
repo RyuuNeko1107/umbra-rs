@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/ellipsoid.rs
++++ replace geodetic_to_geocentric_latitude -> f64 with 1.0
+@@ -58,17 +58,17 @@
+     GeocentricObserver {
+         rho_sin_phi_prime: b_over_a * u.sin() + h_over_a * geodetic_lat.sin(),
+         rho_cos_phi_prime: u.cos() + h_over_a * geodetic_lat.cos(),
+     }
+ }
+ 
+ /// 測地緯度 → 地心緯度（rad）。`tan φ′ = (1 − e²) tan φ`。
+ pub fn geodetic_to_geocentric_latitude(ellipsoid: &Ellipsoid, geodetic_lat: f64) -> f64 {
+-    ((1.0 - ellipsoid.e2()) * geodetic_lat.tan()).atan()
++    1.0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// 測地座標（緯度 φ・東経 λ・楕円体高 h）→ 地球固定直交座標 ITRS/ECEF（km）。
+ ///
+ /// 標準式: N = a / √(1 − e² sin²φ)、X=(N+h)cosφcosλ、Y=(N+h)cosφsinλ、Z=(N(1−e²)+h)sinφ。
+ pub fn geodetic_to_ecef_km(
+     ellipsoid: &Ellipsoid,
+     geodetic_lat: f64,

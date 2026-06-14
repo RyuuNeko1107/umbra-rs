@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace > with >= in brent_root
+@@ -26,17 +26,17 @@
+     let mut fa = f(a);
+     let mut fb = f(b);
+     if fa == 0.0 {
+         return Ok(a);
+     }
+     if fb == 0.0 {
+         return Ok(b);
+     }
+-    if fa * fb > 0.0 {
++    if fa * fb >= /* ~ changed by cargo-mutants ~ */ 0.0 {
+         return Err(SolverError::RootNotBracketed);
+     }
+     // b を最良推定（|f| 最小）に保つ。
+     if fa.abs() < fb.abs() {
+         core::mem::swap(&mut a, &mut b);
+         core::mem::swap(&mut fa, &mut fb);
+     }
+     let mut c = a;

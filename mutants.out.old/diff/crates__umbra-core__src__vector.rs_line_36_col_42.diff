@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/vector.rs
++++ replace * with + in Vector3::cross
+@@ -28,17 +28,17 @@
+         self.x * other.x + self.y * other.y + self.z * other.z
+     }
+ 
+     /// 外積（右手系）。
+     pub fn cross(self, other: Vector3) -> Vector3 {
+         Vector3 {
+             x: self.y * other.z - self.z * other.y,
+             y: self.z * other.x - self.x * other.z,
+-            z: self.x * other.y - self.y * other.x,
++            z: self.x * other.y - self.y + /* ~ changed by cargo-mutants ~ */ other.x,
+         }
+     }
+ 
+     /// ノルム（ユークリッド長）。
+     pub fn norm(self) -> f64 {
+         self.dot(self).sqrt()
+     }
+ 

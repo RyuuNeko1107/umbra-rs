@@ -1,0 +1,141 @@
+
+*** crates/umbra-core/src/ellipsoid.rs:85:22: replace / with * in geodetic_to_ecef_km
+
+*** mutation diff:
+--- crates/umbra-core/src/ellipsoid.rs
++++ replace / with * in geodetic_to_ecef_km
+@@ -77,17 +77,17 @@
+ ) -> Vector3 {
+     let e2 = ellipsoid.e2();
+     let sin_lat = geodetic_lat.sin();
+     let cos_lat = geodetic_lat.cos();
+     let n = ellipsoid.a_m / (1.0 - e2 * sin_lat * sin_lat).sqrt();
+     let x_m = (n + height_m) * cos_lat * east_longitude.cos();
+     let y_m = (n + height_m) * cos_lat * east_longitude.sin();
+     let z_m = (n * (1.0 - e2) + height_m) * sin_lat;
+-    Vector3::new(x_m / 1000.0, y_m / 1000.0, z_m / 1000.0)
++    Vector3::new(x_m * /* ~ changed by cargo-mutants ~ */ 1000.0, y_m / 1000.0, z_m / 1000.0)
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use core::f64::consts::PI;
+ 
+     const WGS84: Ellipsoid = Ellipsoid::WGS84;
+
+
+*** /usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=umbra-core@0.0.0
+[1m[92m       Fresh[0m unicode-ident v1.0.24
+[1m[92m       Fresh[0m proc-macro2 v1.0.106
+[1m[92m       Fresh[0m quote v1.0.45
+[1m[92m       Fresh[0m syn v2.0.117
+[1m[92m       Fresh[0m thiserror-impl v2.0.18
+[1m[92m       Fresh[0m thiserror v2.0.18
+[1m[92m       Dirty[0m umbra-core v0.0.0 (/tmp/cargo-mutants-work-mG65dY.tmp/crates/umbra-core): the file `crates/umbra-core/src/ellipsoid.rs` has changed (1781452388.397111510s, 380022605ns after last build at 1781452388.017088905s)
+[1m[92m   Compiling[0m umbra-core v0.0.0 (/tmp/cargo-mutants-work-mG65dY.tmp/crates/umbra-core)
+[1m[92m     Running[0m `/usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name umbra_core --edition=2021 crates/umbra-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --forbid=unsafe_code --warn=missing_debug_implementations '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5dee908a95c6f918 -C extra-filename=-023fb58edce5bb87 --out-dir /tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps/libthiserror-85db076080d1230b.rlib`
+[1m[92m     Running[0m `/usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name umbra_core --edition=2021 crates/umbra-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --forbid=unsafe_code --warn=missing_debug_implementations '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=a80e8303726d4ac2 -C extra-filename=-2d760b0efc748f93 --out-dir /tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps/libthiserror-85db076080d1230b.rmeta`
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+[1m[92m  Executable[0m `/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps/umbra_core-023fb58edce5bb87`
+
+*** result: Success
+
+*** /usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=umbra-core@0.0.0
+[1m[92m       Fresh[0m unicode-ident v1.0.24
+[1m[92m       Fresh[0m proc-macro2 v1.0.106
+[1m[92m       Fresh[0m quote v1.0.45
+[1m[92m       Fresh[0m syn v2.0.117
+[1m[92m       Fresh[0m thiserror-impl v2.0.18
+[1m[92m       Fresh[0m thiserror v2.0.18
+[1m[92m       Fresh[0m umbra-core v0.0.0 (/tmp/cargo-mutants-work-mG65dY.tmp/crates/umbra-core)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+[1m[92m     Running[0m `/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps/umbra_core-023fb58edce5bb87`
+
+running 50 tests
+test angle::tests::degrees_radians_round_trip ... ok
+test angle::tests::signed_normalization_maps_into_half_open_interval ... ok
+test angle::tests::two_pi_normalization_is_non_negative ... ok
+test calendar::tests::j2000_noon ... ok
+test calendar::tests::meeus_example_1987 ... ok
+test calendar::tests::midnight_is_half_less ... ok
+test calendar::tests::rejects_invalid_fields ... ok
+test calendar::tests::round_trips_modern_and_future ... ok
+test constants::tests::julian_century_and_millennium_are_consistent ... ok
+test constants::tests::light_time_one_au_is_about_499_seconds ... ok
+test constants::tests::wgs84_flattening_matches_inverse_298 ... ok
+test ellipsoid::tests::ecef_equator_and_pole ... FAILED
+test ellipsoid::tests::ecef_height_moves_along_normal_by_exactly_h ... FAILED
+test ellipsoid::tests::ecef_on_ellipsoid_surface_when_height_zero ... FAILED
+test ellipsoid::tests::ecef_recovers_longitude ... FAILED
+test ellipsoid::tests::geocentric_latitude_satisfies_defining_relation ... ok
+test ellipsoid::tests::observer_at_equator_and_pole ... ok
+test ellipsoid::tests::observer_height_term_is_additive_and_signed ... ok
+test ellipsoid::tests::observer_lies_on_meridian_ellipse_at_sea_level ... ok
+test ellipsoid::tests::observer_matches_meeus_palomar_example ... ok
+test ellipsoid::tests::semi_minor_and_e2 ... ok
+test julian::tests::add_days_normalizes_part2 ... ok
+test julian::tests::centuries_at_j2000_is_zero ... ok
+test julian::tests::from_jd_round_trips ... ok
+test julian::tests::half_day_offset_is_exact ... ok
+test julian::tests::millennia_at_j2000_is_zero ... ok
+test julian::tests::millennia_is_one_tenth_of_centuries ... ok
+test julian::tests::one_millennium_after_j2000 ... ok
+test julian::tests::tiny_offset_is_preserved_via_two_part ... ok
+test matrix::tests::composed_z_rotations_add_angles ... ok
+test matrix::tests::identity_is_neutral ... ok
+test matrix::tests::mul_vec_sums_every_term ... ok
+test matrix::tests::rotation_x_is_coordinate_rotation ... ok
+test matrix::tests::rotation_z_is_coordinate_rotation ... ok
+test matrix::tests::transpose_is_inverse_rotation ... ok
+test solver::tests::brent_diverse_roots_converge_accurately ... ok
+test solver::tests::brent_errors_when_not_bracketed ... ok
+test solver::tests::brent_finds_cos_root ... ok
+test solver::tests::brent_finds_sqrt2 ... ok
+test solver::tests::brent_hits_exact_endpoint_root ... ok
+test solver::tests::golden_minimizes_asymmetric_min_off_center ... ok
+test solver::tests::golden_minimizes_cos ... ok
+test solver::tests::golden_minimizes_parabola ... ok
+test solver::tests::golden_result_not_worse_than_endpoints ... ok
+test vector::tests::add_sub ... ok
+test vector::tests::cross_all_nonzero_and_orthogonal ... ok
+test vector::tests::cross_is_right_handed ... ok
+test vector::tests::dot_uses_every_component ... ok
+test vector::tests::norm_uses_every_component ... ok
+test vector::tests::scale_factor_differs_from_every_component ... ok
+
+failures:
+
+---- ellipsoid::tests::ecef_equator_and_pole stdout ----
+
+thread 'ellipsoid::tests::ecef_equator_and_pole' (62175) panicked at crates/umbra-core/src/ellipsoid.rs:213:9:
+assertion failed: (eq.x - 6378.137).abs() < 1e-3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- ellipsoid::tests::ecef_height_moves_along_normal_by_exactly_h stdout ----
+
+thread 'ellipsoid::tests::ecef_height_moves_along_normal_by_exactly_h' (62176) panicked at crates/umbra-core/src/ellipsoid.rs:178:9:
+dx = -611790.2945494652
+
+---- ellipsoid::tests::ecef_on_ellipsoid_surface_when_height_zero stdout ----
+
+thread 'ellipsoid::tests::ecef_on_ellipsoid_surface_when_height_zero' (62177) panicked at crates/umbra-core/src/ellipsoid.rs:160:9:
+rel = 375197059565.08466
+
+---- ellipsoid::tests::ecef_recovers_longitude stdout ----
+
+thread 'ellipsoid::tests::ecef_recovers_longitude' (62178) panicked at crates/umbra-core/src/ellipsoid.rs:167:9:
+assertion failed: (p.y.atan2(p.x) - lon).abs() < 1e-12
+
+
+failures:
+    ellipsoid::tests::ecef_equator_and_pole
+    ellipsoid::tests::ecef_height_moves_along_normal_by_exactly_h
+    ellipsoid::tests::ecef_on_ellipsoid_surface_when_height_zero
+    ellipsoid::tests::ecef_recovers_longitude
+
+test result: FAILED. 46 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+[1m[91merror[0m: test failed, to rerun pass `-p umbra-core --lib`
+
+*** result: Failure(101)

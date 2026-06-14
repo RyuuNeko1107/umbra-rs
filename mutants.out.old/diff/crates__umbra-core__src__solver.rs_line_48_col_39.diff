@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace < with == in brent_root
+@@ -40,17 +40,17 @@
+         core::mem::swap(&mut fa, &mut fb);
+     }
+     let mut c = a;
+     let mut fc = fa;
+     let mut d = a; // !mflag のときのみ参照される。初期 mflag=true。
+     let mut mflag = true;
+ 
+     for _ in 0..max_iter {
+-        if fb == 0.0 || (b - a).abs() < tol {
++        if fb == 0.0 || (b - a).abs() == /* ~ changed by cargo-mutants ~ */ tol {
+             return Ok(b);
+         }
+         if !fa.is_finite() || !fb.is_finite() {
+             return Err(SolverError::NumericalInstability);
+         }
+ 
+         // 逆二次補間、不可なら割線。
+         let mut s = if fa != fc && fb != fc {

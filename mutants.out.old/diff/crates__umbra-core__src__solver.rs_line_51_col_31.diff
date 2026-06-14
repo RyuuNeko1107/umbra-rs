@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ delete ! in brent_root
+@@ -43,17 +43,17 @@
+     let mut fc = fa;
+     let mut d = a; // !mflag のときのみ参照される。初期 mflag=true。
+     let mut mflag = true;
+ 
+     for _ in 0..max_iter {
+         if fb == 0.0 || (b - a).abs() < tol {
+             return Ok(b);
+         }
+-        if !fa.is_finite() || !fb.is_finite() {
++        if !fa.is_finite() ||  /* ~ changed by cargo-mutants ~ */fb.is_finite() {
+             return Err(SolverError::NumericalInstability);
+         }
+ 
+         // 逆二次補間、不可なら割線。
+         let mut s = if fa != fc && fb != fc {
+             a * fb * fc / ((fa - fb) * (fa - fc))
+                 + b * fa * fc / ((fb - fa) * (fb - fc))
+                 + c * fa * fb / ((fc - fa) * (fc - fb))

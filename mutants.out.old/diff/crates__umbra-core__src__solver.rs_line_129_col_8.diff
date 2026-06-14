@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace + with - in minimize_golden
+@@ -121,17 +121,17 @@
+         } else {
+             a = c;
+             c = d;
+             fc = fd;
+             d = a + gr * (b - a);
+             fd = f(d);
+         }
+     }
+-    (a + b) / 2.0
++    (a - /* ~ changed by cargo-mutants ~ */ b) / 2.0
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use core::f64::consts::PI;
+ 
+     #[test]

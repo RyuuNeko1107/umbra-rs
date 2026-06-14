@@ -1,0 +1,29 @@
+name: Mutation
+
+# テスト有効性の退行ガード（tdd-workflow 工程7）。
+# solver.rs の Brent/golden 内部ヒューリスティクスは等価変異として
+# docs/reviews/mutation-umbra-core.md で許容済みのため除外し、
+# 他モジュールで生存変異ゼロ（テストがコードを実効的に検証していること）を要求する。
+# cargo-mutants のインストール＋多数の変異実行で重いため、毎 push では回さず週次＋手動。
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 1" # 毎週月曜 00:00 UTC
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutants:
+    name: cargo-mutants (umbra-core, excl. solver heuristics)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build verification image
+        run: docker compose -p umbra-rs build rust
+      - name: Mutation test (regression guard)
+        run: >-
+          docker compose -p umbra-rs run --rm rust
+          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --exclude '**/solver.rs'"

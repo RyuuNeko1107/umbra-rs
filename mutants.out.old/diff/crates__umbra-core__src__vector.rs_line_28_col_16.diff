@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/vector.rs
++++ replace * with + in Vector3::dot
+@@ -20,17 +20,17 @@
+ 
+     /// 構築。
+     pub const fn new(x: f64, y: f64, z: f64) -> Self {
+         Vector3 { x, y, z }
+     }
+ 
+     /// 内積。
+     pub fn dot(self, other: Vector3) -> f64 {
+-        self.x * other.x + self.y * other.y + self.z * other.z
++        self.x + /* ~ changed by cargo-mutants ~ */ other.x + self.y * other.y + self.z * other.z
+     }
+ 
+     /// 外積（右手系）。
+     pub fn cross(self, other: Vector3) -> Vector3 {
+         Vector3 {
+             x: self.y * other.z - self.z * other.y,
+             y: self.z * other.x - self.x * other.z,
+             z: self.x * other.y - self.y * other.x,

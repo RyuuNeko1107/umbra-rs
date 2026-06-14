@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace < with > in brent_root
+@@ -82,17 +82,17 @@
+         fc = fb;
+         if fa * fs < 0.0 {
+             b = s;
+             fb = fs;
+         } else {
+             a = s;
+             fa = fs;
+         }
+-        if fa.abs() < fb.abs() {
++        if fa.abs() > /* ~ changed by cargo-mutants ~ */ fb.abs() {
+             core::mem::swap(&mut a, &mut b);
+             core::mem::swap(&mut fa, &mut fb);
+         }
+     }
+     Err(SolverError::DidNotConverge)
+ }
+ 
+ /// 黄金分割による一次元最小化（区間 `[a, b]` で単峰を仮定）。最小点の推定値を返す。

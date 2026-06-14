@@ -1,0 +1,25 @@
+--- crates/umbra-core/src/julian.rs
++++ replace JulianDate2::from_jd -> Self with Default::default()
+@@ -18,21 +18,17 @@
+ impl JulianDate2 {
+     /// 2 要素から構築（正規化はしない）。
+     pub const fn new(part1: f64, part2: f64) -> Self {
+         JulianDate2 { part1, part2 }
+     }
+ 
+     /// 単一の JD から構築し正規化する。
+     pub fn from_jd(jd: f64) -> Self {
+-        JulianDate2 {
+-            part1: jd,
+-            part2: 0.0,
+-        }
+-        .normalized()
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// `part2` を `[-0.5, 0.5)` に寄せ、整数分を `part1` へ移す。
+     pub fn normalized(self) -> Self {
+         let extra = self.part2.round();
+         JulianDate2 {
+             part1: self.part1 + extra,
+             part2: self.part2 - extra,

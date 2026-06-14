@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/calendar.rs
++++ replace - with / in gregorian_to_jd2
+@@ -36,17 +36,17 @@
+ 
+     // 1〜2月は前年の13〜14月として扱う（Meeus 7）。
+     let (y, m) = if month <= 2 {
+         (year - 1, i32::from(month) + 12)
+     } else {
+         (year, i32::from(month))
+     };
+     let a = (f64::from(y) / 100.0).floor();
+-    let b = 2.0 - a + (a / 4.0).floor(); // 常に Gregorian 補正（プロレプティック）
++    let b = 2.0 / /* ~ changed by cargo-mutants ~ */ a + (a / 4.0).floor(); // 常に Gregorian 補正（プロレプティック）
+                                          // 0h（深夜）の JD。day は整数。
+     let jd0 = (365.25 * (f64::from(y) + 4716.0)).floor()
+         + (30.6001 * (f64::from(m) + 1.0)).floor()
+         + f64::from(day)
+         + b
+         - 1524.5;
+     let day_fraction = f64::from(hour) / 24.0 + f64::from(minute) / 1440.0 + second / 86400.0;
+     Ok(JulianDate2::new(jd0, day_fraction).normalized())

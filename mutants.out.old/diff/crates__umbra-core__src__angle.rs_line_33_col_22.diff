@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/angle.rs
++++ replace >= with < in Radians::normalized_signed
+@@ -25,17 +25,17 @@
+     /// 度へ変換。
+     pub fn to_degrees(self) -> Degrees {
+         Degrees(self.0 * 180.0 / PI)
+     }
+ 
+     /// `[-π, π)` へ正規化（循環量。conventions §2）。
+     pub fn normalized_signed(self) -> Self {
+         let x = self.0.rem_euclid(TWO_PI); // [0, 2π)
+-        Radians(if x >= PI { x - TWO_PI } else { x }) // [-π, π)
++        Radians(if x < /* ~ changed by cargo-mutants ~ */ PI { x - TWO_PI } else { x }) // [-π, π)
+     }
+ 
+     /// `[0, 2π)` へ正規化。
+     pub fn normalized_two_pi(self) -> Self {
+         Radians(self.0.rem_euclid(TWO_PI))
+     }
+ }
+ 

@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/julian.rs
++++ replace JulianDate2::julian_millennia_since_j2000 -> f64 with -1.0
+@@ -55,17 +55,17 @@
+ 
+     /// J2000.0 からの経過ユリウス世紀。エポック減算を整数部側で厳密に行う。
+     pub fn julian_centuries_since_j2000(self) -> f64 {
+         ((self.part1 - J2000_JD) + self.part2) / JULIAN_CENTURY_DAYS
+     }
+ 
+     /// J2000.0 からの経過ユリウス千年（VSOP87 の引数 T）。
+     pub fn julian_millennia_since_j2000(self) -> f64 {
+-        ((self.part1 - J2000_JD) + self.part2) / JULIAN_MILLENNIUM_DAYS
++        -1.0 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]

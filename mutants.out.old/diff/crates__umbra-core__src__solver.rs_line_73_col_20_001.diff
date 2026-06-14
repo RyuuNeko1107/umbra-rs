@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/solver.rs
++++ replace + with * in brent_root
+@@ -65,17 +65,17 @@
+         let lo = (3.0 * a + b) / 4.0;
+         let s_between_lo_and_b = (s - lo) * (s - b) < 0.0;
+         let reject = !s_between_lo_and_b
+             || (mflag && (s - b).abs() >= (b - c).abs() / 2.0)
+             || (!mflag && (s - b).abs() >= (c - d).abs() / 2.0)
+             || (mflag && (b - c).abs() < tol)
+             || (!mflag && (c - d).abs() < tol);
+         if reject {
+-            s = (a + b) / 2.0;
++            s = (a * /* ~ changed by cargo-mutants ~ */ b) / 2.0;
+             mflag = true;
+         } else {
+             mflag = false;
+         }
+ 
+         let fs = f(s);
+         d = c;
+         c = b;

@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/ellipsoid.rs
++++ replace * with / in Ellipsoid::b_m
+@@ -19,17 +19,17 @@
+     /// WGS84（conventions §4.1）。
+     pub const WGS84: Ellipsoid = Ellipsoid {
+         a_m: EARTH_EQUATORIAL_RADIUS_M,
+         f: WGS84_FLATTENING,
+     };
+ 
+     /// 短半径 b = a(1 − f) \[m\]。
+     pub fn b_m(&self) -> f64 {
+-        self.a_m * (1.0 - self.f)
++        self.a_m / /* ~ changed by cargo-mutants ~ */ (1.0 - self.f)
+     }
+ 
+     /// 第一離心率の二乗 e² = f(2 − f)。
+     pub fn e2(&self) -> f64 {
+         self.f * (2.0 - self.f)
+     }
+ }
+ 

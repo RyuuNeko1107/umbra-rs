@@ -2,6 +2,10 @@
 /target
 **/target
 
+# cargo-mutants 出力（ミューテーション検証, 工程7）
+/mutants.out
+**/mutants.out
+
 # 私的な設計原本（ずんだー等の内部用途を含むため非公開）
 *.docx
 

@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/angle.rs
++++ replace * with +
+@@ -1,17 +1,17 @@
+ //! 角度型（`docs/conventions.md` §2）。
+ //!
+ //! 内部表現はラジアン、公開入出力では度も提供する。正規化は用途別に分け、混在させない。
+ //! - [`Radians::normalized_signed`] … `[-π, π)`（経度・時角など循環量）
+ //! - [`Radians::normalized_two_pi`] … `[0, 2π)`（赤経・恒星時など）
+ 
+ use core::f64::consts::PI;
+ 
+-const TWO_PI: f64 = 2.0 * PI;
++const TWO_PI: f64 = 2.0 + /* ~ changed by cargo-mutants ~ */ PI;
+ 
+ /// ラジアン角。
+ #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+ pub struct Radians(pub f64);
+ 
+ /// 度角。
+ #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+ pub struct Degrees(pub f64);

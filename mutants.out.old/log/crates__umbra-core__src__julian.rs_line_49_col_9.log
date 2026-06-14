@@ -1,0 +1,78 @@
+
+*** crates/umbra-core/src/julian.rs:49:9: replace JulianDate2::add_days -> Self with Default::default()
+
+*** mutation diff:
+--- crates/umbra-core/src/julian.rs
++++ replace JulianDate2::add_days -> Self with Default::default()
+@@ -41,21 +41,17 @@
+ 
+     /// 合計 JD（表示・粗い比較用。精度クリティカルな差分には使わない）。
+     pub fn jd(self) -> f64 {
+         self.part1 + self.part2
+     }
+ 
+     /// 日数オフセットを加算（光行時間など）。`part2` へ足して再正規化する。
+     pub fn add_days(self, days: f64) -> Self {
+-        JulianDate2 {
+-            part1: self.part1,
+-            part2: self.part2 + days,
+-        }
+-        .normalized()
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// J2000.0 からの経過ユリウス世紀。エポック減算を整数部側で厳密に行う。
+     pub fn julian_centuries_since_j2000(self) -> f64 {
+         ((self.part1 - J2000_JD) + self.part2) / JULIAN_CENTURY_DAYS
+     }
+ 
+     /// J2000.0 からの経過ユリウス千年（VSOP87 の引数 T）。
+
+
+*** /usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=umbra-core@0.0.0
+[1m[92m       Fresh[0m unicode-ident v1.0.24
+[1m[92m       Fresh[0m proc-macro2 v1.0.106
+[1m[92m       Fresh[0m quote v1.0.45
+[1m[92m       Fresh[0m syn v2.0.117
+[1m[92m       Fresh[0m thiserror-impl v2.0.18
+[1m[92m       Fresh[0m thiserror v2.0.18
+[1m[92m       Dirty[0m umbra-core v0.0.0 (/tmp/cargo-mutants-work-mG65dY.tmp/crates/umbra-core): the file `crates/umbra-core/src/julian.rs` has changed (1781452394.377466705s, 376022175ns after last build at 1781452394.001444530s)
+[1m[92m   Compiling[0m umbra-core v0.0.0 (/tmp/cargo-mutants-work-mG65dY.tmp/crates/umbra-core)
+[1m[92m     Running[0m `/usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name umbra_core --edition=2021 crates/umbra-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --forbid=unsafe_code --warn=missing_debug_implementations '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5dee908a95c6f918 -C extra-filename=-023fb58edce5bb87 --out-dir /tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps/libthiserror-85db076080d1230b.rlib`
+[1m[92m     Running[0m `/usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name umbra_core --edition=2021 crates/umbra-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --forbid=unsafe_code --warn=missing_debug_implementations '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=a80e8303726d4ac2 -C extra-filename=-2d760b0efc748f93 --out-dir /tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps/libthiserror-85db076080d1230b.rmeta`
+[1m[91merror[E0277][0m[1m: the trait bound `JulianDate2: Default` is not satisfied[0m
+  [1m[94m--> [0mcrates/umbra-core/src/julian.rs:49:9
+   [1m[94m|[0m
+[1m[94m49[0m [1m[94m|[0m         Default::default() /* ~ changed by cargo-mutants ~ */
+   [1m[94m|[0m         [1m[91m^^^^^^^^^^^^^^^^^^[0m [1m[91mthe trait `Default` is not implemented for `JulianDate2`[0m
+   [1m[94m|[0m
+[1m[96mhelp[0m: consider annotating `JulianDate2` with `#[derive(Default)]`
+   [1m[94m|[0m
+[1m[94m11[0m [92m+ #[derive(Default)][0m
+[1m[94m12[0m [1m[94m|[0m pub struct JulianDate2 {
+   [1m[94m|[0m
+
+[1mFor more information about this error, try `rustc --explain E0277`.[0m
+[1m[91merror[0m: could not compile `umbra-core` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name umbra_core --edition=2021 crates/umbra-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --forbid=unsafe_code --warn=missing_debug_implementations '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=a80e8303726d4ac2 -C extra-filename=-2d760b0efc748f93 --out-dir /tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps/libthiserror-85db076080d1230b.rmeta` (exit status: 1)
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1m[91merror[E0277][0m[1m: the trait bound `julian::JulianDate2: Default` is not satisfied[0m
+  [1m[94m--> [0mcrates/umbra-core/src/julian.rs:49:9
+   [1m[94m|[0m
+[1m[94m49[0m [1m[94m|[0m         Default::default() /* ~ changed by cargo-mutants ~ */
+   [1m[94m|[0m         [1m[91m^^^^^^^^^^^^^^^^^^[0m [1m[91mthe trait `Default` is not implemented for `julian::JulianDate2`[0m
+   [1m[94m|[0m
+[1m[96mhelp[0m: consider annotating `julian::JulianDate2` with `#[derive(Default)]`
+   [1m[94m|[0m
+[1m[94m11[0m [92m+ #[derive(Default)][0m
+[1m[94m12[0m [1m[94m|[0m pub struct JulianDate2 {
+   [1m[94m|[0m
+
+[1m[91merror[0m: could not compile `umbra-core` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/usr/local/rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name umbra_core --edition=2021 crates/umbra-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --forbid=unsafe_code --warn=missing_debug_implementations '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5dee908a95c6f918 -C extra-filename=-023fb58edce5bb87 --out-dir /tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps --extern thiserror=/tmp/cargo-mutants-work-mG65dY.tmp/target/debug/deps/libthiserror-85db076080d1230b.rlib` (exit status: 1)
+
+*** result: Failure(101)

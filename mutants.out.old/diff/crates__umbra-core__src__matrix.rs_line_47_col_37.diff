@@ -1,0 +1,21 @@
+--- crates/umbra-core/src/matrix.rs
++++ delete - in Matrix3::rotation_z
+@@ -39,17 +39,17 @@
+     pub fn rotation_y(theta: f64) -> Matrix3 {
+         let (s, c) = theta.sin_cos();
+         Matrix3::new([[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]])
+     }
+ 
+     /// z 軸まわりの座標回転 R3(θ)。
+     pub fn rotation_z(theta: f64) -> Matrix3 {
+         let (s, c) = theta.sin_cos();
+-        Matrix3::new([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])
++        Matrix3::new([[c, s, 0.0], [ /* ~ changed by cargo-mutants ~ */s, c, 0.0], [0.0, 0.0, 1.0]])
+     }
+ 
+     /// 行列 × ベクトル。
+     pub fn mul_vec(&self, v: Vector3) -> Vector3 {
+         let r = &self.rows;
+         Vector3::new(
+             r[0][0] * v.x + r[0][1] * v.y + r[0][2] * v.z,
+             r[1][0] * v.x + r[1][1] * v.y + r[1][2] * v.z,

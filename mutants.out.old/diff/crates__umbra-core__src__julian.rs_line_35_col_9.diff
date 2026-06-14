@@ -1,0 +1,25 @@
+--- crates/umbra-core/src/julian.rs
++++ replace JulianDate2::normalized -> Self with Default::default()
+@@ -27,21 +27,17 @@
+             part1: jd,
+             part2: 0.0,
+         }
+         .normalized()
+     }
+ 
+     /// `part2` を `[-0.5, 0.5)` に寄せ、整数分を `part1` へ移す。
+     pub fn normalized(self) -> Self {
+-        let extra = self.part2.round();
+-        JulianDate2 {
+-            part1: self.part1 + extra,
+-            part2: self.part2 - extra,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// 合計 JD（表示・粗い比較用。精度クリティカルな差分には使わない）。
+     pub fn jd(self) -> f64 {
+         self.part1 + self.part2
+     }
+ 
+     /// 日数オフセットを加算（光行時間など）。`part2` へ足して再正規化する。

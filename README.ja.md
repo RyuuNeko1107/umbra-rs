@@ -2,6 +2,8 @@
 
 **設計・実装・検証のすべてを AI エージェントが行う、実験的な純 Rust 製 日食予報エンジン。**
 
+[![CI](https://github.com/RyuuNeko1107/umbra-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/RyuuNeko1107/umbra-rs/actions/workflows/ci.yml)
+
 *(English: [README.md](README.md))*
 
 > ⚠️ **実験的・開発中。** これは「AI 駆動のソフトウェア開発」の研究実験です。**実用段階ではなく**、研究・測地・航法・その他の安全上重要な用途には**使用しないでください**。
