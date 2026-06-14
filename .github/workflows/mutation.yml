@@ -29,4 +29,4 @@ jobs:
         #   - delta_t_seconds の `< → <=`: 区分多項式が接合点で連続（差 <0.001s ≪ ΔT 不確実性）
         run: >-
           docker compose -p umbra-rs run --rm rust
-          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds'"
+          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds'"

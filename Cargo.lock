@@ -66,6 +66,7 @@ dependencies = [
 name = "umbra-eclipse"
 version = "0.0.0"
 dependencies = [
+ "thiserror",
  "umbra-core",
  "umbra-ephemeris",
 ]

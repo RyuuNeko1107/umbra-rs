@@ -16,6 +16,9 @@ pub const TT_MINUS_TAI_SECONDS: f64 = 32.184;
 /// 地球赤道半径（WGS84 長半径 a）\[m\]。ベッセル無次元化の基準 Re。
 pub const EARTH_EQUATORIAL_RADIUS_M: f64 = 6_378_137.0;
 
+/// 太陽公称半径 \[km\]。IAU 2015 Resolution B3。影円錐・視半径に使用（conventions §9）。
+pub const SOLAR_RADIUS_KM: f64 = 696_000.0;
+
 /// WGS84 扁平率 f。
 pub const WGS84_FLATTENING: f64 = 1.0 / 298.257_223_563;
 

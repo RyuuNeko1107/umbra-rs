@@ -52,6 +52,34 @@ impl Vector3 {
     }
 }
 
+impl Vector3 {
+    /// 正規化して [`UnitVector3`] にする。零ベクトルは `None`。
+    pub fn normalized(self) -> Option<UnitVector3> {
+        UnitVector3::from_vector(self)
+    }
+}
+
+/// 単位ベクトル（生成時に正規化済みであることを型で保証）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnitVector3(Vector3);
+
+impl UnitVector3 {
+    /// ベクトルを正規化して構築。零ベクトルは `None`。
+    pub fn from_vector(v: Vector3) -> Option<Self> {
+        let n = v.norm();
+        if n == 0.0 || !n.is_finite() {
+            None
+        } else {
+            Some(UnitVector3(v.scale(1.0 / n)))
+        }
+    }
+
+    /// 内側の [`Vector3`]（長さ 1）。
+    pub fn get(self) -> Vector3 {
+        self.0
+    }
+}
+
 impl core::ops::Add for Vector3 {
     type Output = Vector3;
     fn add(self, o: Vector3) -> Vector3 {
@@ -115,5 +143,18 @@ mod tests {
         // 係数 10 はどの成分とも一致しないので * と + を区別できる。
         let a = Vector3::new(1.0, 2.0, 3.0);
         assert_eq!(a.scale(10.0), Vector3::new(10.0, 20.0, 30.0));
+    }
+
+    #[test]
+    fn normalized_has_unit_length_and_direction() {
+        let u = Vector3::new(3.0, 4.0, 0.0).normalized().unwrap();
+        assert!((u.get().norm() - 1.0).abs() < 1e-12);
+        // 方向保存: (3,4,0)/5
+        assert!((u.get().x - 0.6).abs() < 1e-12 && (u.get().y - 0.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn normalized_zero_is_none() {
+        assert!(Vector3::ZERO.normalized().is_none());
     }
 }

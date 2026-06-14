@@ -28,4 +28,4 @@ pub use solver::{brent_root, minimize_golden};
 pub use time::{
     TaiInstant, TdbInstant, TimeInterval, TimeRange, TtInstant, Ut1Instant, UtcInstant,
 };
-pub use vector::Vector3;
+pub use vector::{UnitVector3, Vector3};
