@@ -112,6 +112,21 @@ impl TtInstant {
     }
 }
 
+/// 世界時 UT1 の瞬時（地球回転。TT − ΔT。ΔT は `crate::deltat` 参照）。
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct Ut1Instant(JulianDate2);
+
+impl Ut1Instant {
+    /// UT1 スケールの JD から構築。
+    pub fn from_jd2(jd: JulianDate2) -> Self {
+        Ut1Instant(jd)
+    }
+    /// UT1 スケールの JD。
+    pub fn jd2(self) -> JulianDate2 {
+        self.0
+    }
+}
+
 /// ΔAT = TAI − UTC（秒）。1972 年より前は `MissingLeapSecondData`。
 ///
 /// 最終エントリ以降は最後の値を据え置く（閏秒は約半年前に告知され、2017 以降は増えていない）。

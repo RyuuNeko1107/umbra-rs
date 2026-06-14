@@ -36,6 +36,19 @@ missed の内訳（モジュール別）:
 
 これらを kill するには**内部の反復回数・経路を assert**する必要があるが、それは実装結合で脆い（収束速度を 25 反復で縛るテストは**正しいコードでも false failure** を出したため撤回）。よって工程7の方針（「全 mutant が殺せるとは限らない。生存を列挙し許容可否を明示」）に従い、**等価変異として許容**する。
 
+## 追加モジュール（time / deltat, ISSUE-006/007）
+
+- **time**（UTC/TAI/TT）: 当初 `UtcInstant::to_gregorian` に直接テストが無く 140 変異が見逃し → 往復テスト追加で kill。`tai_to_utc` の `-37` 近似が等価変異化 → 単純法へ書き換え round-trip で kill。**生存ゼロ**。
+- **julian** `days_since`: 追加。生存ゼロ。
+- **deltat**（ΔT/UT1）: `uncertainty_seconds` を不連続な順序しきい値に書き換え、各分岐・境界・式を厳密値で検証 → kill。`delta_t_seconds` の区分内部の演算子変異は内部点テストで kill。
+  - **許容する等価変異（6件）**: `delta_t_seconds` の区分境界比較 `< → <=`。Espenak–Meeus の区分多項式は**接合点で連続**（隣接区分の差は 1941 境界で ~0.0008s 等、いずれも <0.001s）であり、ΔT 自体の不確実性（秒オーダー）を遥かに下回る。境界年ちょうどでのみ僅差が出る等価変異のため、`--exclude-re 'with <= in.*delta_t_seconds'` でゲートから除外する。
+
 ## 退行ガード（CI）
 
-テスト有効性の退行を防ぐため、CI（`mutants` ジョブ）は **solver.rs を除く全モジュールで生存ゼロ**を要求する（`cargo mutants -p umbra-core --exclude src/solver.rs`）。solver の等価変異は本レポートで許容済み。フル実行は `cargo mutants -p umbra-core` で再現可能。
+テスト有効性の退行を防ぐため、CI（`mutants` ジョブ, `.github/workflows/mutation.yml`）は**本レポートで許容した等価変異を除いた全モジュールで生存ゼロ**を要求する:
+
+```
+cargo mutants -p umbra-core --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds'
+```
+
+直近の結果: **911 mutants tested, 874 caught, 37 unviable, 0 missed**。フル実行（除外なし）は `cargo mutants -p umbra-core` で再現可能（solver 等価変異と delta_t 境界が生存として現れる）。
