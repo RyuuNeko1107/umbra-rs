@@ -12,3 +12,4 @@ description = "umbra-rs core primitives: time, angle, distance, vector, constant
 workspace = true
 
 [dependencies]
+thiserror = "2"
