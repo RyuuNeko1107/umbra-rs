@@ -13,3 +13,4 @@ workspace = true
 
 [dependencies]
 umbra-core = { path = "../umbra-core" }
+thiserror = "2"

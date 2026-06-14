@@ -25,5 +25,7 @@ pub use error::{DomainError, SolverError, TimeError};
 pub use julian::JulianDate2;
 pub use matrix::Matrix3;
 pub use solver::{brent_root, minimize_golden};
-pub use time::{TaiInstant, TtInstant, Ut1Instant, UtcInstant};
+pub use time::{
+    TaiInstant, TdbInstant, TimeInterval, TimeRange, TtInstant, Ut1Instant, UtcInstant,
+};
 pub use vector::Vector3;

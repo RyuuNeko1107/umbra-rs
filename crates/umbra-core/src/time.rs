@@ -127,6 +127,40 @@ impl Ut1Instant {
     }
 }
 
+/// 太陽系力学時 TDB の瞬時（Reference 暦用。TT との差は周期項で最大 ~1.7 ms。
+/// TT↔TDB 変換は精度が要る段階で別途実装する）。
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct TdbInstant(JulianDate2);
+
+impl TdbInstant {
+    /// TDB スケールの JD から構築。
+    pub fn from_jd2(jd: JulianDate2) -> Self {
+        TdbInstant(jd)
+    }
+    /// TDB スケールの JD。
+    pub fn jd2(self) -> JulianDate2 {
+        self.0
+    }
+}
+
+/// 時刻範囲 `[start, end]`（任意の時刻型に対する区間）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeRange<T> {
+    /// 開始。
+    pub start: T,
+    /// 終了。
+    pub end: T,
+}
+
+/// 時間区間（フィット区間など。`TimeRange` と別用途で使い分ける）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeInterval<T> {
+    /// 開始。
+    pub start: T,
+    /// 終了。
+    pub end: T,
+}
+
 /// ΔAT = TAI − UTC（秒）。1972 年より前は `MissingLeapSecondData`。
 ///
 /// 最終エントリ以降は最後の値を据え置く（閏秒は約半年前に告知され、2017 以降は増えていない）。
