@@ -4,10 +4,12 @@
 //! 全球/局地は順次追加（`docs/algorithms/` §5–§9）。
 //! 幾何ロジックは [`umbra_ephemeris::MockEphemeris`] 上で検証する（accuracy.md §3.1）。
 
+pub mod besselian;
 pub mod error;
 pub mod fundamental;
 pub mod shadow;
 
+pub use besselian::{besselian_elements, BesselianElements};
 pub use error::EclipseError;
 pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use shadow::{shadow_cone, ShadowCone};

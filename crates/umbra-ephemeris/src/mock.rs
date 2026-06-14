@@ -41,11 +41,11 @@ impl MockEphemeris {
         }
     }
 
-    /// 明確な部分食（影軸を地球縁付近へ小オフセット ⇒ 中心食不成立・部分食を意図）。
+    /// 明確な部分食（影軸が地球縁を外す ⇒ |gamma|≈1.1 で中心食不成立・部分食）。
     pub fn clear_partial() -> Self {
         MockEphemeris {
             sun: Vector3::new(AU_KM, 0.0, 0.0),
-            moon: Vector3::new(MOON_MEAN_KM, 4_000.0, 0.0),
+            moon: Vector3::new(MOON_MEAN_KM, 7_000.0, 0.0),
         }
     }
 
