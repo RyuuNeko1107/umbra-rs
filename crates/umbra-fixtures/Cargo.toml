@@ -1,0 +1,15 @@
+[package]
+name = "umbra-fixtures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "umbra-rs validation fixtures and tolerance profiles (test-only) — work in progress"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-core = { path = "../umbra-core" }

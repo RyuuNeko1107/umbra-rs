@@ -1,0 +1,14 @@
+[package]
+name = "umbra-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "umbra-rs core primitives: time, angle, distance, vector, constants, numerics"
+
+[lints]
+workspace = true
+
+[dependencies]

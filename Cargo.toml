@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/RyuuNeko1107/umbra-rs"
+authors = ["umbra-rs contributors"]
+description = "Experimental pure-Rust solar eclipse prediction engine (AI-driven design, implementation, and verification)"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# 精度クリティカルなので、暗黙の数値変換・丸めを警告として可視化する
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+
+[profile.release]
+debug = true

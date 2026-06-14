@@ -1,0 +1,15 @@
+[package]
+name = "umbra-ephemeris"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "umbra-rs ephemeris backends (VSOP87D, ELP/MPP02, JPL DE) — work in progress"
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-core = { path = "../umbra-core" }

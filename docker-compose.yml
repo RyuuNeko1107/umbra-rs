@@ -1,0 +1,22 @@
+# 実験・検証は全て Docker 内で実行する（tdd-workflow.md / docs 方針）。
+#   docker compose -p umbra-rs run --rm rust cargo test --workspace
+#   docker compose -p umbra-rs run --rm rust cargo clippy --workspace --all-targets
+#   docker compose -p umbra-rs run --rm rust cargo fmt --all --check
+services:
+  rust:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: umbra-rs-toolchain:1.96
+    working_dir: /work
+    volumes:
+      - .:/work
+      # ホスト(Windows)とコンテナ(Linux)で target を分離し、レジストリをキャッシュ
+      - umbra-cargo-registry:/usr/local/cargo/registry
+      - umbra-target:/work/target
+    environment:
+      CARGO_TERM_COLOR: always
+
+volumes:
+  umbra-cargo-registry:
+  umbra-target:

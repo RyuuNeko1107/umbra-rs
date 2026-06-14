@@ -1,0 +1,18 @@
+[package]
+name = "umbra-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "umbra-rs command-line interface — work in progress"
+
+[[bin]]
+name = "umbra"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]

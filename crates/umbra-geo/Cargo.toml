@@ -1,0 +1,15 @@
+[package]
+name = "umbra-geo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "umbra-rs path / GeoJSON output — work in progress (Milestone 9)"
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-core = { path = "../umbra-core" }

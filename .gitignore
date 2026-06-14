@@ -1,0 +1,14 @@
+# Rust
+/target
+**/target
+
+# 私的な設計原本（ずんだー等の内部用途を含むため非公開）
+*.docx
+
+# エディタ/ハーネス
+.claude/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Cargo.lock はワークスペースにバイナリ(cli)を含むため追跡する
