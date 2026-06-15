@@ -8,6 +8,7 @@ pub mod cio;
 pub mod ephemeris;
 pub mod frames;
 pub mod mock;
+pub mod moon;
 pub mod nutation;
 pub mod sun;
 
