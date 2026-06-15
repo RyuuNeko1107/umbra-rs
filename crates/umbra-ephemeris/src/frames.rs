@@ -68,12 +68,9 @@ pub fn era_rotation(time_ut1: Ut1Instant) -> Matrix3 {
     Matrix3::rotation_z(earth_rotation_angle_rad(time_ut1))
 }
 
-/// frame bias + IAU2006 歳差の合成行列（GCRS→ "of date" 平均赤道系）。
-/// SOFA `iauPmat06`（= `iauPfw06` の Fukushima-Williams 角 → `iauFw2m`）相当。TT 引数。
-///
-/// FW 角の係数 \[″\]（Capitaine et al. 2003 / IAU2006、`docs/algorithms/02-frames.md`）。
-/// 合成は `R1(−ε_A)·R3(−ψ_b)·R1(φ_b)·R3(γ_b)`（SOFA `iauFw2m`）。
-pub fn bias_precession_matrix_iau2006(time_tt: TtInstant) -> Matrix3 {
+/// Fukushima-Williams 歳差角 `(γ_b, φ_b, ψ_b, ε_A)`（SOFA `iauPfw06` + `iauObl06` 相当）。TT 引数。
+/// 係数 \[″\]（Capitaine et al. 2003 / IAU2006、`docs/algorithms/02-frames.md`）。
+fn fukushima_williams_angles(time_tt: TtInstant) -> (f64, f64, f64, f64) {
     let t = julian_centuries(time_tt.jd2());
     let gamb = arcsec_poly_to_rad(
         &[
@@ -109,11 +106,32 @@ pub fn bias_precession_matrix_iau2006(time_tt: TtInstant) -> Matrix3 {
         t,
     );
     let epsa = mean_obliquity_iau2006(time_tt).0;
-    // R = R1(−ε_A)·R3(−ψ_b)·R1(φ_b)·R3(γ_b)（mul_mat は self·other）。
-    Matrix3::rotation_x(-epsa)
-        .mul_mat(&Matrix3::rotation_z(-psib))
+    (gamb, phib, psib, epsa)
+}
+
+/// Fukushima-Williams 角から回転行列を構成する。SOFA `iauFw2m`:
+/// `R1(−ε)·R3(−ψ)·R1(φ)·R3(γ)`（`mul_mat` は self·other で前段が左）。
+fn fw2m(gamb: f64, phib: f64, psi: f64, eps: f64) -> Matrix3 {
+    Matrix3::rotation_x(-eps)
+        .mul_mat(&Matrix3::rotation_z(-psi))
         .mul_mat(&Matrix3::rotation_x(phib))
         .mul_mat(&Matrix3::rotation_z(gamb))
+}
+
+/// frame bias + IAU2006 歳差の合成行列（GCRS→ "of date" 平均赤道系）。
+/// SOFA `iauPmat06`（= `iauPfw06` の Fukushima-Williams 角 → `iauFw2m`）相当。TT 引数。
+pub fn bias_precession_matrix_iau2006(time_tt: TtInstant) -> Matrix3 {
+    let (gamb, phib, psib, epsa) = fukushima_williams_angles(time_tt);
+    fw2m(gamb, phib, psib, epsa)
+}
+
+/// frame bias + IAU2006 歳差 + IAU 2000_R06 章動の合成行列（NPB, GCRS→真赤道真分点 of date）。
+/// SOFA `iauPnm06a` 相当。TT 引数。FW 角に章動 (Δψ, Δε) を加えて `iauFw2m`:
+/// `Fw2m(γ_b, φ_b, ψ_b+Δψ, ε_A+Δε)`。章動は [`crate::nutation::nutation_iau2006`]（IAU 2000_R06）。
+pub fn bias_precession_nutation_matrix_iau2006(time_tt: TtInstant) -> Matrix3 {
+    let (gamb, phib, psib, epsa) = fukushima_williams_angles(time_tt);
+    let (dpsi, deps) = crate::nutation::nutation_iau2006(time_tt);
+    fw2m(gamb, phib, psib + dpsi.0, epsa + deps.0)
 }
 
 /// TIO locator s′。SOFA `iauSp00` 相当。`s' = −47e-6·t` \[″\]（t = TT ユリウス世紀）。
@@ -433,6 +451,157 @@ mod tests {
         assert!(
             !matrix_close(&split_a, &Matrix3::IDENTITY.rows, 1e-3),
             "ERA unexpectedly near identity"
+        );
+    }
+
+    // ==================================================================
+    // 1c. NPB 行列突合（iauPnm06a, ISSUE-035 slice3）
+    // ==================================================================
+    //
+    // オラクル: pyerfa 2.0.1.5 `erfa.pnm06a(d1, d2)`（liberfa C ラッパ ＝ SOFA iauPnm06a と
+    // 数値同一。本実装の Rust とは独立実装）。取得コマンド（Docker, 行優先 [行][列]）:
+    //   docker run --rm python:3.12-slim bash -c \
+    //     "pip install -q pyerfa && python3 -c 'import erfa; print(erfa.__version__);
+    //      [print(erfa.pnm06a(d1,d2)) for d1,d2 in [...]]'"
+    //   erfa.__version__ = 2.0.1.5
+    // 取得値（4 エポックの全 9 要素）は各定数の RHS に逐語転記。
+    //
+    // 許容（TOL）設計メモ（精度クリティカル）:
+    //   NPB = frame-bias·precession（厳密、erfa と一致）＋ 章動。本実装の章動は
+    //   IERS IAU 2000_R06 系列の直接評価、erfa.pnm06a の章動は nut00a の線形スケーリング
+    //   近似で、両者の章動表現差は振幅 ~2e-7×|Δψ| ⇒ 運用域 1900–2100 で最大 ~1.7e-11 rad。
+    //   微小回転なので NPB 行列要素差 ~ 章動差（~2e-11）。一方、歳差・章動・合成順の
+    //   実バグは行列要素を ≫1e-6 ずらす。よって要素ごと許容 TOL=1e-10 は
+    //   representation 差（~2e-11）を吸収しつつ実バグを確実に検出する。
+    const TOL: f64 = 1e-10;
+
+    /// SOFA iauPnm06a（pyerfa erfa.pnm06a）多エポック突合。
+    /// J2000 / SOFA-test / 1900 / 2100 の 4 エポックで NPB 全 9 要素が TOL 以内一致。
+    /// 1900(t≈-1) / 2100(t≈+1) で歳差・章動の t¹ 項を両符号に励起する。
+    #[test]
+    fn pnm06a_matches_erfa_multi_epoch() {
+        // erfa 2.0.1.5 erfa.pnm06a(2451545.0, 0.0) [TT]:
+        const J2000: [[f64; 3]; 3] = [
+            [
+                0.9999999977211029,
+                6.189986411237772e-05,
+                2.694811359642464e-05,
+            ],
+            [
+                -6.190061874003901e-05,
+                0.9999999976920713,
+                2.8003053123670796e-05,
+            ],
+            [
+                -2.694638014904722e-05,
+                -2.8004721164764934e-05,
+                0.9999999992448141,
+            ],
+        ];
+        // erfa 2.0.1.5 erfa.pnm06a(2400000.5, 53736.0) [TT]:
+        const SOFA: [[f64; 3]; 3] = [
+            [
+                0.999998944048067,
+                -0.0013328814180919154,
+                -0.000579076744761204,
+            ],
+            [
+                0.0013328579112509885,
+                0.9999991109049141,
+                -4.0977671285524764e-05,
+            ],
+            [
+                0.0005791308482835291,
+                4.0205800994674856e-05,
+                0.9999998314954629,
+            ],
+        ];
+        // erfa 2.0.1.5 erfa.pnm06a(2400000.5, 15020.0) [TT] (≈ 1900, t≈-1 JC):
+        const Y1900: [[f64; 3]; 3] = [
+            [0.99970501109878, 0.0222735324947779, 0.009684035016074562],
+            [
+                -0.022273639304269954,
+                0.999751907032437,
+                -9.683568018814537e-05,
+            ],
+            [
+                -0.009683789347758761,
+                -0.00011889158822070423,
+                0.9999531039447092,
+            ],
+        ];
+        // erfa 2.0.1.5 erfa.pnm06a(2400000.5, 88069.0) [TT] (≈ 2100, t≈+1 JC):
+        const Y2100: [[f64; 3]; 3] = [
+            [
+                0.9997023030521245,
+                -0.02237930224289868,
+                -0.009719676095389217,
+            ],
+            [
+                0.022378900018021012,
+                0.9997495497811355,
+                -0.00015015458856376673,
+            ],
+            [
+                0.009720602155304459,
+                -6.740577154529248e-05,
+                0.9999527515588925,
+            ],
+        ];
+
+        for (label, (d1, d2), expected) in [
+            ("J2000", (2451545.0, 0.0), &J2000),
+            ("SOFA", (2400000.5, 53736.0), &SOFA),
+            ("1900", (2400000.5, 15020.0), &Y1900),
+            ("2100", (2400000.5, 88069.0), &Y2100),
+        ] {
+            let m = bias_precession_nutation_matrix_iau2006(tt(d1, d2));
+            assert!(
+                matrix_close(&m, expected, TOL),
+                "pnm06a mismatch at {label} ({d1}, {d2}); got {:?}, expected {expected:?}",
+                m.rows
+            );
+        }
+    }
+
+    /// NPB は回転行列 → 直交かつ det≈+1（全 4 エポックで確認）。
+    #[test]
+    fn pnm06a_is_orthonormal() {
+        for &(d1, d2) in &[
+            (2451545.0, 0.0),
+            (2400000.5, 53736.0),
+            (2400000.5, 15020.0),
+            (2400000.5, 88069.0),
+        ] {
+            let m = bias_precession_nutation_matrix_iau2006(tt(d1, d2));
+            assert_orthonormal(&m, 1e-12);
+            assert!(
+                close(det(&m), 1.0, 1e-12),
+                "det = {} at ({d1}, {d2})",
+                det(&m)
+            );
+        }
+    }
+
+    /// 章動が効いていること: NPB ≠ bias-precession-only。
+    /// 章動を落とすバグ（NPB が bias_precession_matrix_iau2006 と一致）を検出する。
+    /// 章動 (Δψ, Δε) ~ 数e-5 rad が NPB の非対角要素を bias-precession から
+    /// 章動オーダーでずらすため、少なくとも 1 要素が >1e-6 異なる。
+    #[test]
+    fn pnm06a_includes_nutation() {
+        let t = tt(2400000.5, 53736.0);
+        let npb = bias_precession_nutation_matrix_iau2006(t);
+        let bp = bias_precession_matrix_iau2006(t);
+        let max_diff = npb
+            .rows
+            .iter()
+            .zip(bp.rows.iter())
+            .flat_map(|(nr, br)| nr.iter().zip(br.iter()))
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_diff > 1e-6,
+            "NPB nearly equals bias-precession (max elem diff {max_diff}); nutation appears to be dropped"
         );
     }
 
