@@ -5,6 +5,7 @@
 //! 設計は `docs/architecture.md` §4、`docs/algorithms/03-ephemeris.md` / `02-frames.md`。
 
 pub mod ephemeris;
+pub mod frames;
 pub mod mock;
 
 pub use ephemeris::{

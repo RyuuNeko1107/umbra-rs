@@ -31,6 +31,11 @@ pub const JULIAN_CENTURY_DAYS: f64 = 36_525.0;
 /// 1 ユリウス千年の日数（VSOP87 の引数 T で使用）。
 pub const JULIAN_MILLENNIUM_DAYS: f64 = 365_250.0;
 
+/// 秒角 → ラジアン変換係数（= π / 648000）。SOFA の `DAS2R` 相当。
+/// 歳差・章動・黄道傾斜など、秒角で表される級数係数のラジアン化に用いる
+/// （IAU2006/2000A の係数は秒角単位。`docs/algorithms/02-frames.md`）。
+pub const ARCSEC_TO_RAD: f64 = core::f64::consts::PI / 648_000.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,6 +53,14 @@ mod tests {
     #[test]
     fn julian_century_and_millennium_are_consistent() {
         assert_eq!(JULIAN_MILLENNIUM_DAYS, JULIAN_CENTURY_DAYS * 10.0);
+    }
+
+    #[test]
+    fn arcsec_to_rad_is_pi_over_648000() {
+        // 180° = 648000″ = π rad。半周分の秒角がちょうど π になる。
+        assert!((648_000.0 * ARCSEC_TO_RAD - core::f64::consts::PI).abs() < 1e-15);
+        // 1″ ≈ 4.8481368e-6 rad（桁感）。
+        assert!((ARCSEC_TO_RAD - 4.848_136_811_095_36e-6).abs() < 1e-18);
     }
 
     #[test]
