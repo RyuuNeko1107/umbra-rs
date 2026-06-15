@@ -9,6 +9,7 @@
 //! J2000 TDB = `(JD_TDB − 2451545)/365250`（Bretagnon & Francou 1988）。
 
 use std::sync::OnceLock;
+use umbra_core::constants::{ASTRONOMICAL_UNIT_KM, JULIAN_MILLENNIUM_DAYS};
 use umbra_core::{Radians, TdbInstant, Vector3};
 
 /// packed VSOP87D 地球係数（ISSUE-033 生成物、flat little-endian f64）。
@@ -101,6 +102,55 @@ pub fn sun_geocentric_ecliptic_of_date(time_tdb: TdbInstant) -> Vector3 {
     let (sin_b, cos_b) = b.0.sin_cos();
     // 地球日心直交（黄道 of date）→ 符号反転で太陽地心。
     Vector3::new(-(r * cos_b * cos_l), -(r * cos_b * sin_l), -(r * sin_b))
+}
+
+/// 地球の日心速度（黄道 of date 直交, km/s）。VSOP87D 級数の**項別解析微分**
+/// （numerical-policy §A2(1): `d/dT[A·cos(B+C·T)] = −A·C·sin(B+C·T)`、べき項は積の微分）。
+/// 観測者（地心）速度 ≈ 地球日心速度として光行差・光行時間に用いる（ISSUE-015）。TDB 引数。
+///
+/// `s = Σ_α T^α·Σ_k A·cos(B+C·T)` の `ds/dT = Σ_α [α·T^(α−1)·Σ A cos + T^α·Σ A(−C)sin]`
+/// を L,B,R で求め、球面→直交速度へ展開（AU/千年 → km/s に換算）。
+pub fn earth_heliocentric_velocity_ecliptic_of_date(time_tdb: TdbInstant) -> Vector3 {
+    let t = time_tdb.jd2().julian_millennia_since_j2000();
+    // 変数 1=L,2=B,3=R を index 0,1,2 に、値と dT 微分（千年あたり）を集計。
+    let mut val = [0.0_f64; 3];
+    let mut dval = [0.0_f64; 3];
+    for section in model() {
+        // S = Σ A cos(B+C·t)、dS/dt = Σ A·(−C)·sin(B+C·t)。
+        let mut s = 0.0;
+        let mut ds = 0.0;
+        for term in &section.terms {
+            let arg = term.phase + term.frequency * t;
+            s += term.amplitude * arg.cos();
+            ds += term.amplitude * (-term.frequency) * arg.sin();
+        }
+        let idx = usize::from(section.variable - 1);
+        let alpha = i32::from(section.power);
+        val[idx] += t.powi(alpha) * s;
+        // d/dT[t^α·S] = (α≥1 ? α·t^(α−1)·S : 0) + t^α·dS。
+        let power_term = if alpha >= 1 {
+            f64::from(alpha) * t.powi(alpha - 1) * s
+        } else {
+            0.0
+        };
+        dval[idx] += power_term + t.powi(alpha) * ds;
+    }
+    // 球面→黄道直交速度 [AU/千年] → km/s（1 千年 = 365250 日 × 86400 s）。
+    let factor = ASTRONOMICAL_UNIT_KM / (JULIAN_MILLENNIUM_DAYS * 86_400.0);
+    ecliptic_velocity_from_spherical(val[0], val[1], val[2], dval[0], dval[1], dval[2])
+        .scale(factor)
+}
+
+/// 球面座標 `(l, b, r)` と各時間微分 `(dl, db, dr)` から黄道直交速度を構成する（純関数）。
+/// 位置 `(r·cosb·cosl, r·cosb·sinl, r·sinb)` の時間微分。返り値の単位は r/時間（呼び出し側で換算）。
+fn ecliptic_velocity_from_spherical(l: f64, b: f64, r: f64, dl: f64, db: f64, dr: f64) -> Vector3 {
+    let (sin_l, cos_l) = l.sin_cos();
+    let (sin_b, cos_b) = b.sin_cos();
+    Vector3::new(
+        dr * cos_b * cos_l - r * sin_b * cos_l * db - r * cos_b * sin_l * dl,
+        dr * cos_b * sin_l - r * sin_b * sin_l * db + r * cos_b * cos_l * dl,
+        dr * sin_b + r * cos_b * db,
+    )
 }
 
 #[cfg(test)]
@@ -281,5 +331,114 @@ mod tests {
                 (sun.norm() - r).abs()
             );
         }
+    }
+
+    // ==================================================================
+    // ISSUE-015 prereq: earth_heliocentric_velocity_ecliptic_of_date
+    //   地球の日心速度（黄道 of date 直交, km/s）の解析微分を検証する。
+    //   一次オラクル: sun_geocentric_ecliptic_of_date は太陽地心 = −(地球日心位置)
+    //   なので、地球日心速度 = −d/dt[sun_geo]。これを sun_geo の**中心差分**で
+    //   近似し、解析速度と照合する（評価器とは独立な数値微分経路）。
+    // ==================================================================
+
+    /// 速度テスト用エポック（TDB JD, part2=0）。J2000 / 近日点近傍 / 任意の近代日付。
+    const VEL_JD: [f64; 3] = [2451545.0, 2444239.5, 2469807.0];
+    /// 中心差分の半ステップ [日]。
+    const H_DAYS: f64 = 0.5;
+    /// 中心差分突合の許容 [km/s]。h=0.5 日の O(h²) 打切り誤差は (h²/6)·|x'''|≈3.7e-4 km/s
+    /// （地球公転 v≈29.8, ω=2π/年, |x'''|≈v·ω²）。近日点近傍の局所躍度増を見て 1e-3 を採る。
+    /// 項取りこぼし・符号・スケール誤りは各成分を ≫0.01 km/s ずらすため 1e-3 でも確実に検出。
+    const VEL_TOL_KM_S: f64 = 1e-3;
+
+    /// 要素ごと近接（clippy::float_cmp 回避）。
+    fn vec_close(a: Vector3, b: Vector3, tol: f64) -> bool {
+        (a.x - b.x).abs() < tol && (a.y - b.y).abs() < tol && (a.z - b.z).abs() < tol
+    }
+
+    /// `jd`（part1）に part2=`offset_days` を載せた TdbInstant。
+    fn tdb_offset(jd: f64, offset_days: f64) -> TdbInstant {
+        TdbInstant::from_jd2(JulianDate2::new(jd, offset_days))
+    }
+
+    /// sun_geo の中心差分から得た地球日心速度 [km/s]（= −d/dt[sun_geo]）。
+    fn earth_velocity_central_difference(jd: f64, h_days: f64) -> Vector3 {
+        let plus = sun_geocentric_ecliptic_of_date(tdb_offset(jd, h_days));
+        let minus = sun_geocentric_ecliptic_of_date(tdb_offset(jd, -h_days));
+        let d_sun_au_per_day = (plus - minus).scale(1.0 / (2.0 * h_days));
+        d_sun_au_per_day.scale(-ASTRONOMICAL_UNIT_KM / 86_400.0)
+    }
+
+    /// 1. 解析速度 vs sun_geo の中心差分（複数エポック・各成分）。
+    #[test]
+    fn earth_velocity_matches_central_difference_of_sun_geocentric() {
+        for jd in VEL_JD {
+            let analytic = earth_heliocentric_velocity_ecliptic_of_date(tdb(jd));
+            let numeric = earth_velocity_central_difference(jd, H_DAYS);
+            assert!(
+                vec_close(analytic, numeric, VEL_TOL_KM_S),
+                "vel at JD{jd}: analytic ({},{},{}) vs central-diff ({},{},{})",
+                analytic.x,
+                analytic.y,
+                analytic.z,
+                numeric.x,
+                numeric.y,
+                numeric.z
+            );
+        }
+    }
+
+    /// 2. 速度の大きさ: 地球公転速度 遠日点~29.3 / 近日点~30.3 km/s。
+    #[test]
+    fn earth_speed_is_orbital_magnitude() {
+        for jd in VEL_JD {
+            let speed = earth_heliocentric_velocity_ecliptic_of_date(tdb(jd)).norm();
+            assert!(
+                (29.0..30.5).contains(&speed),
+                "Earth speed at JD{jd} out of orbital range: {speed} km/s"
+            );
+        }
+    }
+
+    /// 3. 速度と日心位置の近直交性（軌道はほぼ円 e≈0.0167）。|cos∠(v,r)| < 0.05。
+    #[test]
+    fn earth_velocity_nearly_perpendicular_to_radius() {
+        for jd in [VEL_JD[0], VEL_JD[1]] {
+            let t = tdb(jd);
+            let vel = earth_heliocentric_velocity_ecliptic_of_date(t);
+            // 地球日心位置 [km] = 太陽地心の符号反転 ×AU。
+            let pos = sun_geocentric_ecliptic_of_date(t).scale(-ASTRONOMICAL_UNIT_KM);
+            let cos_angle = vel.dot(pos) / (vel.norm() * pos.norm());
+            assert!(
+                cos_angle.abs() < 0.05,
+                "|cos∠(v,r)| at JD{jd} too large (orbit ~circular): {}",
+                cos_angle.abs()
+            );
+        }
+    }
+
+    /// 4. 球面→直交速度の純関数 `ecliptic_velocity_from_spherical` を、**非特殊な合成軌道**
+    ///    （緯度 b を 0 から離す＝全項を励起）の中心差分と照合。地球は b≈0 で緯度結合項が
+    ///    休眠し XYZ テストでは隠れるため、一般入力で各項（sin_b, cos_b, db 結合）を直接検証する。
+    #[test]
+    fn ecliptic_velocity_from_spherical_matches_finite_difference() {
+        // 全成分が distinct・非特殊（b0=0.4 で cos_b≈0.92, sin_b≈0.39, db≠0）。
+        let (l0, b0, r0, dl, db, dr) = (0.7_f64, 0.4_f64, 2.3_f64, 1.1_f64, 0.6_f64, 0.3_f64);
+        let pos = |t: f64| {
+            let (l, b, r) = (l0 + dl * t, b0 + db * t, r0 + dr * t);
+            Vector3::new(r * b.cos() * l.cos(), r * b.cos() * l.sin(), r * b.sin())
+        };
+        let h = 1e-6;
+        let fd = (pos(h) - pos(-h)).scale(1.0 / (2.0 * h));
+        let v = ecliptic_velocity_from_spherical(l0, b0, r0, dl, db, dr);
+        assert!(
+            vec_close(v, fd, 1e-6),
+            "spherical velocity ({},{},{}) vs finite-diff ({},{},{})",
+            v.x,
+            v.y,
+            v.z,
+            fd.x,
+            fd.y,
+            fd.z
+        );
     }
 }
