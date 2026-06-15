@@ -16,3 +16,4 @@ Thumbs.db
 *.swp
 
 # Cargo.lock はワークスペースにバイナリ(cli)を含むため追跡する
+/tmp/
