@@ -47,11 +47,11 @@ fn help_exits_zero_with_usage() {
     );
 }
 
-/// 未実装データセット（vsop87）の生成 → 非 0 終了（NotImplemented）。
+/// 未実装データセット（elp-mpp02）の生成 → 非 0 終了（NotImplemented）。
 #[test]
 fn not_implemented_dataset_exits_nonzero() {
     let output = xtask()
-        .args(["generate-coefficients", "--dataset", "vsop87"])
+        .args(["generate-coefficients", "--dataset", "elp-mpp02"])
         .output()
         .expect("xtask binary runs");
     assert!(
@@ -76,6 +76,21 @@ fn verify_generated_nutation_succeeds() {
     );
 }
 
+/// コミット済み VSOP87D 係数が一次原データから決定的に再生成できる（ISSUE-033 end-to-end 回帰）。
+#[test]
+fn verify_generated_vsop87_succeeds() {
+    let output = xtask()
+        .current_dir(repo_root())
+        .args(["verify-generated", "--dataset", "vsop87"])
+        .output()
+        .expect("xtask binary runs");
+    assert!(
+        output.status.success(),
+        "committed vsop87 artifact must verify against source; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// 原データが見つからない作業ディレクトリでは verify-generated は **失敗**する
 /// （`verify_against_disk` が無条件 Ok を返さないことの保証＝検証経路が実在する）。
 #[test]
@@ -91,5 +106,23 @@ fn verify_generated_fails_without_source() {
     assert!(
         !output.status.success(),
         "verify must fail when source data is absent (not unconditionally Ok)"
+    );
+}
+
+/// vsop87 でも原データ不在の作業ディレクトリでは verify-generated は **失敗**する
+/// （`vsop87::verify_against_disk` が無条件 Ok を返さないことの保証）。
+#[test]
+fn verify_generated_vsop87_fails_without_source() {
+    let empty = std::env::temp_dir().join(format!("umbra_xtask_no_vsop_{}", std::process::id()));
+    std::fs::create_dir_all(&empty).expect("create temp cwd");
+    let output = xtask()
+        .current_dir(&empty)
+        .args(["verify-generated", "--dataset", "vsop87"])
+        .output()
+        .expect("xtask binary runs");
+    let _ = std::fs::remove_dir_all(&empty);
+    assert!(
+        !output.status.success(),
+        "vsop87 verify must fail when source data is absent"
     );
 }

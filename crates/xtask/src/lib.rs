@@ -11,6 +11,7 @@ pub mod dataset;
 pub mod error;
 pub mod nutation;
 pub mod packed;
+pub mod vsop87;
 
 use dataset::Dataset;
 use error::XtaskError;
@@ -81,26 +82,41 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
 
     match subcommand {
         "generate-coefficients" => match dataset_arg(args)? {
-            // 章動（ISSUE-040）は実装済み。`None`（all）も現状は章動のみ生成。
-            Some(Dataset::NutationIau2000a) | None => {
-                let metadata = nutation::generate_to_disk()?;
+            // 章動（ISSUE-040）・VSOP87D（ISSUE-033）は実装済み。ELP/MPP02 は ISSUE-034。
+            Some(Dataset::NutationIau2000a) => {
+                let m = nutation::generate_to_disk()?;
+                println!("generated nutation-iau2000a (checksum {})", m.checksum);
+                Ok(())
+            }
+            Some(Dataset::Vsop87) => {
+                let m = vsop87::generate_to_disk()?;
+                println!("generated vsop87 (checksum {})", m.checksum);
+                Ok(())
+            }
+            Some(Dataset::ElpMpp02) => Err(XtaskError::NotImplemented(
+                "generate-coefficients (dataset: elp-mpp02) — ISSUE-034".to_string(),
+            )),
+            None => {
+                // all（実装済みデータセット）。
+                let n = nutation::generate_to_disk()?;
+                let v = vsop87::generate_to_disk()?;
                 println!(
-                    "generated nutation-iau2000a (checksum {})",
-                    metadata.checksum
+                    "generated nutation-iau2000a ({}) + vsop87 ({})",
+                    n.checksum, v.checksum
                 );
                 Ok(())
             }
-            Some(other) => Err(XtaskError::NotImplemented(format!(
-                "generate-coefficients (dataset: {}) — ISSUE-033/034",
-                other.as_arg()
-            ))),
         },
         "verify-generated" => match dataset_arg(args)? {
-            Some(Dataset::NutationIau2000a) | None => nutation::verify_against_disk(),
-            Some(other) => Err(XtaskError::NotImplemented(format!(
-                "verify-generated (dataset: {}) — ISSUE-033/034",
-                other.as_arg()
-            ))),
+            Some(Dataset::NutationIau2000a) => nutation::verify_against_disk(),
+            Some(Dataset::Vsop87) => vsop87::verify_against_disk(),
+            Some(Dataset::ElpMpp02) => Err(XtaskError::NotImplemented(
+                "verify-generated (dataset: elp-mpp02) — ISSUE-034".to_string(),
+            )),
+            None => {
+                nutation::verify_against_disk()?;
+                vsop87::verify_against_disk()
+            }
         },
         "verify-data" => Err(XtaskError::NotImplemented(
             "verify-data — EOP/閏秒/ΔT 期限検査は ISSUE-007 データ管理で実装".to_string(),
@@ -198,25 +214,25 @@ mod tests {
     /// generate-coefficients は既知データセットでも生成本体は別 Issue → NotImplemented。
     #[test]
     fn run_generate_coefficients_known_dataset_is_not_implemented() {
-        // vsop87 は未実装（ISSUE-033）。nutation は実装済みのため別データセットで NotImplemented を検証。
-        let err = run(&args(&["generate-coefficients", "--dataset", "vsop87"]))
-            .expect_err("vsop87 generation lives in ISSUE-033");
+        // elp-mpp02 は未実装（ISSUE-034）。nutation/vsop87 は実装済みのため別データセットで検証。
+        let err = run(&args(&["generate-coefficients", "--dataset", "elp-mpp02"]))
+            .expect_err("elp-mpp02 generation lives in ISSUE-034");
         let message = err.to_string();
         assert!(
             matches!(err, XtaskError::NotImplemented(_)),
             "expected NotImplemented, got {err:?}"
         );
-        // メッセージは対象データセット名を含む（as_arg が実際の引数を反映する）。
+        // メッセージは対象データセット名を含む。
         assert!(
-            message.contains("vsop87"),
+            message.contains("elp-mpp02"),
             "NotImplemented message should name the dataset: {message}"
         );
     }
 
-    /// verify-generated（--dataset 付き）は NotImplemented。
+    /// verify-generated（未実装データセット elp-mpp02）は NotImplemented。
     #[test]
     fn run_verify_generated_is_not_implemented() {
-        let err = run(&args(&["verify-generated", "--dataset", "vsop87"]))
+        let err = run(&args(&["verify-generated", "--dataset", "elp-mpp02"]))
             .expect_err("verify-generated body not yet implemented");
         assert!(
             matches!(err, XtaskError::NotImplemented(_)),
