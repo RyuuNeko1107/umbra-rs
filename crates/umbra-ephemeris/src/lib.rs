@@ -9,6 +9,7 @@ pub mod ephemeris;
 pub mod frames;
 pub mod mock;
 pub mod nutation;
+pub mod sun;
 
 pub use ephemeris::{
     Body, Ephemeris, EphemerisError, EphemerisFrame, EphemerisMetadata, Origin, StateVector,
