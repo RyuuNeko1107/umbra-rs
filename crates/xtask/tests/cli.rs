@@ -126,3 +126,37 @@ fn verify_generated_vsop87_fails_without_source() {
         "vsop87 verify must fail when source data is absent"
     );
 }
+
+/// コミット済み ELP2000-82B 係数が一次原データ（ELP1..ELP36）から決定的に再生成できる
+/// （ISSUE-034 end-to-end 回帰）。`read_sources` が実 36 ファイルを忠実に読むことの保証も兼ねる。
+#[test]
+fn verify_generated_elp2000_82b_succeeds() {
+    let output = xtask()
+        .current_dir(repo_root())
+        .args(["verify-generated", "--dataset", "elp2000-82b"])
+        .output()
+        .expect("xtask binary runs");
+    assert!(
+        output.status.success(),
+        "committed elp2000-82b artifact must verify against source; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// elp2000-82b でも原データ不在の作業ディレクトリでは verify-generated は **失敗**する
+/// （`elp::verify_against_disk` が無条件 Ok を返さない／`read_sources` が空を返さないことの保証）。
+#[test]
+fn verify_generated_elp2000_82b_fails_without_source() {
+    let empty = std::env::temp_dir().join(format!("umbra_xtask_no_elp_{}", std::process::id()));
+    std::fs::create_dir_all(&empty).expect("create temp cwd");
+    let output = xtask()
+        .current_dir(&empty)
+        .args(["verify-generated", "--dataset", "elp2000-82b"])
+        .output()
+        .expect("xtask binary runs");
+    let _ = std::fs::remove_dir_all(&empty);
+    assert!(
+        !output.status.success(),
+        "elp2000-82b verify must fail when source data is absent"
+    );
+}

@@ -11,7 +11,9 @@ use crate::error::XtaskError;
 pub enum Dataset {
     /// VSOP87D 太陽（地球）系列（ISSUE-033）。
     Vsop87,
-    /// ELP/MPP02 月（ISSUE-034）。
+    /// ELP2000-82B 月（ISSUE-034、現行採用）。
+    Elp200082b,
+    /// ELP/MPP02 月（将来のアップグレード候補。原データ未入手・未実装）。
     ElpMpp02,
     /// IAU2000A 章動 nut00a（ISSUE-040）。
     NutationIau2000a,
@@ -22,6 +24,7 @@ impl Dataset {
     pub fn from_arg(arg: &str) -> Result<Dataset, XtaskError> {
         match arg {
             "vsop87" => Ok(Dataset::Vsop87),
+            "elp2000-82b" => Ok(Dataset::Elp200082b),
             "elp-mpp02" => Ok(Dataset::ElpMpp02),
             "nutation-iau2000a" => Ok(Dataset::NutationIau2000a),
             other => Err(XtaskError::UnknownDataset(other.to_string())),
@@ -32,6 +35,7 @@ impl Dataset {
     pub fn as_arg(self) -> &'static str {
         match self {
             Dataset::Vsop87 => "vsop87",
+            Dataset::Elp200082b => "elp2000-82b",
             Dataset::ElpMpp02 => "elp-mpp02",
             Dataset::NutationIau2000a => "nutation-iau2000a",
         }
@@ -41,6 +45,7 @@ impl Dataset {
     pub fn all() -> &'static [Dataset] {
         &[
             Dataset::Vsop87,
+            Dataset::Elp200082b,
             Dataset::ElpMpp02,
             Dataset::NutationIau2000a,
         ]
@@ -51,10 +56,14 @@ impl Dataset {
 mod tests {
     use super::*;
 
-    /// 3 種の正準引数文字列がそれぞれ対応する Dataset に解析される。
+    /// 正準引数文字列がそれぞれ対応する Dataset に解析される。
     #[test]
     fn from_arg_parses_canonical_strings() {
         assert_eq!(Dataset::from_arg("vsop87").unwrap(), Dataset::Vsop87);
+        assert_eq!(
+            Dataset::from_arg("elp2000-82b").unwrap(),
+            Dataset::Elp200082b
+        );
         assert_eq!(Dataset::from_arg("elp-mpp02").unwrap(), Dataset::ElpMpp02);
         assert_eq!(
             Dataset::from_arg("nutation-iau2000a").unwrap(),
@@ -85,12 +94,13 @@ mod tests {
         );
     }
 
-    /// all() は 3 種をちょうど重複なく列挙する。
+    /// all() は 4 種をちょうど重複なく列挙する。
     #[test]
-    fn all_contains_three_distinct_datasets() {
+    fn all_contains_distinct_datasets() {
         let all = Dataset::all();
-        assert_eq!(all.len(), 3, "exactly three datasets");
+        assert_eq!(all.len(), 4, "exactly four datasets");
         assert!(all.contains(&Dataset::Vsop87));
+        assert!(all.contains(&Dataset::Elp200082b));
         assert!(all.contains(&Dataset::ElpMpp02));
         assert!(all.contains(&Dataset::NutationIau2000a));
         // 重複なし: 各ペアが相異なる。

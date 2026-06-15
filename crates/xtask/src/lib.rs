@@ -8,6 +8,7 @@
 
 pub mod checksum;
 pub mod dataset;
+pub mod elp;
 pub mod error;
 pub mod nutation;
 pub mod packed;
@@ -93,16 +94,23 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
                 println!("generated vsop87 (checksum {})", m.checksum);
                 Ok(())
             }
+            Some(Dataset::Elp200082b) => {
+                let m = elp::generate_to_disk()?;
+                println!("generated elp2000-82b (checksum {})", m.checksum);
+                Ok(())
+            }
             Some(Dataset::ElpMpp02) => Err(XtaskError::NotImplemented(
-                "generate-coefficients (dataset: elp-mpp02) — ISSUE-034".to_string(),
+                "generate-coefficients (dataset: elp-mpp02) — 将来の MPP02 アップグレード候補"
+                    .to_string(),
             )),
             None => {
-                // all（実装済みデータセット）。
+                // all（実装済みデータセット: nutation + vsop87 + elp2000-82b）。
                 let n = nutation::generate_to_disk()?;
                 let v = vsop87::generate_to_disk()?;
+                let e = elp::generate_to_disk()?;
                 println!(
-                    "generated nutation-iau2000a ({}) + vsop87 ({})",
-                    n.checksum, v.checksum
+                    "generated nutation-iau2000a ({}) + vsop87 ({}) + elp2000-82b ({})",
+                    n.checksum, v.checksum, e.checksum
                 );
                 Ok(())
             }
@@ -110,12 +118,15 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
         "verify-generated" => match dataset_arg(args)? {
             Some(Dataset::NutationIau2000a) => nutation::verify_against_disk(),
             Some(Dataset::Vsop87) => vsop87::verify_against_disk(),
+            Some(Dataset::Elp200082b) => elp::verify_against_disk(),
             Some(Dataset::ElpMpp02) => Err(XtaskError::NotImplemented(
-                "verify-generated (dataset: elp-mpp02) — ISSUE-034".to_string(),
+                "verify-generated (dataset: elp-mpp02) — 将来の MPP02 アップグレード候補"
+                    .to_string(),
             )),
             None => {
                 nutation::verify_against_disk()?;
-                vsop87::verify_against_disk()
+                vsop87::verify_against_disk()?;
+                elp::verify_against_disk()
             }
         },
         "verify-data" => Err(XtaskError::NotImplemented(
