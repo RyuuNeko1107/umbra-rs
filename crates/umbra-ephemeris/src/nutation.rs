@@ -106,7 +106,7 @@ fn delaunay_arcsec(coeffs: &[f64; 5], t: f64) -> f64 {
 /// Delaunay = IERS Conventions 2003（SOFA `iauFal03` 等、秒角多項式）。
 /// 惑星黄経 = 平均黄経 `a + b·t`（rad、SOFA `iauFame03` 等）を 2π で約分。
 /// 一般歳差 p_A = `(0.024381750 + 0.00000538691·t)·t`（rad、SOFA `iauFapa03`）。
-fn fundamental_arguments(t: f64) -> [f64; N_ARGS] {
+pub(crate) fn fundamental_arguments(t: f64) -> [f64; N_ARGS] {
     // Delaunay 引数（秒角係数, IERS Conventions 2003）。
     let l = delaunay_arcsec(
         &[
