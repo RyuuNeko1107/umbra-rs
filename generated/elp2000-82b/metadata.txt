@@ -4,4 +4,4 @@ source = IMCCE ELP2000-82B (ELP1..ELP36); Chapront-Touzé & Chapront (1983/1988)
 license = IMCCE scientific data (attribution); regenerated from primary, GPL not used
 valid_from = 1900-01-01
 valid_to = 2100-01-01
-checksum = d0e79d5aa0359ea7c903e5d3948448d57837c240326a4d695bebc1034870f2b6
+checksum = 3a2a5275ebe0305874c8d96d92836be91a75ab4d576802a985ca46099423bc5d

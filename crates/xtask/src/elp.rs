@@ -4,7 +4,8 @@
 //! byte-for-byte 契約）へ直列化する。フォーマットの正本は
 //! `data/coefficient-source/elp2000-82b/PROVENANCE.md`。
 //!
-//! 2 形式: 主問題（ELP1-3）= `4 整数(D,l',l,F 乗数) + A`（続く B 偏微分列・末尾索引は不使用）;
+//! 2 形式: 主問題（ELP1-3）= `4 整数(D,l',l,F 乗数) + 7 実数(A=coef1, 偏微分 B1..B6=coef2..7)`
+//! （評価器 ISSUE-014 は coef1..6 を DE200/LE200 フィット補正に使う。coef7 は未使用だが忠実保存）;
 //! 摂動（ELP4-36）= `K 整数乗数 + φ(度) + A + 周期`（period 不使用）。係数の解釈・引数定義・
 //! sin/cos・×T の適用（評価式）は ISSUE-014。本 Issue は乗数群 + 係数を忠実に取り込む。
 
@@ -26,12 +27,12 @@ const PACKED_NAME: &str = "elp2000-82b_moon.bin";
 /// 健全性のための上限（カウント。実データ最大 14328 項/系列）。
 const MAX_COUNT: f64 = 1_000_000.0;
 
-/// 1 項: 整数乗数 + 係数。主問題は coefficients=\[A\]、摂動は \[φ(度), A\]。
+/// 1 項: 整数乗数 + 係数。主問題は coefficients=\[A, B1..B6\]（7 個）、摂動は \[φ(度), A\]。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Elp82bTerm {
     /// 引数の整数乗数（主問題=4, 摂動=系列ごとに異なる K）。
     pub multipliers: Vec<i32>,
-    /// 係数（主問題=\[A\]、摂動=\[phase_deg, A\]）。
+    /// 係数（主問題=\[A, B1..B6\]（7 個）、摂動=\[phase_deg, A\]）。
     pub coefficients: Vec<f64>,
 }
 
@@ -65,7 +66,7 @@ fn multiplier_count(file_number: u8) -> usize {
 
 /// 1 ファイルのテキストを系列にパースする。`file_number` が主問題(1-3)/摂動(4-36)を決める。
 /// 先頭行は見出し（スキップ）。各項行は **Fortran 固定幅 i3**（3 文字幅）で K 個の整数乗数が並び、
-/// 続く空白区切りの小数列が係数（主問題=\[A\]、摂動=\[φ, A\]）。i3 は隣接フィールドが空白なしで
+/// 続く空白区切りの小数列が係数（主問題=\[A, B1..B6\]、摂動=\[φ, A\]）。i3 は隣接フィールドが空白なしで
 /// 接する（例 ELP10 の "4-11" = " 4" の続きに "-11"）ため、空白分割ではなく固定幅で切る。
 pub fn parse_series(file_number: u8, text: &str) -> Result<Elp82bSeries, XtaskError> {
     let is_main = file_number <= 3;
@@ -93,7 +94,7 @@ pub fn parse_series(file_number: u8, text: &str) -> Result<Elp82bSeries, XtaskEr
             })?;
             multipliers.push(m);
         }
-        // 乗数群の後ろは空白区切りの小数列。主問題=[A]、摂動=[φ, A]（period は無視）。
+        // 乗数群の後ろは空白区切りの小数列。主問題=[A, B1..B6]（7 実数）、摂動=[φ, A]。
         let floats: Vec<&str> = line[k * 3..].split_whitespace().collect();
         let coeff = |i: usize| -> Result<f64, XtaskError> {
             floats
@@ -105,8 +106,13 @@ pub fn parse_series(file_number: u8, text: &str) -> Result<Elp82bSeries, XtaskEr
                     ))
                 })
         };
+        // 主問題は振幅 A＋偏微分 6 列（`4i3,2x,f13.5,6(2x,f10.2)`）の全 7 実数を忠実保存。
+        // 評価器(ISSUE-014)は coef(1..6) を DE200/LE200 フィット補正に使う（coef(7) は未使用）。
+        // 摂動は [φ(度), A]（period は不使用）。
         let coefficients = if is_main {
-            vec![coeff(0)?]
+            (0..7)
+                .map(coeff)
+                .collect::<Result<Vec<f64>, XtaskError>>()?
         } else {
             vec![coeff(0)?, coeff(1)?]
         };
@@ -333,8 +339,8 @@ mod tests {
     // 出典: data/coefficient-source/elp2000-82b/PROVENANCE.md
     //   （IMCCE, ELP2000-82B, Chapront-Touzé & Chapront 1983/1988）。
     // 各ファイル: 先頭 1 行が見出し（スキップ）、以降が項行。
-    //   主問題 ELP1-3: `i1 i2 i3 i4   A   B1..B5  <idx>` → 乗数=[i1..i4], 係数=[A]。
-    //   摂動  ELP4-36: `m1..mK   φ   A   period`       → 乗数=[m1..mK], 係数=[φ, A]。
+    //   主問題 ELP1-3: `i1 i2 i3 i4   A   B1..B6` → 乗数=[i1..i4], 係数=[A, B1..B6]（7 個）。
+    //   摂動  ELP4-36: `m1..mK   φ   A   period`  → 乗数=[m1..mK], 係数=[φ, A]。
     // ------------------------------------------------------------------
     const ELP_FILES: [&str; N_FILES] = [
         include_str!("../../../data/coefficient-source/elp2000-82b/ELP1"),
@@ -422,29 +428,54 @@ mod tests {
     // ==================================================================
 
     /// ELP1（主問題・経度 sine）第1項（ELP1:2）:
-    ///   `  0  0  0  2     -411.60287      168.48   -18433.81 ...`
-    /// 乗数=[0,0,0,2]（4 個・D,l',l,F）、係数=[A=-411.60287]（続く B 列・末尾索引は不使用）。
+    ///   `  0  0  0  2     -411.60287      168.48   -18433.81     -121.62        0.40       -0.18        0.00`
+    /// 乗数=[0,0,0,2]（4 個・D,l',l,F）、係数=coef(1..7)=[A, B1..B6]（全 7 floats を file 順で保持）。
+    /// elp82b_1（DE200/LE200 適合補正）が coef(1..6) を消費するため、A だけでなく続く B 偏微分列も全て取り込む。
     #[test]
     fn elp1_main_first_term_spot_value() {
         let s = parse_series(1, ELP_FILES[0]).expect("ELP1 parses");
         let t = &s.terms[0];
         assert_eq!(t.multipliers, vec![0, 0, 0, 2], "ELP1 first multipliers");
-        assert_eq!(t.coefficients, vec![-411.60287], "ELP1 first coeff = [A]");
+        assert_eq!(
+            t.coefficients,
+            vec![-411.60287, 168.48, -18433.81, -121.62, 0.40, -0.18, 0.00],
+            "ELP1 first coeff = coef(1..7) = [A, B1..B6]"
+        );
         assert_eq!(t.multipliers.len(), 4, "main problem: 4 multipliers");
-        assert_eq!(t.coefficients.len(), 1, "main problem: 1 coefficient (A)");
+        assert_eq!(
+            t.coefficients.len(),
+            7,
+            "main problem: 7 coefficients (A, B1..B6)"
+        );
     }
 
     /// ELP3（主問題・距離 cosine）第1項（ELP3:2、距離定数 ~385000 km）:
-    ///   `  0  0  0  0   385000.52719    -7992.63 ...`
-    /// 乗数=[0,0,0,0]、係数=[385000.52719]。主問題で全乗数 0・大きな振幅の境界を独立確認。
+    ///   `  0  0  0  0   385000.52719    -7992.63      -11.06    21578.08       -4.53       11.39       -0.06`
+    /// 乗数=[0,0,0,0]、係数=coef(1..7)=[A, B1..B6]。主問題で全乗数 0・大きな振幅・全 7 floats 取込みの境界を独立確認。
     #[test]
     fn elp3_main_first_term_spot_value() {
         let s = parse_series(3, ELP_FILES[2]).expect("ELP3 parses");
         let t = &s.terms[0];
         assert_eq!(t.multipliers, vec![0, 0, 0, 0], "ELP3 first multipliers");
-        assert_eq!(t.coefficients, vec![385000.52719], "ELP3 first coeff = [A]");
+        assert_eq!(
+            t.coefficients,
+            vec![
+                385000.52719,
+                -7992.63,
+                -11.06,
+                21578.08,
+                -4.53,
+                11.39,
+                -0.06
+            ],
+            "ELP3 first coeff = coef(1..7) = [A, B1..B6]"
+        );
         assert_eq!(t.multipliers.len(), 4, "main problem: 4 multipliers");
-        assert_eq!(t.coefficients.len(), 1, "main problem: 1 coefficient (A)");
+        assert_eq!(
+            t.coefficients.len(),
+            7,
+            "main problem: 7 coefficients (A, B1..B6)"
+        );
     }
 
     /// ELP4（地球形状摂動・経度）第1項（ELP4:2）:
@@ -617,7 +648,7 @@ mod tests {
     //   レイアウト: [n_series, <系列 = [file, n_mult, n_coeff, n_terms,
     //               <項 = n_mult 乗数 + n_coeff 係数>]>...]。
     //   f64 数 = 1 + Σ_series(4 + n_terms*(n_mult + n_coeff))。
-    //   主問題 n_mult=4,n_coeff=1; 摂動 n_mult=K,n_coeff=2。
+    //   主問題 n_mult=4,n_coeff=7; 摂動 n_mult=K,n_coeff=2。
     // ==================================================================
     #[test]
     fn pack_model_is_deterministic_and_has_exact_length() {
@@ -636,10 +667,10 @@ mod tests {
                 assert_eq!(t.multipliers.len(), n_mult, "uniform n_mult in series");
                 assert_eq!(t.coefficients.len(), n_coeff, "uniform n_coeff in series");
             }
-            // 主問題(1-3)=4+1、摂動(4-36)=K+2 の対応も確認。
+            // 主問題(1-3)=4+7、摂動(4-36)=K+2 の対応も確認。
             if s.file <= 3 {
                 assert_eq!(n_mult, 4, "main problem n_mult=4");
-                assert_eq!(n_coeff, 1, "main problem n_coeff=1");
+                assert_eq!(n_coeff, 7, "main problem n_coeff=7");
             } else {
                 assert_eq!(n_coeff, 2, "perturbation n_coeff=2");
             }
@@ -657,16 +688,20 @@ mod tests {
     //      乗数が空（先頭トークンが小数）の異常行は MalformedSource（パース規約の境界）。
     // ==================================================================
 
-    /// 合成主問題（1 項）: 見出し行 + `i1 i2 i3 i4   A   B...  idx`。
-    /// 最初の小数トークン A までが乗数、A のみが係数。続く B 列・索引は無視される。
+    /// 合成主問題（1 項）: 見出し行 + `i1 i2 i3 i4   A   B1..B6`。
+    /// 4 整数 i3 までが乗数、続く 7 floats coef(1..7)=[A, B1..B6] が全て係数。
     #[test]
     fn parse_series_main_synthetic_single_term() {
-        let text = "MAIN PROBLEM. LONGITUDE(SINE)\n  1 -2  3 -4     12.50000      1.0   2.0   3.0   4.0   5.0   99\n";
+        let text = "MAIN PROBLEM. LONGITUDE(SINE)\n  1 -2  3 -4     12.50000      1.0   2.0   3.0   4.0   5.0   6.0\n";
         let s = parse_series(1, text).expect("synthetic main parses");
         assert_eq!(s.file, 1);
         assert_eq!(s.terms.len(), 1, "one term row");
         assert_eq!(s.terms[0].multipliers, vec![1, -2, 3, -4]);
-        assert_eq!(s.terms[0].coefficients, vec![12.5], "only A; B/idx ignored");
+        assert_eq!(
+            s.terms[0].coefficients,
+            vec![12.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "coef(1..7) = [A, B1..B6]"
+        );
     }
 
     /// 合成摂動（1 項）: 見出し行 + `m1..m5   φ   A   period`。

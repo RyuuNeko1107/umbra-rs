@@ -30,9 +30,12 @@ IMCCE（Observatoire de Paris）, `ftp://ftp.imcce.fr/pub/ephem/moon/elp82b/`。
 
 ## 行フォーマット（パース仕様の正本）
 
-- **主問題（ELP1-3）**: `i1 i2 i3 i4   A   B1 B2 B3 B4 B5   <idx>`。
-  - `i1..i4` = Delaunay 引数 `D, l', l, F` の整数乗数。`A` = 振幅係数。続く 5-6 列は定数偏微分（標準評価では不使用、再fit用）、末尾は索引。
-  - 項 = `A·sin(arg)`（ELP1 経度/ELP2 緯度）/ `A·cos(arg)`（ELP3 距離）、`arg = i1·D + i2·l' + i3·l + i4·F`。
+- **主問題（ELP1-3）**: `i1 i2 i3 i4   A   B1 B2 B3 B4 B5 B6`（`4i3,2x,f13.5,6(2x,f10.2)`）。
+  - `i1..i4` = Delaunay 引数 `D, l', l, F` の整数乗数。`coef(1)=A`=振幅、`coef(2..7)=B1..B6`=定数偏微分。
+  - **B 列は評価器(ISSUE-014)が DE200/LE200 フィット補正に使用**（`elp82b_1`: `tgv=B1+dtasm·B5`,
+    `A' = A + tgv·(delnp−am·delnu) + B2·delg + B3·dele + B4·delep`、距離は `A−2A·delnu/3` も）。
+    coef(7)=B6 は未使用だが**全 7 実数を忠実保存**（パーサは評価知識を持たない）。
+  - 項 = `A'·sin(arg)`（ELP1 経度/ELP2 緯度）/ `A'·cos(arg)`（ELP3 距離）、`arg = i1·D + i2·l' + i3·l + i4·F`。
   - 単位は経度/緯度=秒角、距離=km（評価時に確定。ISSUE-014）。
 - **摂動（ELP4-36）**: `m1 .. mK   φ   A   period`。
   - `m1..mK` = 当該系列の引数（Delaunay + 惑星平均黄経 + 歳差等）の整数乗数（K は系列ごとに異なる:
