@@ -1,0 +1,3 @@
+# `cargo xtask <subcommand>` を内部ビルドタスク（ISSUE-046）のエイリアスにする。
+[alias]
+xtask = "run --package xtask --"

@@ -1,0 +1,25 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "umbra-rs internal build tasks: coefficient generation, generated-artifact verification, license/data checks (ISSUE-046)"
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-core = { path = "../umbra-core" }
+sha2 = "0.10"
+thiserror = "2"
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[lib]
+name = "xtask"
+path = "src/lib.rs"
