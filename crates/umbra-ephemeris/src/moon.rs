@@ -3,10 +3,12 @@
 //! 正本: `docs/algorithms/elp2000-82b-evaluation.md`（著者 Fortran `elp82b_1` から転記、
 //! Chapront-Touzé & Chapront, IMCCE MCJCGF.9601）。
 //!
-//! S1（本コミット）= 基本引数 [`moon_arguments`]。S2 = 36 系列の総和＋組立＋J2000 回転。
-//!
-//! S1 の公開 IF はまだ評価器(S2)が consume しないため `dead_code` を一時許容（S2 で解除）。
-#![allow(dead_code)]
+//! S1 = 基本引数 [`moon_arguments`]。S2 = 36 系列の総和＋組立＋J2000 回転
+//! [`moon_geocentric_j2000`]。
+
+use core::f64::consts::{FRAC_PI_2, TAU};
+use std::sync::OnceLock;
+use umbra_core::{TdbInstant, Vector3};
 
 /// 時刻 `t`（J2000 からのユリウス世紀 TDB, 無次元）における ELP2000-82B 基本引数（rad）。
 /// 引数は**正規化しない**生の多項式和（t と共に増大する）。
@@ -157,10 +159,220 @@ pub(crate) fn moon_arguments(t: f64) -> MoonArguments {
     }
 }
 
+// ====================================================================
+// S2: 36 系列の総和＋組立＋J2000 回転 → 地心直交（km）。
+// ====================================================================
+
+/// packed ELP2000-82B 係数（ISSUE-034/S0 生成物、flat little-endian f64）。
+/// レイアウト: `[n_series, <系列 = [file, n_mult, n_coeff, n_terms, <項 = n_mult 乗数 + n_coeff 係数>]>...]`。
+const PACKED: &[u8] = include_bytes!("../../../generated/elp2000-82b/elp2000-82b_moon.bin");
+
+/// 月慣性質量比関連定数（`elp82b_1`）。
+const AM: f64 = 0.074801329518;
+const ALFA: f64 = 0.002571881335;
+const DTASM: f64 = 2.0 * ALFA / (3.0 * AM);
+/// 距離スケール基準（km）。`R = Σ · A0/ATH`。
+const A0: f64 = 384747.9806448954;
+const ATH: f64 = 384747.9806743165;
+/// DE200/LE200 フィット補正（主問題の振幅補正に使用）。RAD/W1(t¹) を含むものは比で rad が相殺。
+const W1_RATE: f64 = 1732559343.73604 / RAD;
+const DELNU: f64 = (0.55604 / RAD) / W1_RATE;
+const DELE: f64 = 0.01789 / RAD;
+const DELG: f64 = -0.08066 / RAD;
+const DELNP: f64 = (-0.06424 / RAD) / W1_RATE;
+const DELEP: f64 = -0.12879 / RAD;
+/// 平均黄道 of date → 平均黄道/J2000 慣性分点の回転（Laskar P,Q 多項式, rad）。
+const PCOEF: [f64; 5] = [
+    0.10180391e-4,
+    0.47020439e-6,
+    -0.5417367e-9,
+    -0.2507948e-11,
+    0.463486e-14,
+];
+const QCOEF: [f64; 5] = [
+    -0.113469002e-3,
+    0.12372674e-6,
+    0.1265417e-8,
+    -0.1371808e-11,
+    -0.320334e-14,
+];
+
+/// 1 項: 整数乗数 + 係数（主問題=[A,B1..B6], 摂動=[φ(度), A]）。
+struct PackedTerm {
+    multipliers: Vec<i32>,
+    coeffs: Vec<f64>,
+}
+
+/// 1 系列（ファイル 1..=36）。
+struct PackedSeries {
+    file: u8,
+    terms: Vec<PackedTerm>,
+}
+
+/// 検証済み f64 を非負カウントへ（自前生成・verify-generated ゲート済みのため信頼）。
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn nint(value: f64) -> usize {
+    value.round() as usize
+}
+
+/// 検証済み f64 を整数乗数 i32 へ。
+#[allow(clippy::cast_possible_truncation)]
+fn nint_i32(value: f64) -> i32 {
+    value.round() as i32
+}
+
+/// packed を 1 度だけ復号する（xtask::elp::pack_model と byte-for-byte 対称）。
+fn model() -> &'static [PackedSeries] {
+    static MODEL: OnceLock<Vec<PackedSeries>> = OnceLock::new();
+    MODEL.get_or_init(|| {
+        let values: Vec<f64> = PACKED
+            .chunks_exact(8)
+            .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("packed length multiple of 8")))
+            .collect();
+        let n_series = nint(values[0]);
+        let mut idx = 1;
+        let mut series = Vec::with_capacity(n_series);
+        for _ in 0..n_series {
+            let file = u8::try_from(nint(values[idx])).expect("file fits u8");
+            let n_mult = nint(values[idx + 1]);
+            let n_coeff = nint(values[idx + 2]);
+            let n_terms = nint(values[idx + 3]);
+            idx += 4;
+            let mut terms = Vec::with_capacity(n_terms);
+            for _ in 0..n_terms {
+                let multipliers = values[idx..idx + n_mult]
+                    .iter()
+                    .map(|&v| nint_i32(v))
+                    .collect();
+                idx += n_mult;
+                let coeffs = values[idx..idx + n_coeff].to_vec();
+                idx += n_coeff;
+                terms.push(PackedTerm {
+                    multipliers,
+                    coeffs,
+                });
+            }
+            series.push(PackedSeries { file, terms });
+        }
+        series
+    })
+}
+
+/// 摂動振幅の時間スケール（Poisson 項）: ×t（/t 系列）/ ×t²（/t² 系列）/ ×1。
+fn amplitude_scale(file: u8, t: f64) -> f64 {
+    match file {
+        7..=9 | 13..=15 | 19..=21 | 25..=27 => t,
+        34..=36 => t * t,
+        _ => 1.0,
+    }
+}
+
+/// 月の地心直交座標（mean dynamical ecliptic / inertial equinox of J2000, km）。
+/// 補正前の幾何位置（光行時間・章動・光行差は ISSUE-015）。TDB 引数。
+pub fn moon_geocentric_j2000(time_tdb: TdbInstant) -> Vector3 {
+    let t = time_tdb.jd2().julian_centuries_since_j2000();
+    let args = moon_arguments(t);
+    let df = &args.delaunay_full;
+    let dl = &args.delaunay_lin;
+    let zeta = args.zeta_lin;
+    let pl = &args.planets_lin;
+
+    // r = [経度(秒角), 緯度(秒角), 距離(km)] の系列総和。
+    let mut r = [0.0_f64; 3];
+    for s in model() {
+        let iv = usize::from((s.file - 1) % 3);
+        if s.file <= 3 {
+            // 主問題: 振幅は DE200/LE200 補正、引数は完全多項式 Delaunay。距離は cos（+π/2）。
+            for term in &s.terms {
+                let c = &term.coeffs;
+                let tgv = c[1] + DTASM * c[5];
+                let mut amp = c[0];
+                if s.file == 3 {
+                    amp -= 2.0 * amp * DELNU / 3.0;
+                }
+                let amp =
+                    amp + tgv * (DELNP - AM * DELNU) + c[2] * DELG + c[3] * DELE + c[4] * DELEP;
+                let mut y = 0.0;
+                for (m, d) in term.multipliers.iter().zip(df.iter()) {
+                    y += f64::from(*m) * d;
+                }
+                if iv == 2 {
+                    y += FRAC_PI_2;
+                }
+                r[iv] += amp * (y % TAU).sin();
+            }
+        } else if (10..=21).contains(&s.file) {
+            // 惑星摂動（表1/表2）。乗数 11、係数 [φ, A]。引数は線形。
+            let scale = amplitude_scale(s.file, t);
+            let table1 = s.file < 16;
+            for term in &s.terms {
+                let m = &term.multipliers;
+                let mut y = term.coeffs[0] * DEG;
+                if table1 {
+                    // 表1: m[8]·D + m[9]·l + m[10]·F + Σ_{i=0..8} m[i]·planet[i]。
+                    y += f64::from(m[8]) * dl[0]
+                        + f64::from(m[9]) * dl[2]
+                        + f64::from(m[10]) * dl[3];
+                    for (mi, p) in m.iter().zip(pl.iter()) {
+                        y += f64::from(*mi) * p;
+                    }
+                } else {
+                    // 表2: Σ_{i=0..4} m[i+7]·del[i] + Σ_{i=0..7} m[i]·planet[i]。
+                    for (mi, d) in m[7..11].iter().zip(dl.iter()) {
+                        y += f64::from(*mi) * d;
+                    }
+                    for (mi, p) in m[0..7].iter().zip(pl.iter()) {
+                        y += f64::from(*mi) * p;
+                    }
+                }
+                r[iv] += term.coeffs[1] * scale * (y % TAU).sin();
+            }
+        } else {
+            // 地球形状/潮汐/月形状/相対論/太陽離心率（4-9, 22-36）。乗数 5 = [iz, ilu0..3]。
+            let scale = amplitude_scale(s.file, t);
+            for term in &s.terms {
+                let m = &term.multipliers;
+                let mut y = term.coeffs[0] * DEG + f64::from(m[0]) * zeta;
+                for (mi, d) in m[1..5].iter().zip(dl.iter()) {
+                    y += f64::from(*mi) * d;
+                }
+                r[iv] += term.coeffs[1] * scale * (y % TAU).sin();
+            }
+        }
+    }
+
+    // 組立: 経度 V = Σ/rad + W1(t)、緯度 U = Σ/rad、距離 R = Σ·a0/ath。
+    let v = r[0] / RAD + args.w1;
+    let u = r[1] / RAD;
+    let rr = r[2] * A0 / ATH;
+    // 球面 → 平均黄道 of date 直交。
+    let (sin_u, cos_u) = u.sin_cos();
+    let (sin_v, cos_v) = v.sin_cos();
+    let x1 = rr * cos_u;
+    let x2 = x1 * sin_v;
+    let x1 = x1 * cos_v;
+    let x3 = rr * sin_u;
+    // Laskar P,Q 回転で平均黄道/J2000 慣性分点へ。
+    let pw = poly(&PCOEF, t) * t;
+    let qw = poly(&QCOEF, t) * t;
+    let ra = 2.0 * (1.0 - pw * pw - qw * qw).sqrt();
+    let pwqw = 2.0 * pw * qw;
+    let pw2 = 1.0 - 2.0 * pw * pw;
+    let qw2 = 1.0 - 2.0 * qw * qw;
+    let pw = pw * ra;
+    let qw = qw * ra;
+    Vector3::new(
+        pw2 * x1 + pwqw * x2 + pw * x3,
+        pwqw * x1 + qw2 * x2 - qw * x3,
+        -pw * x1 + qw * x2 + (pw2 + qw2 - 1.0) * x3,
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::excessive_precision)]
 mod tests {
     use super::*;
+    use umbra_core::JulianDate2;
 
     /// 絶対許容での近接表明（`clippy::float_cmp` 回避）。
     #[track_caller]
@@ -356,5 +568,84 @@ mod tests {
             "t=1: delaunay_full[0] (D) must differ from delaunay_lin[0] (|diff| = {diff_d:e} <= 1e-6); \
              higher-order terms not applied?"
         );
+    }
+
+    // ==================================================================
+    // S2: moon_geocentric_j2000 vs オラクル（著者 Fortran elp82b_1 の独立 Python 移植、
+    // 公開値 JD 2451555.5 に 5e-10 km 一致＝信頼可）。出力 = mean ecliptic/J2000 慣性分点, km。
+    // 1400–2100 を張り t²..t⁴ べき・×t/×t² Poisson 級数・Laskar 回転を励起。
+    // 許容 2e-6 km(2 mm): Rust と移植は同一正本アルゴリズムで、差は f64 演算順のみ
+    // （Rust は引数を delaunay_full で 1 度評価、移植はべき毎和。実測最大 6.65e-7 km＝0.66mm、
+    //  1900 t≈−1.4 で最大。これは 37872 項 f64 総和の固有丸めで月モデル精度 0.40″≈750m の
+    //  ~9 桁下）。2e-6 はこの床の ~3 倍で、固定 Docker イメージ上は決定的。これにより構造/
+    //  論理バグに加え DE200/LE200 フィット補正（delnu/dele/delg/delnp/delep, ~m 級）と 1 次の
+    //  Laskar 回転（pw2/qw2）の誤りも捕捉。残存の微小変異（DTASM 経由 tgv・回転 2 次 pw²・
+    //  sin 周期性 %TAU→+TAU）は <床 or 等価で許容（docs/reviews/mutation-moon.md）。
+    //  小振幅係数の転記精度は ISSUE-034 の round-trip+checksum が別途保証。
+    // ==================================================================
+
+    /// `(JD_TDB, [X_km, Y_km, Z_km])`。
+    const ORACLE: [(f64, [f64; 3]); 7] = [
+        (
+            2305447.5,
+            [-133215.08543039399, 359080.0506588529, 9791.334833276025],
+        ),
+        (
+            2415020.5,
+            [24466.25480643438, -367508.841233825, 7042.610859853953],
+        ),
+        (
+            2444239.5,
+            [43890.1382077410, 381188.7625491393, -31633.3768118953],
+        ),
+        (
+            2451545.0,
+            [-291608.23234374094, -274979.94408453995, 36271.17050269245],
+        ),
+        (
+            2451555.5,
+            [382979.76047304674, -68204.20174530093, -25987.71602589963],
+        ),
+        (
+            2469000.5,
+            [-361602.9853562691, 44996.9951025669, -30696.6531571589],
+        ),
+        (
+            2488069.5,
+            [-339520.7371925672, 151145.57646019128, 7061.378184640374],
+        ),
+    ];
+
+    /// 許容 2e-6 km。実測 Rust↔移植差の最大 6.65e-7 km（1900, t≈−1.4）に ~3 倍の余裕。
+    const TOL_KM: f64 = 2e-6;
+
+    /// TDB の単一要素 JD から `TdbInstant` を構築（part2=0）。
+    fn tdb(jd: f64) -> TdbInstant {
+        TdbInstant::from_jd2(JulianDate2::new(jd, 0.0))
+    }
+
+    /// 全オラクル行で X,Y,Z を 1e-3 km 以内照合（系列群引数・距離位相・スケール・回転・単位を殺す）。
+    #[test]
+    fn moon_geocentric_j2000_matches_oracle() {
+        for (jd, expected) in ORACLE {
+            let v = moon_geocentric_j2000(tdb(jd));
+            let actual = [v.x, v.y, v.z];
+            for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+                let comp = ["X", "Y", "Z"][i];
+                assert_close(*a, *e, TOL_KM, &format!("JD{jd} {comp}_km"));
+            }
+        }
+    }
+
+    /// オーダーサニティ: ノルムが物理的な月距離域に入る（単位/スケール暴走を検出）。
+    #[test]
+    fn moon_distance_order_of_magnitude() {
+        for (jd, _) in ORACLE {
+            let norm = moon_geocentric_j2000(tdb(jd)).norm();
+            assert!(
+                (356000.0..407000.0).contains(&norm),
+                "lunar distance at JD{jd} out of physical range [356000,407000) km: {norm}"
+            );
+        }
     }
 }
