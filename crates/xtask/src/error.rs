@@ -30,4 +30,16 @@ pub enum XtaskError {
     /// packed バイト列の長さが f64 境界（8 の倍数）でない等の不整合。
     #[error("malformed packed data: {0}")]
     MalformedPacked(String),
+    /// 一次原データ（IERS 章動表等）のパース失敗・項数不整合。
+    #[error("malformed source data: {0}")]
+    MalformedSource(String),
+    /// 原データファイルの入出力エラー。
+    #[error("io error reading {path}: {source}")]
+    Io {
+        /// 対象パス。
+        path: String,
+        /// 元の I/O エラー。
+        #[source]
+        source: std::io::Error,
+    },
 }

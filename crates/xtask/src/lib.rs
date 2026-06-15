@@ -9,6 +9,7 @@
 pub mod checksum;
 pub mod dataset;
 pub mod error;
+pub mod nutation;
 pub mod packed;
 
 use dataset::Dataset;
@@ -79,20 +80,28 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
     };
 
     match subcommand {
-        "generate-coefficients" => {
-            let dataset = dataset_arg(args)?; // 未知データセットはここで弾く
-            Err(XtaskError::NotImplemented(format!(
-                "generate-coefficients (dataset: {}) — 各データセット生成は ISSUE-033/034/040",
-                describe_dataset(dataset)
-            )))
-        }
-        "verify-generated" => {
-            let dataset = dataset_arg(args)?;
-            Err(XtaskError::NotImplemented(format!(
-                "verify-generated (dataset: {}) — 生成物が出揃う ISSUE-040 以降で実装",
-                describe_dataset(dataset)
-            )))
-        }
+        "generate-coefficients" => match dataset_arg(args)? {
+            // 章動（ISSUE-040）は実装済み。`None`（all）も現状は章動のみ生成。
+            Some(Dataset::NutationIau2000a) | None => {
+                let metadata = nutation::generate_to_disk()?;
+                println!(
+                    "generated nutation-iau2000a (checksum {})",
+                    metadata.checksum
+                );
+                Ok(())
+            }
+            Some(other) => Err(XtaskError::NotImplemented(format!(
+                "generate-coefficients (dataset: {}) — ISSUE-033/034",
+                other.as_arg()
+            ))),
+        },
+        "verify-generated" => match dataset_arg(args)? {
+            Some(Dataset::NutationIau2000a) | None => nutation::verify_against_disk(),
+            Some(other) => Err(XtaskError::NotImplemented(format!(
+                "verify-generated (dataset: {}) — ISSUE-033/034",
+                other.as_arg()
+            ))),
+        },
         "verify-data" => Err(XtaskError::NotImplemented(
             "verify-data — EOP/閏秒/ΔT 期限検査は ISSUE-007 データ管理で実装".to_string(),
         )),
@@ -100,14 +109,6 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
             "check-licenses — cargo-deny + provenance 整合は CI ゲートで実装".to_string(),
         )),
         other => Err(XtaskError::UnknownSubcommand(other.to_string())),
-    }
-}
-
-/// `--dataset` の表示名（`None` は全データセット）。
-fn describe_dataset(dataset: Option<Dataset>) -> &'static str {
-    match dataset {
-        Some(d) => d.as_arg(),
-        None => "all",
     }
 }
 
@@ -197,20 +198,17 @@ mod tests {
     /// generate-coefficients は既知データセットでも生成本体は別 Issue → NotImplemented。
     #[test]
     fn run_generate_coefficients_known_dataset_is_not_implemented() {
-        let err = run(&args(&[
-            "generate-coefficients",
-            "--dataset",
-            "nutation-iau2000a",
-        ]))
-        .expect_err("generation body lives in another issue");
+        // vsop87 は未実装（ISSUE-033）。nutation は実装済みのため別データセットで NotImplemented を検証。
+        let err = run(&args(&["generate-coefficients", "--dataset", "vsop87"]))
+            .expect_err("vsop87 generation lives in ISSUE-033");
         let message = err.to_string();
         assert!(
             matches!(err, XtaskError::NotImplemented(_)),
             "expected NotImplemented, got {err:?}"
         );
-        // メッセージは対象データセット名を含む（describe_dataset が実際の引数を反映する）。
+        // メッセージは対象データセット名を含む（as_arg が実際の引数を反映する）。
         assert!(
-            message.contains("nutation-iau2000a"),
+            message.contains("vsop87"),
             "NotImplemented message should name the dataset: {message}"
         );
     }
