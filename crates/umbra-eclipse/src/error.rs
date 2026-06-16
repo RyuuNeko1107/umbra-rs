@@ -4,6 +4,7 @@
 //! `BesselFitError`（f64 を含む）を載せるため列挙体は `Eq` を持たない（`PartialEq` のみ）。
 
 use thiserror::Error;
+use umbra_core::TimeError;
 
 use crate::bessel_poly::BesselFitError;
 
@@ -14,6 +15,10 @@ pub enum EclipseError {
     /// 影幾何が退化している（太陽・月が同一点など）。
     #[error("degenerate shadow geometry")]
     DegenerateGeometry,
+
+    /// 時刻系変換に失敗した（例: 1972 年より前で UTC↔TT が定義できない, ISSUE-016）。
+    #[error("time scale conversion failed: {0}")]
+    Time(#[from] TimeError),
 
     /// ベッセル多項式 fit の残差が許容を超えた（ISSUE-022）。実測残差と要求許容を保持する。
     #[error("Besselian polynomial fit residual exceeded tolerance (achieved {achieved:?}, tolerance {tolerance:?})")]

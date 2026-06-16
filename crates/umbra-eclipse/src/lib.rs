@@ -6,6 +6,7 @@
 
 pub mod bessel_poly;
 pub mod besselian;
+pub mod candidates;
 pub mod error;
 pub mod fundamental;
 pub mod global;
