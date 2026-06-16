@@ -4,7 +4,7 @@
 //! `BesselFitError`（f64 を含む）を載せるため列挙体は `Eq` を持たない（`PartialEq` のみ）。
 
 use thiserror::Error;
-use umbra_core::TimeError;
+use umbra_core::{SolverError, TimeError};
 
 use crate::bessel_poly::BesselFitError;
 
@@ -36,4 +36,8 @@ pub enum EclipseError {
     /// 多項式を fit 区間外で評価しようとした（多項式は区間内のみ妥当, ISSUE-022/037）。
     #[error("evaluation outside fit interval")]
     EvaluationOutsideFitInterval,
+
+    /// 数値求根に失敗した（ブラケット不成立・収束せず・不安定, ISSUE-017）。
+    #[error("root solver failed: {0}")]
+    Solver(#[from] SolverError),
 }
