@@ -9,9 +9,11 @@ pub mod error;
 pub mod fundamental;
 pub mod global;
 pub mod shadow;
+pub mod source;
 
 pub use besselian::{besselian_elements, BesselianElements};
 pub use error::EclipseError;
 pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use global::{classify, SolarEclipseKind};
 pub use shadow::{shadow_cone, ShadowCone};
+pub use source::{BesselianSource, DirectBesselianSource};
