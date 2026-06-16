@@ -4,6 +4,7 @@
 //! 全球/局地は順次追加（`docs/algorithms/` §5–§9）。
 //! 幾何ロジックは [`umbra_ephemeris::MockEphemeris`] 上で検証する（accuracy.md §3.1）。
 
+pub mod bessel_poly;
 pub mod besselian;
 pub mod error;
 pub mod fundamental;
@@ -12,9 +13,11 @@ pub mod polynomial;
 pub mod shadow;
 pub mod source;
 
+pub use bessel_poly::{BesselFitError, BesselianPolynomial};
 pub use besselian::{besselian_elements, BesselianElements};
 pub use error::EclipseError;
 pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use global::{classify, SolarEclipseKind};
+pub use polynomial::Polynomial;
 pub use shadow::{shadow_cone, ShadowCone};
 pub use source::{BesselianSource, DirectBesselianSource};

@@ -11,9 +11,6 @@
 // 本モジュールの整数→浮動小数変換は小さなループ添字・多項式次数のみ（degree は数次、ノード数も小）で
 // f64 に厳密表現できる範囲。精度クリティカルな天文量の変換ではないため、添字算術に限り許容する。
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-// chebyshev_nodes / fit_chebyshev_monomial は ISSUE-022 スライス2（BesselianPolynomial::fit）が
-// 消費する。S2 で利用が結線され次第この許容は外す（moon.rs S1 と同手順）。
-#![allow(dead_code)]
 
 use core::f64::consts::PI;
 
