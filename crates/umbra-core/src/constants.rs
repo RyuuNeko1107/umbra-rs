@@ -31,6 +31,12 @@ pub const JULIAN_CENTURY_DAYS: f64 = 36_525.0;
 /// 1 ユリウス千年の日数（VSOP87 の引数 T で使用）。
 pub const JULIAN_MILLENNIUM_DAYS: f64 = 365_250.0;
 
+/// 太陽の Schwarzschild 半径相当（無次元）。SOFA/ERFA `ab.c` の定義値 `SRS = 2·G·M_⊙/(c²·au)`。
+/// 相対論的光行差 `iauAb` の微項 `w2 = SRS/s`（`s` = 太陽-観測者距離 \[au\]）で使用する。
+/// これは `iauAb` 内に常時含まれる微小項（~SRS/au ≈ 2e-8）で、角度依存の太陽光偏向 `iauLd`
+/// （Standard 既定 OFF）とは別物（`docs/algorithms/03-ephemeris.md` E8/E9）。
+pub const SRS: f64 = 1.974_125_743_36e-8;
+
 /// 秒角 → ラジアン変換係数（= π / 648000）。SOFA の `DAS2R` 相当。
 /// 歳差・章動・黄道傾斜など、秒角で表される級数係数のラジアン化に用いる
 /// （IAU2006/2000A の係数は秒角単位。`docs/algorithms/02-frames.md`）。

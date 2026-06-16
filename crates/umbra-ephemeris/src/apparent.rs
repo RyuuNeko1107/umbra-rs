@@ -18,7 +18,7 @@ use crate::frames::ecliptic_to_gcrs_matrix;
 use crate::moon::moon_geocentric_j2000;
 use crate::sun::sun_geocentric_ecliptic_of_date;
 use umbra_core::constants::{ASTRONOMICAL_UNIT_KM, J2000_JD};
-use umbra_core::{JulianDate2, TdbInstant, TtInstant, Vector3};
+use umbra_core::{JulianDate2, TdbInstant, TtInstant, UnitVector3, Vector3};
 
 /// 太陽の幾何地心位置（GCRS, km）。補正前（光行時間・光行差は後続）。TT 入力。
 /// VSOP87D（黄道 of date, AU）を **観測日**の黄道→GCRS 行列で回転し km 化する。
@@ -100,6 +100,61 @@ pub fn sun_light_time_corrected_gcrs(time_tt: TtInstant) -> LightTimeCorrected {
 /// 月の光行時間補正後の幾何地心位置（GCRS, km）と τ。
 pub fn moon_light_time_corrected_gcrs(time_tt: TtInstant) -> LightTimeCorrected {
     light_time_correct(time_tt, moon_geocentric_gcrs)
+}
+
+/// 恒星光行差（年周光行差）を astrometric 単位方向へ適用する（SOFA `iauAb` 逐語）。
+///
+/// `pnat` = 補正前単位方向、`v` = 観測者速度を c で無次元化（GCRS）、`s_au` = 太陽-観測者距離 \[AU\]、
+/// `bm1` = √(1−|v|²)。`w2 = SRS/s_au` は `iauAb` 内蔵の微小項で、角度依存の太陽光偏向 `iauLd`
+/// （既定 OFF）とは別物。戻り値は光行差後の単位方向。
+fn apply_iau_ab(pnat: UnitVector3, v: Vector3, s_au: f64, bm1: f64) -> UnitVector3 {
+    let p = pnat.get();
+    let pdv = p.dot(v);
+    let w1 = 1.0 + pdv / (1.0 + bm1);
+    let w2 = umbra_core::constants::SRS / s_au;
+    let aberrated = Vector3 {
+        x: p.x * bm1 + w1 * v.x + w2 * (v.x - pdv * p.x),
+        y: p.y * bm1 + w1 * v.y + w2 * (v.y - pdv * p.y),
+        z: p.z * bm1 + w1 * v.z + w2 * (v.z - pdv * p.z),
+    };
+    aberrated
+        .normalized()
+        .expect("aberrated vector is non-zero (|p·bm1 + ...| ≈ 1)")
+}
+
+/// astrometric ベクトル（S2 出力, GCRS km）に恒星光行差を適用した見かけ地心位置（GCRS, km）。
+/// 観測者速度 = 地球日心速度（黄道 of date → 観測日行列で GCRS）/c。太陽-観測者距離は地球日心
+/// 距離 R \[AU\]（`iauAb` の `s`）。光行差は方向のみ変えるため距離 |s2| を保つ。
+fn aberrated_gcrs(time_tt: TtInstant, astrometric: Vector3) -> Vector3 {
+    let dist = astrometric.norm();
+    let pnat = astrometric
+        .normalized()
+        .expect("astrometric vector is non-zero");
+    let tdb = TdbInstant::from_jd2(time_tt.jd2());
+    let v = ecliptic_to_gcrs_matrix(time_tt)
+        .mul_vec(crate::sun::earth_heliocentric_velocity_ecliptic_of_date(
+            tdb,
+        ))
+        .scale(1.0 / umbra_core::constants::SPEED_OF_LIGHT_KM_S);
+    let s_au = crate::sun::earth_heliocentric_lbr(tdb).2;
+    let bm1 = (1.0 - v.dot(v)).sqrt();
+    apply_iau_ab(pnat, v, s_au, bm1).get().scale(dist)
+}
+
+/// 太陽の見かけ地心位置（光行時間＋恒星光行差, GCRS, km）。歳差章動（S4）前・偏向は既定 OFF。
+pub fn sun_aberrated_gcrs(time_tt: TtInstant) -> Vector3 {
+    aberrated_gcrs(
+        time_tt,
+        sun_light_time_corrected_gcrs(time_tt).position_gcrs,
+    )
+}
+
+/// 月の見かけ地心位置（光行時間＋恒星光行差, GCRS, km）。歳差章動（S4）前・偏向は既定 OFF。
+pub fn moon_aberrated_gcrs(time_tt: TtInstant) -> Vector3 {
+    aberrated_gcrs(
+        time_tt,
+        moon_light_time_corrected_gcrs(time_tt).position_gcrs,
+    )
 }
 
 #[cfg(test)]
@@ -456,6 +511,218 @@ mod tests {
             assert!(
                 (356_000.0..407_000.0).contains(&r),
                 "moon corrected distance(jd={jd}) = {r}"
+            );
+        }
+    }
+
+    // ============================================================
+    // S3: 恒星光行差 (sun/moon_aberrated_gcrs) — SOFA iauAb 逐語
+    // ============================================================
+    //
+    // 一次オラクル: pyerfa 2.0.1.5 `erfa.ab(pnat, v, s, bm1)`（liberfa = SOFA 由来 C,
+    //   独立実装）。本実装は ab.c 逐語のため単位方向で tol 1e-12 厳密一致するはず。
+    //   provenance（入力 pnat,v,s,bm1 と erfa version, 全要素）は EXPECTED 定数の直上に転記する。
+    //   erfa.ab に渡す s は本実装が w2=SRS/s に使う値（earth_heliocentric_lbr(tdb).2）と同一。
+
+    // pyerfa 2.0.1.5 `erfa.ab(pnat, v, s, bm1)` 出力（liberfa = SOFA ab.c, 独立実装）。
+    // 入力（J2000, 本実装が生成した f64 を逐語転記）:
+    //   v   = [-9.93866806674108765e-5, -1.67390893828670883e-5, -7.25658131851178186e-6]（共通）
+    //   s   = 9.83327681910549090e-1（= earth_heliocentric_lbr(tdb).2, AU）
+    //   bm1 = 9.99999994894716249e-1
+    //   pnat(SUN)  = [ 1.80138755190583838e-1, -9.02474816600209229e-1, -3.91266193633957426e-1]
+    //   pnat(MOON) = [-7.24548996157033720e-1, -6.62772556607322594e-1, -1.89106558257581575e-1]
+    /// erfa.ab の単位方向期待値（太陽, J2000）。pyerfa 出力を逐語転記（桁保持のため allow）。
+    #[allow(clippy::excessive_precision)]
+    const SUN_AB_DIR_J2000: [f64; 3] = [
+        1.800_393_599_401_254_32e-1,
+        -9.024_915_127_553_109_21e-1,
+        -3.912_734_316_012_022_04e-1,
+    ];
+    /// erfa.ab の単位方向期待値（月, J2000）。pyerfa 出力を逐語転記（桁保持のため allow）。
+    #[allow(clippy::excessive_precision)]
+    const MOON_AB_DIR_J2000: [f64; 3] = [
+        -7.245_871_723_897_979_73e-1,
+        -6.627_333_073_004_310_07e-1,
+        -1.890_978_397_623_566_68e-1,
+    ];
+
+    /// 単位方向を要素ごとに期待値と比較。
+    fn unit_close(v: Vector3, expected: [f64; 3], tol: f64) -> bool {
+        let u = v.normalized().expect("non-zero").get();
+        close(u.x, expected[0], tol) && close(u.y, expected[1], tol) && close(u.z, expected[2], tol)
+    }
+
+    // ---- (a) erfa.ab 厳密一致（主オラクル, tol 1e-12）----
+
+    #[test]
+    fn sun_aberrated_matches_erfa_ab() {
+        let out = sun_aberrated_gcrs(tt(J2000_JD));
+        assert!(
+            unit_close(out, SUN_AB_DIR_J2000, 1e-12),
+            "sun ab dir = {:?}, expected {SUN_AB_DIR_J2000:?}",
+            out.normalized().map(|u| u.get())
+        );
+    }
+
+    #[test]
+    fn moon_aberrated_matches_erfa_ab() {
+        let out = moon_aberrated_gcrs(tt(J2000_JD));
+        assert!(
+            unit_close(out, MOON_AB_DIR_J2000, 1e-12),
+            "moon ab dir = {:?}, expected {MOON_AB_DIR_J2000:?}",
+            out.normalized().map(|u| u.get())
+        );
+    }
+
+    // `apply_iau_ab` を**増幅速度**（|v|≈0.06, s=0.5）で erfa.ab と直接突合。実エポックでは
+    // w2=SRS/s 微項（相対論補正 ~0.004″）の単位ベクトル寄与が ~1e-12 で tol に埋もれ、w2 項
+    // 内部（SRS/s 除算・(v−pdv·pnat)・符号）のミューテーションが生存する。純関数を非物理だが
+    // 有効な大入力で直接検証して w2 項を ~1e-9 に励起し捕捉する（s=0.5 で SRS/s と SRS*s/SRS%s を区別）。
+    /// erfa.ab(pnat,v,0.5,bm1) 期待値（増幅入力）。pyerfa 2.0.1.5 出力。
+    /// pnat=unit([0.3,-0.8,0.5]), v=[0.05,-0.02,0.03], s=0.5, bm1=√(1−|v|²)。
+    #[allow(clippy::excessive_precision)]
+    const AB_AMPLIFIED_PPR: [f64; 3] = [
+        3.379_296_290_574_336_23e-1,
+        -7.903_261_551_162_078_51e-1,
+        5.110_656_849_606_880_49e-1,
+    ];
+
+    #[test]
+    fn apply_iau_ab_matches_erfa_ab_amplified() {
+        let pnat = (Vector3 {
+            x: 0.3,
+            y: -0.8,
+            z: 0.5,
+        })
+        .normalized()
+        .expect("non-zero");
+        let v = Vector3 {
+            x: 0.05,
+            y: -0.02,
+            z: 0.03,
+        };
+        let s_au = 0.5;
+        let bm1 = (1.0 - v.dot(v)).sqrt();
+        let got = apply_iau_ab(pnat, v, s_au, bm1).get();
+        assert!(
+            unit_close(got, AB_AMPLIFIED_PPR, 1e-12),
+            "apply_iau_ab amplified = {got:?}, expected {AB_AMPLIFIED_PPR:?}"
+        );
+    }
+
+    // ---- (b) 距離不変: |out| == |s_S2| ----
+
+    #[test]
+    fn sun_aberration_preserves_distance() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let s2 = sun_light_time_corrected_gcrs(tt(jd)).position_gcrs.norm();
+            let out = sun_aberrated_gcrs(tt(jd)).norm();
+            assert!(
+                close(out, s2, s2 * 1e-9),
+                "sun |out|={out} |s2|={s2} (jd={jd})"
+            );
+        }
+    }
+
+    #[test]
+    fn moon_aberration_preserves_distance() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let s2 = moon_light_time_corrected_gcrs(tt(jd)).position_gcrs.norm();
+            let out = moon_aberrated_gcrs(tt(jd)).norm();
+            assert!(
+                close(out, s2, s2 * 1e-9),
+                "moon |out|={out} |s2|={s2} (jd={jd})"
+            );
+        }
+    }
+
+    // ---- (c) 光行差角: 太陽 ≈ 20.5″（apex 満角, v⊥pnat）----
+
+    #[test]
+    fn sun_aberration_angle_about_20_arcsec() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let s2 = sun_light_time_corrected_gcrs(tt(jd)).position_gcrs;
+            let out = sun_aberrated_gcrs(tt(jd));
+            let theta = angle_between(out, s2);
+            assert!(
+                theta > arcsec_to_rad(15.0) && theta < arcsec_to_rad(26.0),
+                "sun aberration angle(jd={jd}) = {} arcsec, want ~20.5",
+                theta / arcsec_to_rad(1.0)
+            );
+        }
+    }
+
+    // 月は pnat と v_E の角が任意 → aberration 角 ∈ [0,20.5]″（幾何依存）。下限は pin せず
+    // 物理上限のみサニティ。月の向き正しさは erfa.ab 厳密一致が担保。
+    #[test]
+    fn moon_aberration_angle_within_physical_bound() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let s2 = moon_light_time_corrected_gcrs(tt(jd)).position_gcrs;
+            let out = moon_aberrated_gcrs(tt(jd));
+            let theta = angle_between(out, s2);
+            assert!(
+                theta <= arcsec_to_rad(21.0),
+                "moon aberration angle(jd={jd}) = {} arcsec exceeds 20.5 bound",
+                theta / arcsec_to_rad(1.0)
+            );
+        }
+    }
+
+    // ---- (d)/(e) シフト向き = apex(+v) 横成分（太陽。bm1/w1/w2 符号は erfa.ab が捕捉）----
+
+    #[test]
+    fn aberration_shift_is_along_apex_direction() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let s2 = sun_light_time_corrected_gcrs(tt(jd)).position_gcrs;
+            let out = sun_aberrated_gcrs(tt(jd));
+            let tdb_now = TdbInstant::from_jd2(tt(jd).jd2());
+            let v = ecliptic_to_gcrs_matrix(tt(jd))
+                .mul_vec(crate::sun::earth_heliocentric_velocity_ecliptic_of_date(
+                    tdb_now,
+                ))
+                .scale(1.0 / SPEED_OF_LIGHT_KM_S);
+            let pnat = s2.scale(1.0 / s2.norm());
+            let v_perp = v - pnat.scale(v.dot(pnat));
+            let shift = out.scale(s2.norm() / out.norm()) - s2;
+            let cos = shift.dot(v_perp) / (shift.norm() * v_perp.norm());
+            assert!(
+                cos > 0.9,
+                "sun shift vs apex cos(jd={jd}) = {cos}, want >0.9"
+            );
+        }
+    }
+
+    // ---- (f) finite ----
+
+    #[test]
+    fn aberrated_results_are_finite() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            for v in [sun_aberrated_gcrs(tt(jd)), moon_aberrated_gcrs(tt(jd))] {
+                assert!(v.x.is_finite() && v.y.is_finite() && v.z.is_finite());
+            }
+        }
+    }
+
+    // ---- オーダーサニティ（距離保持の独立確認）----
+
+    #[test]
+    fn sun_aberrated_distance_order_of_magnitude() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let r = sun_aberrated_gcrs(tt(jd)).norm();
+            assert!(
+                (1.4e8..1.6e8).contains(&r),
+                "sun ab distance(jd={jd}) = {r}"
+            );
+        }
+    }
+
+    #[test]
+    fn moon_aberrated_distance_order_of_magnitude() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let r = moon_aberrated_gcrs(tt(jd)).norm();
+            assert!(
+                (356_000.0..407_000.0).contains(&r),
+                "moon ab distance(jd={jd}) = {r}"
             );
         }
     }
