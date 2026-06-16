@@ -37,6 +37,16 @@ pub const JULIAN_MILLENNIUM_DAYS: f64 = 365_250.0;
 /// （Standard 既定 OFF）とは別物（`docs/algorithms/03-ephemeris.md` E8/E9）。
 pub const SRS: f64 = 1.974_125_743_36e-8;
 
+/// 地球自転角速度 ω⊕ = dERA/dt \[rad/SI秒\]。
+/// 出典: IERS Conventions / SOFA `iauEra00`。`ERA = 2π(0.779… + 1.00273781191135448·Tu)`
+/// （`Tu` = UT1 ユリウス日）の時間微分 `dERA/dt = 2π · 1.00273781191135448 / 86400`。
+/// 局地ベッセル射影で観測者が地球自転に運ばれる速度に使用（ISSUE-024, conventions §5.2）。
+///
+/// 係数 1.00273781191135448 は f64 表現可能桁を超えるため、リテラルは同一ビット列の
+/// 短縮形（…354_6）で書く（値は不変。出典桁は上のコメントに保持）。
+pub const EARTH_ROTATION_RATE_RAD_PER_S: f64 =
+    core::f64::consts::TAU * 1.002_737_811_911_354_6 / 86_400.0;
+
 /// 秒角 → ラジアン変換係数（= π / 648000）。SOFA の `DAS2R` 相当。
 /// 歳差・章動・黄道傾斜など、秒角で表される級数係数のラジアン化に用いる
 /// （IAU2006/2000A の係数は秒角単位。`docs/algorithms/02-frames.md`）。

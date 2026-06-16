@@ -13,14 +13,19 @@ pub mod error;
 pub mod fundamental;
 pub mod global;
 pub mod polynomial;
+pub mod projection;
 pub mod shadow;
 pub mod source;
 
 pub use bessel_poly::{BesselFitError, BesselianPolynomial};
-pub use besselian::{besselian_elements, BesselianElements};
+pub use besselian::{
+    besselian_elements, besselian_elements_at, besselian_mu, BesselianElements,
+    InstantaneousBesselianElements,
+};
 pub use error::EclipseError;
 pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use global::{classify, SolarEclipseKind};
 pub use polynomial::Polynomial;
+pub use projection::{project_observer_to_fundamental, ObserverFundamental};
 pub use shadow::{shadow_cone, ShadowCone};
 pub use source::{BesselianSource, DirectBesselianSource};
