@@ -83,12 +83,12 @@ d = （B1 の影軸赤緯。基底 declination と同一）
 ```
 
 **(B5) μ（影軸の見かけグリニッジ時角, ERA 経由 CIO ベース）**
-出典: **§0・conventions §5.2 / D4**・§2 (F9)/(F11)・ISSUE-021/039。
+出典: **§0・conventions §5.2 / D4**・§2 (F4)・ISSUE-021/039。
 ```
-μ = GAST − α_axis            ( rad, [0,2π) 正規化 )
-GAST = θ_ERA − EO            ( §2 F9: ERA 経由 CIO ベース。分点 GST 禁止 )
+μ = θ_ERA − α_axis           ( rad, [0,2π) 正規化 )
 ```
-- `θ_ERA = ERA(UT1)`（§2 F4, `iauEra00`）, `EO` = equation of the origins（§2 F10, CIO/NPB 由来）。`α_axis` は **CIRS 基準**（B1, CIO 一貫）。→ μ は CIO で閉じる。
+- `θ_ERA = ERA(UT1)`（§2 F4, `iauEra00`）は **CIO の見かけグリニッジ時角**。`α_axis` は **CIRS 基準**（B1, CIO 起点で測った影軸赤経）。ともに CIO 起点で測るため、**時角 μ = θ_ERA − α_axis は CIO で完全に閉じる**（EO も GAST も登場しない）。
+  - 補足: 分点系で書けば `μ = GAST − α_equinox`。CIO ↔ 分点は `GAST = θ_ERA − EO` かつ `α_equinox = α_axis − EO` の関係にあり、`μ = (θ_ERA − EO) − (α_axis − EO) = θ_ERA − α_axis` と **EO は相殺する**。旧記述 `μ = GAST − α_axis(CIRS)` は GAST（分点起点）と α_axis（CIO 起点）を混ぜて EO を二重計上する誤りだった（D4「分点 GST 禁止」＝CIO/分点の二重定義排除に反する）。**正本は `μ = θ_ERA − α_axis`**（ISSUE-021/039 実装で確定）。
 - **μ は UT1（→δUT1）依存**（θ_ERA 経由）。全球 gamma・最大食「時刻 TT」が純 TT で閉じるのに対し、**μ を介する局地接触時刻には δUT1 が混入**する（accuracy.md §0(a) 脚注・§2.1L, ISSUE-021 I1）。要素は TT 時刻でラベルするが μ のみ UT1 依存である旨を doc/metadata に明記（ISSUE-039/021）。
 - 正規化: μ は赤経基準で `[0,2π)`（conventions §2, two_pi 規約）。
 - **旧記述の分点 GAST 直接構成は採らない**（CIO/分点二重定義の排除, D4）。

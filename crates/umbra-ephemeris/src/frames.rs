@@ -63,6 +63,12 @@ fn earth_rotation_angle_rad(time_ut1: Ut1Instant) -> f64 {
     Radians::new(theta).normalized_two_pi().0
 }
 
+/// Earth Rotation Angle θ_ERA(UT1)（rad, [0,2π)）。SOFA `iauEra00` 相当。
+/// ベッセル時角 μ の恒星時部分（μ = θ_ERA − α_axis, CIO ベース, ISSUE-021/039 §6 B5）に供給する。
+pub fn earth_rotation_angle(time_ut1: Ut1Instant) -> Radians {
+    Radians::new(earth_rotation_angle_rad(time_ut1))
+}
+
 /// Earth Rotation Angle まわりの R3(ERA) 回転行列（CIRS→TIRS）。SOFA `iauEra00`＋R3 相当。
 pub fn era_rotation(time_ut1: Ut1Instant) -> Matrix3 {
     Matrix3::rotation_z(earth_rotation_angle_rad(time_ut1))
@@ -279,6 +285,21 @@ mod tests {
             "era_rotation != R3({ERA_EXPECT}); got {:?}",
             m.rows
         );
+    }
+
+    /// スカラ ERA `earth_rotation_angle` も同 SOFA 値（era00, 0.40228372400281581 rad）に一致。
+    /// μ = θ_ERA − α_axis（ISSUE-021/039）の恒星時部分を供給するので行列でなく角度を直接 pin。
+    #[test]
+    fn earth_rotation_angle_scalar_matches_sofa() {
+        const ERA_EXPECT: f64 = 0.4022837240028158102;
+        let theta = earth_rotation_angle(ut1(2400000.5, 54388.0));
+        assert!(
+            (theta.0 - ERA_EXPECT).abs() < 1e-12,
+            "earth_rotation_angle = {} rad, expected {ERA_EXPECT}",
+            theta.0
+        );
+        // [0,2π) 正規化済み。
+        assert!((0.0..core::f64::consts::TAU).contains(&theta.0));
     }
 
     /// SOFA iauPmat06（ERFA t_pmat06）:
