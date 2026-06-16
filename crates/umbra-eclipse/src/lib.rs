@@ -8,6 +8,7 @@ pub mod besselian;
 pub mod error;
 pub mod fundamental;
 pub mod global;
+pub mod polynomial;
 pub mod shadow;
 pub mod source;
 
