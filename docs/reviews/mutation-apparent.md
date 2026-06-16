@@ -1,12 +1,15 @@
-# ミューテーション生存変異の許容判断 — `umbra-ephemeris::apparent`（ISSUE-015 S2/S3）
+# ミューテーション生存変異の許容判断 — `umbra-ephemeris::apparent`（ISSUE-015 S2/S3/S4）
 
 `cargo mutants --package umbra-ephemeris --file crates/umbra-ephemeris/src/apparent.rs`
-（cargo-mutants 27.1.0, Docker 内）。**78 mutants: 64 caught / 10 unviable / 4 missed**。
+（cargo-mutants 27.1.0, Docker 内）。**80 mutants: 64 caught / 12 unviable / 4 missed**。
 
 対象:
 - S2 `light_time_correct`（`sun_/moon_light_time_corrected_gcrs` 本体）= 光行時間補正。
   出力 `s = B_geo(t−τ) + (E(t−τ)−E(t))`、一次近似 `−v_E·τ`、SOFA `iauAtciq` の light-time ステップ。
 - S3 `apply_iau_ab` / `aberrated_gcrs`（`sun_/moon_aberrated_gcrs` 本体）= 恒星光行差（SOFA `iauAb` 逐語）。
+- S4 `sun_/moon_apparent_cirs` = 歳差章動 GCRS→CIRS（`gcrs_to_cirs_matrix·aberrated_gcrs`）。
+  合成（行列適用先・順序・transpose）は end-to-end erfa オラクル＋合成同一性＋回転適用テストが捕捉、
+  **新規生存なし**。
 
 ## caught（物理・契約のコア）
 

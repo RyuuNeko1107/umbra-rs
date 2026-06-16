@@ -2,9 +2,12 @@
 //!
 //! S1 = 幾何地心位置のフレーム調和: 黄道座標の暦（太陽 VSOP87D = 黄道 of date、
 //! 月 ELP2000-82B = 黄道 J2000）を共通の **GCRS**（ICRS 軸・地心）へ載せる（`*_geocentric_gcrs`）。
-//! S2（本コミット）= 光行時間補正（`*_light_time_corrected_gcrs`, SOFA `iauAtciq` の light-time
-//! ステップ相当）: 天体 = 放射時刻 t−τ・観測者 = 観測時刻 t を一貫させた幾何地心ベクトルを返す。
-//! 光行差（S3, `iauAb`）→ 歳差章動（S4, GCRS→CIRS）は後続スライス（SOFA `iauAtciq` 順, ISSUE-015）。
+//! S2 = 光行時間補正（`*_light_time_corrected_gcrs`, SOFA `iauAtciq` の light-time ステップ）:
+//! 天体 = 放射時刻 t−τ・観測者 = 観測時刻 t を一貫させた幾何地心ベクトル。
+//! S3 = 恒星光行差（`*_aberrated_gcrs`, SOFA `iauAb` 逐語, GCRS）。
+//! S4（本コミット）= 歳差章動 GCRS→CIRS（`*_apparent_cirs`, `cio::gcrs_to_cirs_matrix` 連鎖）。
+//! `*_apparent_cirs` が**フル見かけ位置**（光行時間＋光行差＋歳差章動, 偏向 iauLd 既定 OFF）。
+//! 補正順序は SOFA `iauAtciq` / D3（光行差まで GCRS、章動を最後にまとめて回す）。
 //!
 //! 出力フレーム = GCRS（`docs/issues/ISSUE-015` 確定 / iauAtciq 標準）。入力は `TtInstant`
 //! （位置計算標準, conventions §6）。暦評価は TT≈TDB 近似（差 ≲2ms, metadata 帰属外）。
@@ -155,6 +158,20 @@ pub fn moon_aberrated_gcrs(time_tt: TtInstant) -> Vector3 {
         time_tt,
         moon_light_time_corrected_gcrs(time_tt).position_gcrs,
     )
+}
+
+/// 太陽の見かけ地心位置（CIRS, km）。光行時間＋恒星光行差＋歳差章動を適用したフル見かけ位置
+/// （SOFA `iauAtciq` 相当, 偏向 iauLd は既定 OFF）。S3 の見かけ GCRS 位置に GCRS→CIRS 回転
+/// （`cio::gcrs_to_cirs_matrix` = frame bias + IAU2006 歳差 + IAU2000A 章動, CIO ベース）を当てる。
+/// 補正順序 D3: 光行差まで GCRS で適用済み、章動は最後にまとめて回す。回転ゆえ距離保存。
+pub fn sun_apparent_cirs(time_tt: TtInstant) -> Vector3 {
+    crate::cio::gcrs_to_cirs_matrix(time_tt).mul_vec(sun_aberrated_gcrs(time_tt))
+}
+
+/// 月の見かけ地心位置（CIRS, km）。光行時間＋恒星光行差＋歳差章動を適用したフル見かけ位置
+/// （SOFA `iauAtciq` 相当, 偏向 iauLd は既定 OFF）。詳細は [`sun_apparent_cirs`] と同型。
+pub fn moon_apparent_cirs(time_tt: TtInstant) -> Vector3 {
+    crate::cio::gcrs_to_cirs_matrix(time_tt).mul_vec(moon_aberrated_gcrs(time_tt))
 }
 
 #[cfg(test)]
@@ -725,5 +742,174 @@ mod tests {
                 "moon ab distance(jd={jd}) = {r}"
             );
         }
+    }
+
+    // ============================================================
+    // S4: 歳差章動 GCRS→CIRS (sun/moon_apparent_cirs) — SOFA iauC2i06a 合成
+    // ============================================================
+    //
+    // 契約: apparent_cirs(t) = gcrs_to_cirs_matrix(t) · aberrated_gcrs(t)（回転のみ→距離保存）。
+    // end-to-end オラクル: CIRS 見かけ単位方向 = c2i06a(2451545.0,0.0) × S3 aberrated 単位方向。
+    //   c2i06a は cio.rs で erfa 検証済み、aberrated 単位方向は S3 で erfa.ab 検証済み。
+    //   slice 境界: JPL DE 突合(M10)・erfa.atci13(別 API)・偏向 iauLd(既定 OFF) は対象外。
+
+    use crate::cio::gcrs_to_cirs_matrix;
+
+    // pyerfa 2.0.1.5: C2I = erfa.c2i06a(2451545.0, 0.0)[行優先]; v = C2I @ ab; v/|v|。
+    //   ab = SUN_AB_DIR_J2000 / MOON_AB_DIR_J2000（S3 検証済み aberrated 単位方向）。
+    /// CIRS 見かけ単位方向の期待値（太陽, J2000）。
+    #[allow(clippy::excessive_precision)]
+    const SUN_APPARENT_CIRS_DIR_J2000: [f64; 3] = [
+        1.800_288_076_667_243_83e-1,
+        -9.025_024_717_971_028_56e-1,
+        -3.912_530_086_915_844_70e-1,
+    ];
+    /// CIRS 見かけ単位方向の期待値（月, J2000）。
+    #[allow(clippy::excessive_precision)]
+    const MOON_APPARENT_CIRS_DIR_J2000: [f64; 3] = [
+        -7.245_922_740_951_216_13e-1,
+        -6.627_385_950_564_382_84e-1,
+        -1.890_597_549_566_767_62e-1,
+    ];
+
+    // end-to-end の tol は cio.rs の c2i06a 行列許容 1e-9（実装章動 R06 直接評価 vs erfa nut06a
+    // スケーリング近似の representation 差 ~2e-11 を吸収）に整合。実装 gcrs_to_cirs_matrix と
+    // erfa c2i06a の差が単位方向に乗るため 1e-12 でなく 1e-9（≈2e-4″, 0.10″ 予算の 3 桁下）。
+    const CIRS_DIR_TOL: f64 = 1e-9;
+
+    // ---- (a) end-to-end erfa オラクル一致（主オラクル, J2000）----
+
+    #[test]
+    fn sun_apparent_cirs_matches_erfa_c2i_ab() {
+        let out = sun_apparent_cirs(tt(J2000_JD));
+        assert!(
+            unit_close(out, SUN_APPARENT_CIRS_DIR_J2000, CIRS_DIR_TOL),
+            "sun apparent CIRS dir = {:?}, expected {SUN_APPARENT_CIRS_DIR_J2000:?}",
+            out.normalized().map(|u| u.get())
+        );
+    }
+
+    #[test]
+    fn moon_apparent_cirs_matches_erfa_c2i_ab() {
+        let out = moon_apparent_cirs(tt(J2000_JD));
+        assert!(
+            unit_close(out, MOON_APPARENT_CIRS_DIR_J2000, CIRS_DIR_TOL),
+            "moon apparent CIRS dir = {:?}, expected {MOON_APPARENT_CIRS_DIR_J2000:?}",
+            out.normalized().map(|u| u.get())
+        );
+    }
+
+    // ---- (b) 合成同一性: out == gcrs_to_cirs_matrix(t) · aberrated_gcrs(t)（2エポック）----
+
+    #[test]
+    fn sun_apparent_cirs_equals_matrix_times_aberrated() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let expected = gcrs_to_cirs_matrix(tt(jd)).mul_vec(sun_aberrated_gcrs(tt(jd)));
+            let got = sun_apparent_cirs(tt(jd));
+            assert!(
+                vec_close(got, expected, 1e-3),
+                "sun apparent CIRS(jd={jd}) = {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn moon_apparent_cirs_equals_matrix_times_aberrated() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let expected = gcrs_to_cirs_matrix(tt(jd)).mul_vec(moon_aberrated_gcrs(tt(jd)));
+            let got = moon_apparent_cirs(tt(jd));
+            assert!(
+                vec_close(got, expected, 1e-6),
+                "moon apparent CIRS(jd={jd}) = {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    // ---- (c) 距離保存: |out| == |aberrated_gcrs|（回転のみ, 2エポック）----
+
+    #[test]
+    fn sun_apparent_cirs_preserves_distance() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let s = sun_aberrated_gcrs(tt(jd)).norm();
+            let out = sun_apparent_cirs(tt(jd)).norm();
+            assert!(
+                close(out, s, s * 1e-9),
+                "sun |apparent|={out} |aberrated|={s} (jd={jd})"
+            );
+        }
+    }
+
+    #[test]
+    fn moon_apparent_cirs_preserves_distance() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let s = moon_aberrated_gcrs(tt(jd)).norm();
+            let out = moon_apparent_cirs(tt(jd)).norm();
+            assert!(
+                close(out, s, s * 1e-9),
+                "moon |apparent|={out} |aberrated|={s} (jd={jd})"
+            );
+        }
+    }
+
+    // ---- (d) finite ----
+
+    #[test]
+    fn apparent_cirs_results_are_finite() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            for v in [sun_apparent_cirs(tt(jd)), moon_apparent_cirs(tt(jd))] {
+                assert!(v.x.is_finite() && v.y.is_finite() && v.z.is_finite());
+            }
+        }
+    }
+
+    // ---- (e) オーダーサニティ ----
+
+    #[test]
+    fn sun_apparent_cirs_distance_order_of_magnitude() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let r = sun_apparent_cirs(tt(jd)).norm();
+            assert!(
+                (1.4e8..1.6e8).contains(&r),
+                "sun apparent CIRS distance(jd={jd}) = {r}"
+            );
+        }
+    }
+
+    #[test]
+    fn moon_apparent_cirs_distance_order_of_magnitude() {
+        for &jd in &[J2000_JD, 2469807.0] {
+            let r = moon_apparent_cirs(tt(jd)).norm();
+            assert!(
+                (356_000.0..407_000.0).contains(&r),
+                "moon apparent CIRS distance(jd={jd}) = {r}"
+            );
+        }
+    }
+
+    // ---- (f) 回転を実際に適用している（恒等＝aberrated そのまま返す不完全実装を red に）----
+    // J2000 では C2I の回転角が frame bias 支配で ≈8″ と小さく恒等(0″)と紛れる。歳差が累積する
+    // 2469807.0(~2050) では実回転が数百″（太陽 433″/月 995″, CIP 軸との位置で幾何依存）になるため、
+    // 恒等(0″)・bias 級(≈8″)と実回転を安全に弁別する閾値 100″ で「回転が適用されていること」を要求する。
+
+    #[test]
+    fn sun_apparent_cirs_rotation_is_applied_not_identity() {
+        let jd = 2469807.0;
+        let theta = angle_between(sun_apparent_cirs(tt(jd)), sun_aberrated_gcrs(tt(jd)));
+        assert!(
+            theta > arcsec_to_rad(100.0),
+            "sun apparent CIRS(jd={jd}) rotated only {} arcsec from GCRS (no-rotation impl?)",
+            theta / arcsec_to_rad(1.0)
+        );
+    }
+
+    #[test]
+    fn moon_apparent_cirs_rotation_is_applied_not_identity() {
+        let jd = 2469807.0;
+        let theta = angle_between(moon_apparent_cirs(tt(jd)), moon_aberrated_gcrs(tt(jd)));
+        assert!(
+            theta > arcsec_to_rad(100.0),
+            "moon apparent CIRS(jd={jd}) rotated only {} arcsec from GCRS (no-rotation impl?)",
+            theta / arcsec_to_rad(1.0)
+        );
     }
 }
