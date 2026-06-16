@@ -30,6 +30,8 @@ jobs:
         #   - BesselianPolynomial::at の区間端 `< → <=` / `> → >=`: EPS マージン境界の一点のみで差が出る等価変異
         #   - solve_zero_in_window: 粗走査→Brent の求根機構（粗走査の点配置は Brent が真根へ収束するため等価。
         #     docs/reviews/mutation-conjunction.md。solver.rs 除外と同方針）
+        #   - assess_eclipse_possibility の `< → <=`: separation==limit ちょうどの一点のみの境界等価変異
+        #     （docs/reviews/mutation-eclipse-filter.md）
         run: >-
           docker compose -p umbra-rs run --rm rust
-          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --package xtask --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds' --exclude-re 'with <= in.*BesselianPolynomial>::at' --exclude-re 'with >= in.*BesselianPolynomial>::at' --exclude-re 'in solve_zero_in_window'"
+          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --package xtask --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds' --exclude-re 'with <= in.*BesselianPolynomial>::at' --exclude-re 'with >= in.*BesselianPolynomial>::at' --exclude-re 'in solve_zero_in_window' --exclude-re 'with <= in.*assess_eclipse_possibility'"
