@@ -40,9 +40,12 @@ pub fn project_observer_to_fundamental(
     east_longitude: Radians,
     elements: &InstantaneousBesselianElements,
 ) -> ObserverFundamental {
-    // 局地時角 H = μ − λ_east（東経正・conventions §3）。折返しで微分が壊れないよう
-    // signed 正規化 [-π,π)（conventions §2）。三角関数は折返しに対し連続。
-    let h = Radians::new(elements.mu.0 - east_longitude.0)
+    // 影軸の局地時角 H = LST − α_axis = (θ_ERA + λ_east) − α_axis = μ + λ_east。
+    // μ = θ_ERA − α_axis は影軸のグリニッジ時角（ISSUE-021/039）、局地時角は東経分だけ進む。
+    // Explanatory Supplement §11 / Meeus Ch.54 の式は H = μ − λ だが λ は**西経正**慣習。
+    // 本プロジェクトは**東経正**（conventions §3）なので H = μ + λ_east（ISSUE-024 doc の固定指示）。
+    // 折返しで微分が壊れないよう signed 正規化 [-π,π)（conventions §2）。三角関数は折返しに連続。
+    let h = Radians::new(elements.mu.0 + east_longitude.0)
         .normalized_signed()
         .0;
     let (sin_h, cos_h) = h.sin_cos();
@@ -93,10 +96,11 @@ mod tests {
     use umbra_core::constants::EARTH_EQUATORIAL_RADIUS_M;
     use umbra_core::constants::SOLAR_RADIUS_KM;
     use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid};
-    use umbra_core::{JulianDate2, TtInstant};
+    use umbra_core::{JulianDate2, TimeInterval, TtInstant};
     use umbra_ephemeris::{Body, Ephemeris, EphemerisFrame, MockEphemeris, Origin};
 
     use crate::besselian::{besselian_elements, besselian_elements_at};
+    use crate::source::{BesselianSource, DirectBesselianSource};
     use umbra_core::EspenakMeeusDeltaT;
 
     const WGS84: Ellipsoid = Ellipsoid::WGS84;
@@ -128,11 +132,11 @@ mod tests {
         }
     }
 
-    /// 契約式の独立再実装（オラクル）。H=μ−λ を signed 正規化し (ξ,η,ζ) を返す。
-    /// これは ISSUE-024 §座標定義の式を直接書き下したもの。実装本体とは別ファイル・別ロジック
-    /// （実装は todo!()。本関数は本テストモジュール内の独立オラクル）。
+    /// 契約式の独立再実装（オラクル）。H=μ+λ_east を signed 正規化し (ξ,η,ζ) を返す。
+    /// 東経正慣習（conventions §3）なので局地時角 H = μ + λ_east（ISSUE-024 固定指示・
+    /// ISSUE-025 で符号是正）。これは ISSUE-024 §座標定義の式を直接書き下したもの。
     fn oracle_xez(rho_sin: f64, rho_cos: f64, d: f64, mu: f64, lambda: f64) -> (f64, f64, f64) {
-        let h = Radians::new(mu - lambda).normalized_signed().0;
+        let h = Radians::new(mu + lambda).normalized_signed().0;
         let xi = rho_cos * h.sin();
         let eta = rho_sin * d.cos() - rho_cos * d.sin() * h.cos();
         let zeta = rho_sin * d.sin() + rho_cos * d.cos() * h.cos();
@@ -194,9 +198,9 @@ mod tests {
 
         // 観測者地心ベクトル（赤道系, Re）: 時角 H からの赤経は (−H) 相当。
         // 影軸を z とする基本面は、赤道系を「赤経=影軸赤経」周りに回し、さらに赤緯 d だけ傾ける。
-        // ここでは H = μ−λ を局地時角とし、赤道系で観測者を (ρcosφ′cosH', ρcosφ′ sinH', ρsinφ′)
-        // のように置いた上で R_x(d) 回転で基本面 (ξ,η,ζ) を作る独立経路。
-        let hh = Radians::new(mu - lon).normalized_signed().0;
+        // ここでは H = μ+λ_east を局地時角（東経正, ISSUE-025 で符号是正）とし、赤道系で観測者を
+        // (ρcosφ′cosH', ρcosφ′ sinH', ρsinφ′) のように置いた上で R_x(d) 回転で基本面 (ξ,η,ζ) を作る独立経路。
+        let hh = Radians::new(mu + lon).normalized_signed().0;
         let rc = obs.rho_cos_phi_prime;
         let rs = obs.rho_sin_phi_prime;
         // 赤道系の中間座標（x 軸=影軸子午面方向, y 軸=東, z 軸=天の北）:
@@ -221,7 +225,7 @@ mod tests {
     fn observer_under_axis_has_zero_xi_eta() {
         let d = 0.0;
         let lambda = 0.7_f64;
-        let mu = lambda; // H = μ − λ = 0
+        let mu = -lambda; // H = μ + λ_east = 0（東経正, ISSUE-025 で符号是正）
         let obs = observer_geocentric(&WGS84, 0.0, 0.0); // 赤道海面: ρcos=1, ρsin=0
         let r = project_observer_to_fundamental(&obs, Radians::new(lambda), &elems_with(d, mu));
         assert!(r.xi.abs() < 1e-12, "ξ={}", r.xi);
@@ -304,7 +308,7 @@ mod tests {
         let d = geom.declination.0;
         assert!(d.abs() < 1e-6, "mock d should be ~0: {d}");
         let lambda = 1.234_f64;
-        let elems = elems_with(d, lambda); // μ=λ → H=0
+        let elems = elems_with(d, -lambda); // μ=−λ → H=μ+λ_east=0（東経正, ISSUE-025）
         let obs = observer_geocentric(&WGS84, 0.0, 0.0);
         let r = project_observer_to_fundamental(&obs, Radians::new(lambda), &elems);
         assert!(r.xi.abs() < 1e-9, "ξ={}", r.xi);
@@ -345,7 +349,7 @@ mod tests {
         let o4 = observer_geocentric(&WGS84, lat, 4000.0);
         let r0 = project_observer_to_fundamental(&o0, Radians::new(lambda), &elems_with(d, mu));
         let r4 = project_observer_to_fundamental(&o4, Radians::new(lambda), &elems_with(d, mu));
-        let h = Radians::new(mu - lambda).normalized_signed().0;
+        let h = Radians::new(mu + lambda).normalized_signed().0;
         let d_rs = o4.rho_sin_phi_prime - o0.rho_sin_phi_prime;
         let d_rc = o4.rho_cos_phi_prime - o0.rho_cos_phi_prime;
         let expected_dz = d_rs * d.sin() + d_rc * d.cos() * h.cos();
@@ -478,7 +482,7 @@ mod tests {
         let lam = 2.0_f64;
         let obs = observer_geocentric(&WGS84, lat, 500.0);
         let r = project_observer_to_fundamental(&obs, Radians::new(lam), &elems_with(d, mu));
-        let h = Radians::new(mu - lam).normalized_signed().0;
+        let h = Radians::new(mu + lam).normalized_signed().0;
         let xi_rate = obs.rho_cos_phi_prime * h.cos() * D_ERA_DT;
         let eta_rate = obs.rho_cos_phi_prime * d.sin() * h.sin() * D_ERA_DT;
         assert!(
@@ -583,7 +587,7 @@ mod tests {
     fn known_offset_transverse_distance_with_nonzero_d() {
         let d = 0.2_f64;
         let lambda = 0.0_f64;
-        let h_angle = 0.4_f64; // 影軸から東へ 0.4 rad（H=μ−λ=μ）
+        let h_angle = 0.4_f64; // 影軸から東へ 0.4 rad（λ=0 なので H=μ+λ_east=μ）
         let obs = observer_geocentric(&WGS84, 0.0, 0.0); // 赤道海面 ρ=1
         let r =
             project_observer_to_fundamental(&obs, Radians::new(lambda), &elems_with(d, h_angle));
@@ -591,5 +595,78 @@ mod tests {
         // ρ=1, φ′=0: ξ=sinH, η=−sind·cosH → m = √(sin²H + sin²d·cos²H)。
         let expected = (h_angle.sin().powi(2) + d.sin().powi(2) * h_angle.cos().powi(2)).sqrt();
         assert!(close(m, expected, 1e-12), "m={m} expected {expected}");
+    }
+
+    // ---- 経度符号の外部ピン（非自己参照・ISSUE-025 回帰） ----
+    //
+    // 既存テストは「契約式オラクル `oracle_xez` と実装が同じ符号慣習」で自己整合だったため、
+    // 局地時角の符号バグ（誤 H=μ−λ_east / 正 H=μ+λ_east）を検出できなかった。ISSUE-025 で
+    // 影軸 x,y との突き合わせ時に判明。ここでは **独立に計算された影軸交点 (e.x, e.y)** を
+    // 外部基準にして符号を固定する（射影式のコピーではない非自己参照ピン）。
+    //
+    // 原理: ある観測者が中心線（影軸直下）にいるなら、その基本面座標 (ξ,η) は影軸交点 (x,y) に
+    // ほぼ一致する（m = √((ξ−x)²+(η−y)²) → 0）。中心線地点はプローブで確認済（2017-08-21 最大食
+    // 付近で 緯度 ≈38°N, 東経 ≈ −90°（西経90°）, 標高 0）。
+    // 誤符号 H=μ−λ_east では λ が逆向きに効いて m が大きく（≳0.04 Re）全く合わず、
+    // 正符号 H=μ+λ_east で初めて m が小さくなる → これが経度符号の外部ピンになる。
+
+    /// 2017-08-21 最大食付近の瞬時要素を直接供給源から得るヘルパ（実 ephemeris）。
+    fn elems_2017_max() -> InstantaneousBesselianElements {
+        let dt = EspenakMeeusDeltaT;
+        // 推奨区間（広告のみ。at() は区間外でも評価可）。
+        let iv = TimeInterval {
+            start: TtInstant::from_jd2(JulianDate2::new(2_457_986.0, 0.0)),
+            end: TtInstant::from_jd2(JulianDate2::new(2_457_988.0, 0.0)),
+        };
+        let src = DirectBesselianSource::new(R_SUN, R_MOON, &dt, iv);
+        // 2017-08-21 最大食付近の TT（besselian.rs / source.rs テストと同一エポック）。
+        let t = TtInstant::from_jd2(JulianDate2::new(2_457_986.5, 7.685_322_222_222_222e-1));
+        src.at(t)
+            .expect("real apparent positions should yield valid 2017 eclipse geometry")
+    }
+
+    /// 外部ピン（中心線近傍）: 中心線上の観測者の (ξ,η) が、独立計算された影軸交点 (e.x, e.y) に
+    /// 近い（m < 0.05 Re ≈ 320km, 格子分解能と地点近似で緩め）。
+    /// **誤符号 H=μ−λ_east ではこの m は ≳0.04 Re で全く合わず、正符号 H=μ+λ_east で初めて
+    /// 小さくなる** ので、これが経度符号バグ（ISSUE-025 で判明）の回帰テスト＝外部ピンになる。
+    /// 中心線地点（38°N, 東経 −90°, 標高 0）はプローブ確認済。
+    #[test]
+    fn observer_on_centerline_matches_independent_shadow_axis() {
+        let e = elems_2017_max();
+        // プローブ確認済の中心線近傍地点（西経 90° = 東経 −90°）。
+        let obs = observer_geocentric(&WGS84, 38f64.to_radians(), 0.0);
+        let lon = Radians::new((-90f64).to_radians());
+        let r = project_observer_to_fundamental(&obs, lon, &e);
+        let m = ((r.xi - e.x).powi(2) + (r.eta - e.y).powi(2)).sqrt();
+        assert!(
+            m < 0.05,
+            "centerline observer should sit near shadow axis: m={m} Re \
+             (xi={}, eta={}, x={}, y={}); 誤符号 H=μ−λ_east なら m≳0.04 で外れる",
+            r.xi,
+            r.eta,
+            e.x,
+            e.y
+        );
+    }
+
+    /// 対照（中心線から遠い観測者）: 経度を中心線から +120° ずらすと m が大きい（> 0.3 Re）。
+    /// 符号反転や経度無効化（λ を使わない）の変異を殺す。同一 TT・同一緯度で経度のみずらす。
+    #[test]
+    fn observer_off_centerline_is_far_from_shadow_axis() {
+        let e = elems_2017_max();
+        let obs = observer_geocentric(&WGS84, 38f64.to_radians(), 0.0);
+        // 中心線（東経 −90°）から +120° ずらした経度。
+        let lon = Radians::new((-90f64 + 120f64).to_radians());
+        let r = project_observer_to_fundamental(&obs, lon, &e);
+        let m = ((r.xi - e.x).powi(2) + (r.eta - e.y).powi(2)).sqrt();
+        assert!(
+            m > 0.3,
+            "off-centerline observer should be far from shadow axis: m={m} Re \
+             (xi={}, eta={}, x={}, y={})",
+            r.xi,
+            r.eta,
+            e.x,
+            e.y
+        );
     }
 }
