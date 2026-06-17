@@ -21,7 +21,10 @@ pub mod vector;
 
 pub use angle::{Degrees, Radians};
 pub use calendar::{gregorian_to_jd2, jd2_to_gregorian};
-pub use deltat::{tt_to_ut1, ut1_to_tt, DeltaTModel, EspenakMeeusDeltaT};
+pub use deltat::{
+    tt_to_ut1, ut1_to_tt, utc_to_ut1, CompositeDeltaT, DeltaTModel, DeltaTSource,
+    EspenakMeeusDeltaT, EOP_DELTA_T_UNCERTAINTY_SECONDS,
+};
 pub use ellipsoid::{Ellipsoid, GeocentricObserver};
 pub use eop::{EarthOrientation, EopRecord, IersEopData};
 pub use error::{DomainError, SolverError, TimeError};

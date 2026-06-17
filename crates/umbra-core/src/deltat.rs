@@ -6,8 +6,11 @@
 //! その予測値・外挿値と不確実性帯（accuracy.md §0）を与える。
 
 use crate::calendar::jd2_to_gregorian;
+use crate::constants::TT_MINUS_TAI_SECONDS;
+use crate::eop::EarthOrientation;
+use crate::error::TimeError;
 use crate::julian::JulianDate2;
-use crate::time::{TtInstant, Ut1Instant};
+use crate::time::{tai_minus_utc, TtInstant, Ut1Instant, UtcInstant};
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
 
@@ -95,14 +98,164 @@ pub fn ut1_to_tt<M: DeltaTModel>(ut1: Ut1Instant, model: &M) -> TtInstant {
     TtInstant::from_jd2(ut1.jd2().add_days(dt / SECONDS_PER_DAY))
 }
 
+/// UTC → UT1（`UT1 = UTC + (UT1−UTC)`）。`EarthOrientation` から UT1−UTC（秒）を引く。
+///
+/// coverage 外は [`TimeError::MissingEarthOrientationData`]（EOP の Missing を透過）。
+/// `TimeScales`（ISSUE-042）が未整備のため当面は自由関数として供給する（ISSUE-007 §公開IF）。
+pub fn utc_to_ut1<E: EarthOrientation>(utc: UtcInstant, eo: &E) -> Result<Ut1Instant, TimeError> {
+    let ut1_minus_utc = eo.ut1_minus_utc(utc)?;
+    Ok(Ut1Instant::from_jd2(
+        utc.jd2().add_days(ut1_minus_utc / SECONDS_PER_DAY),
+    ))
+}
+
+/// EOP 実測域での ΔT 不確実性（秒, 1σ 目安。accuracy.md §0 の「過去/近傍 <0.1 s」）。
+///
+/// IERS EOP C04 の UT1−UTC は数 ms 精度（accuracy.md §2.3）、閏秒 (TAI−UTC) は厳密値であり、
+/// 日次線形補間の誤差も sub-ms に収まるため、恒等式由来 ΔT の不確実性は数 ms オーダ。
+/// 保守的に 5 ms を採る（<0.1 s を満たす）。
+pub const EOP_DELTA_T_UNCERTAINTY_SECONDS: f64 = 0.005;
+
+/// 暦上の瞬時（UTC）に対する ΔT = TT − UT1 とその不確実性帯の供給（accuracy.md §0）。
+///
+/// 低水準の区分多項式 [`DeltaTModel`]（十進年入力）と異なり、本 trait は EOP 実測の恒等式と
+/// 長期外挿を合成する高水準モデルで、瞬時 UTC を入力に取る。将来 `CalculationMetadata` へ
+/// ΔT モデルと不確実性帯を供給する源（ISSUE-007 §目的）。
+pub trait DeltaTSource: Send + Sync {
+    /// `utc` における ΔT = TT − UT1（秒）。
+    fn delta_t_seconds(&self, utc: UtcInstant) -> f64;
+    /// `utc` における ΔT の不確実性（秒, 1σ 目安。accuracy.md §0 の不確実性帯）。
+    fn uncertainty_seconds(&self, utc: UtcInstant) -> f64;
+}
+
+/// EOP 実測由来の高精度 ΔT（恒等式）と Espenak–Meeus 外挿を合成する [`DeltaTSource`]。
+///
+/// - **EOP coverage 内 かつ 閏秒テーブル域（≥1972）**: 恒等式
+///   `ΔT = (TAI−UTC) + 32.184 − (UT1−UTC)`（conventions §6 / ISSUE-007 §数式）で高精度に算出。
+///   不確実性は [`EOP_DELTA_T_UNCERTAINTY_SECONDS`]（IERS 実測帯 <0.1 s）。
+/// - **それ以外**（EOP 範囲外、または 1972 以前で閏秒テーブル未定義）: [`EspenakMeeusDeltaT`] の
+///   区分多項式へ外挿し、不確実性も [`EspenakMeeusDeltaT::uncertainty_seconds`] に従う（将来ほど増大）。
+///
+/// 1962–1972 は EOP に UT1−UTC があっても閏秒が未定義のため恒等式を使わず外挿する
+/// （ISSUE-007 §実装メモ・1972 以前の橋渡し）。
+#[derive(Debug)]
+pub struct CompositeDeltaT<E: EarthOrientation> {
+    eop: E,
+    fallback: EspenakMeeusDeltaT,
+}
+
+impl<E: EarthOrientation> CompositeDeltaT<E> {
+    /// EOP ソースから合成器を構築する（外挿器は既定の [`EspenakMeeusDeltaT`]）。
+    pub fn new(eop: E) -> Self {
+        Self {
+            eop,
+            fallback: EspenakMeeusDeltaT,
+        }
+    }
+
+    /// 恒等式が適用可能（EOP coverage 内 ∧ 閏秒域）なら `Some(ΔT)`、不可なら `None`（外挿へ委ねる）。
+    /// 恒等式 `ΔT = (TAI−UTC) + 32.184 − (UT1−UTC)`。両ソースのいずれかが欠けると `None`。
+    fn identity_delta_t(&self, utc: UtcInstant) -> Option<f64> {
+        let tai_utc = tai_minus_utc(utc).ok()?;
+        let ut1_utc = self.eop.ut1_minus_utc(utc).ok()?;
+        Some(tai_utc + TT_MINUS_TAI_SECONDS - ut1_utc)
+    }
+}
+
+impl<E: EarthOrientation> DeltaTSource for CompositeDeltaT<E> {
+    fn delta_t_seconds(&self, utc: UtcInstant) -> f64 {
+        self.identity_delta_t(utc)
+            .unwrap_or_else(|| self.fallback.delta_t_seconds(decimal_year(utc.jd2())))
+    }
+
+    fn uncertainty_seconds(&self, utc: UtcInstant) -> f64 {
+        if self.identity_delta_t(utc).is_some() {
+            EOP_DELTA_T_UNCERTAINTY_SECONDS
+        } else {
+            self.fallback.uncertainty_seconds(decimal_year(utc.jd2()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::TT_MINUS_TAI_SECONDS;
+    use crate::eop::{EopRecord, IersEopData};
+    use crate::error::TimeError;
+    use crate::metadata::DataSetMetadata;
+    use crate::time::{tai_minus_utc, UtcInstant};
 
     const DT: EspenakMeeusDeltaT = EspenakMeeusDeltaT;
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() < tol
+    }
+
+    // ---- EOP 合成スキャフォールド（eop.rs テストのパターンを流用）-----------
+    // bundled データは別 crate にあり core からは使えないため、coverage を決定的に
+    // 制御できる合成 IersEopData をテスト内で構築する。
+
+    /// IERS EOP 14 C04 実測オラクル（独立計算・eop.rs と同じ verbatim 値）。
+    /// 2020-01-01 / MJD 58849。
+    const MJD_20200101: i32 = 58849;
+    const UT1_20200101: f64 = -0.1771222;
+    const XP_20200101: f64 = 0.076609;
+    const YP_20200101: f64 = 0.282358;
+    /// 2020-01-02 / MJD 58850。
+    const MJD_20200102: i32 = 58850;
+    const UT1_20200102: f64 = -0.1775806;
+    const XP_20200102: f64 = 0.074635;
+    const YP_20200102: f64 = 0.282666;
+    /// 1962-01-01 / MJD 37665（閏秒域外 = 恒等式不可・外挿になる境界）。
+    const MJD_1962: i32 = 37665;
+    const UT1_1962: f64 = 0.0326338;
+    const XP_1962: f64 = -0.012700;
+    const YP_1962: f64 = 0.213000;
+
+    /// provenance 完全な代表 metadata（全フィールド非空）。
+    fn eop_metadata() -> DataSetMetadata {
+        DataSetMetadata {
+            name: "iers-eop-c04".to_string(),
+            version: "EOP 14 C04".to_string(),
+            source: "IERS Earth Orientation Center, datacenter.iers.org".to_string(),
+            license: "public-domain".to_string(),
+            valid_from: "1962-01-01".to_string(),
+            valid_to: "2020-01-02".to_string(),
+            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+        }
+    }
+
+    /// 2 点 {58849, 58850}（2020-01-01/02）のみの EOP。coverage = 2020 のみ。
+    fn eop_2020() -> IersEopData {
+        IersEopData::from_records(
+            vec![
+                EopRecord::new(MJD_20200101, UT1_20200101, XP_20200101, YP_20200101),
+                EopRecord::new(MJD_20200102, UT1_20200102, XP_20200102, YP_20200102),
+            ],
+            "EOP 14 C04".to_string(),
+            eop_metadata(),
+        )
+        .expect("two adjacent ascending 2020 records build")
+    }
+
+    /// 3 点 {37665, 58849, 58850}。coverage に 1962 を含む（閏秒域外の外挿分岐検証用）。
+    fn eop_1962_to_2020() -> IersEopData {
+        IersEopData::from_records(
+            vec![
+                EopRecord::new(MJD_1962, UT1_1962, XP_1962, YP_1962),
+                EopRecord::new(MJD_20200101, UT1_20200101, XP_20200101, YP_20200101),
+                EopRecord::new(MJD_20200102, UT1_20200102, XP_20200102, YP_20200102),
+            ],
+            "EOP 14 C04".to_string(),
+            eop_metadata(),
+        )
+        .expect("three ascending records (1962..2020) build")
+    }
+
+    fn eop_utc(y: i32, mo: u8, d: u8, h: u8, mi: u8, s: f64) -> UtcInstant {
+        UtcInstant::from_gregorian(y, mo, d, h, mi, s).expect("valid calendar date")
     }
 
     #[test]
@@ -214,5 +367,228 @@ mod tests {
             TtInstant::from_jd2(crate::calendar::gregorian_to_jd2(2035, 9, 2, 1, 30, 0.0).unwrap());
         let back = ut1_to_tt(tt_to_ut1(tt, &DT), &DT);
         assert!(back.jd2().days_since(tt.jd2()).abs() * SECONDS_PER_DAY < 1e-3);
+    }
+
+    // ===================================================================
+    // ISSUE-007 EOP part P3: utc_to_ut1 / DeltaTSource / CompositeDeltaT
+    // ===================================================================
+
+    // ---- utc_to_ut1 自由関数 ------------------------------------------
+
+    /// 正常系: 戻り値 UT1 の JD は UTC の JD に (UT1−UTC)/86400 日を加えたもの。
+    /// 2020-01-01 0h は厳密日ルックアップで UT1−UTC = -0.1771222 s。
+    /// 加算（符号・/86400 の除数・対象は UTC.jd2）を exact に固定する。
+    /// 変異: `+`→`-`（符号反転）、`/86400`→`*86400` や除数取り違え、UT1−UTC を引かない、を殺す。
+    #[test]
+    fn utc_to_ut1_adds_ut1_minus_utc_to_jd() {
+        let eo = eop_2020();
+        let utc = eop_utc(2020, 1, 1, 0, 0, 0.0);
+        let ut1 = utc_to_ut1(utc, &eo).expect("2020-01-01 is within EOP coverage");
+        // 期待 JD = UTC.jd + (UT1−UTC)/86400。UT1−UTC は負なので JD は僅かに減る。
+        let want_jd = utc.jd2().jd() + UT1_20200101 / SECONDS_PER_DAY;
+        assert!(
+            (ut1.jd2().jd() - want_jd).abs() < 1e-12,
+            "ut1 jd = {}, want {want_jd}",
+            ut1.jd2().jd()
+        );
+        // 差分を秒で取り直し、UT1−UTC（実測オラクル）に厳密一致することも固定する。
+        let diff_s = ut1.jd2().days_since(utc.jd2()) * SECONDS_PER_DAY;
+        assert!(
+            (diff_s - UT1_20200101).abs() < 1e-6,
+            "diff = {diff_s} s, want {UT1_20200101} s"
+        );
+    }
+
+    /// coverage 外（最後のレコードより後 2020-01-03）は Err(MissingEarthOrientationData)。
+    /// EOP の Missing を素通しせず正しい variant に写すことを固定する
+    /// （別 variant への取り違え・`?` 抜けで Ok を返す変異を殺す）。
+    #[test]
+    fn utc_to_ut1_outside_coverage_is_missing() {
+        let eo = eop_2020();
+        let outside = eop_utc(2020, 1, 3, 0, 0, 0.0); // MJD 58851 > last(58850)
+        assert_eq!(
+            utc_to_ut1(outside, &eo).unwrap_err(),
+            TimeError::MissingEarthOrientationData
+        );
+    }
+
+    // ---- CompositeDeltaT::delta_t_seconds 恒等式分岐 -------------------
+
+    /// 恒等式分岐（EOP 域 ∧ ≥1972, 例 2020-01-01）:
+    /// ΔT = (TAI−UTC) + 32.184 − (UT1−UTC) = 37.0 + 32.184 − (−0.1771222) = 69.3611222 s。
+    /// 独立に計算した既知 ΔT(2020)≈69.36 s と一致する厳密値。
+    /// 変異: 32.184 の取り違え、UT1−UTC の符号（`−`→`+`）、閏秒項の脱落、恒等式と外挿の取り違え
+    /// （外挿は ~71.62 s で 2.26 s 異なるため判別可能）を殺す。
+    #[test]
+    fn composite_delta_t_uses_identity_in_eop_and_leap_domain() {
+        let comp = CompositeDeltaT::new(eop_2020());
+        let utc = eop_utc(2020, 1, 1, 0, 0, 0.0);
+        let got = comp.delta_t_seconds(utc);
+        // 恒等式オラクル（各項を verbatim 値から独立に組み立てる）。
+        let want = 37.0 + 32.184 - UT1_20200101; // = 69.3611222
+        assert!(
+            (got - want).abs() < 1e-9,
+            "identity ΔT(2020-01-01) = {got}, want {want}"
+        );
+        // 既知 ΔT(2020) ≈ 69.36 s（独立既知値）と一致。
+        assert!(
+            (got - 69.3611222).abs() < 1e-7,
+            "ΔT(2020-01-01) = {got}, want ≈ 69.3611222"
+        );
+    }
+
+    /// 恒等式の各構成項を、ライブラリの一次ソース（tai_minus_utc / ut1_minus_utc /
+    /// TT_MINUS_TAI_SECONDS 定数）から組み立て直し、CompositeDeltaT がその恒等式どおりに
+    /// 算出していることを固定する（恒等式の係数・符号・項構成の取り違えを殺す）。
+    #[test]
+    fn composite_delta_t_identity_matches_term_by_term() {
+        use crate::eop::EarthOrientation;
+        let eo = eop_2020();
+        let comp = CompositeDeltaT::new(eop_2020());
+        let utc = eop_utc(2020, 1, 1, 0, 0, 0.0);
+        let tai_utc = tai_minus_utc(utc).expect("2020 is in leap-second table");
+        let ut1_utc = eo.ut1_minus_utc(utc).expect("2020 is in EOP coverage");
+        let want = tai_utc + TT_MINUS_TAI_SECONDS - ut1_utc;
+        assert!(
+            (comp.delta_t_seconds(utc) - want).abs() < 1e-12,
+            "ΔT = {}, term-by-term want {want}",
+            comp.delta_t_seconds(utc)
+        );
+    }
+
+    // ---- CompositeDeltaT::delta_t_seconds 外挿分岐 --------------------
+
+    /// 外挿分岐（EOP coverage 外, 例 2025-06）→ Espenak–Meeus と一致。
+    /// EOP のみを持つ coverage（2020 のみ）の外を引くと、恒等式ではなく
+    /// EspenakMeeusDeltaT.delta_t_seconds(decimal_year(jd)) に厳密一致する。
+    /// 変異: 外挿器の引数（decimal_year を渡さない）、外挿分岐の脱落、を殺す。
+    #[test]
+    fn composite_delta_t_extrapolates_outside_eop_coverage() {
+        let comp = CompositeDeltaT::new(eop_2020());
+        let utc = eop_utc(2025, 6, 15, 0, 0, 0.0); // 2020 coverage の外
+        let got = comp.delta_t_seconds(utc);
+        let want = EspenakMeeusDeltaT.delta_t_seconds(decimal_year(utc.jd2()));
+        assert!(
+            (got - want).abs() < 1e-12,
+            "extrapolated ΔT = {got}, want EM {want}"
+        );
+    }
+
+    /// 外挿分岐（EOP 域内だが 1972 以前 = 閏秒テーブル未定義, 例 1962-01-01）→
+    /// 恒等式ではなく Espenak–Meeus と一致。
+    /// この境界が「恒等式には閏秒域条件（tai_minus_utc が Ok）も必要」であることを固定する
+    /// 重要テスト: EOP coverage 内であることだけで恒等式を選ぶ変異（閏秒域条件の脱落）を殺す。
+    /// 1962 で恒等式を誤って使うと閏秒が未定義（Err）なので、外挿になっていることを exact 比較で示す。
+    #[test]
+    fn composite_delta_t_extrapolates_when_before_leap_seconds() {
+        let comp = CompositeDeltaT::new(eop_1962_to_2020());
+        let utc = eop_utc(1962, 1, 1, 0, 0, 0.0); // EOP 域内だが 1972 以前。
+                                                  // 前提: 1962 は閏秒テーブル域外（恒等式は使えない）。
+        assert!(
+            tai_minus_utc(utc).is_err(),
+            "前提: 1962 は閏秒テーブル未定義であること"
+        );
+        let got = comp.delta_t_seconds(utc);
+        let want = EspenakMeeusDeltaT.delta_t_seconds(decimal_year(utc.jd2()));
+        assert!(
+            (got - want).abs() < 1e-12,
+            "1962 ΔT = {got}, want EM extrapolation {want}"
+        );
+    }
+
+    // ---- CompositeDeltaT::uncertainty_seconds -------------------------
+
+    /// 恒等式域（EOP 実測 ∧ ≥1972, 例 2020-01-01）の不確実性は固定定数
+    /// EOP_DELTA_T_UNCERTAINTY_SECONDS (=0.005) に exact 一致し、かつ < 0.1（IERS 実測帯）。
+    /// 変異: 定数値の取り違え、外挿器の不確実性を返す（実測域で 0.5 等になる）、を殺す。
+    #[test]
+    fn composite_uncertainty_in_eop_domain_is_fixed_constant() {
+        let comp = CompositeDeltaT::new(eop_2020());
+        let utc = eop_utc(2020, 1, 1, 0, 0, 0.0);
+        let got = comp.uncertainty_seconds(utc);
+        assert!(
+            (got - EOP_DELTA_T_UNCERTAINTY_SECONDS).abs() < 1e-12,
+            "EOP-domain uncertainty = {got}, want {EOP_DELTA_T_UNCERTAINTY_SECONDS}"
+        );
+        // 公開定数そのものが 0.005 であることも固定する。
+        assert!(
+            (EOP_DELTA_T_UNCERTAINTY_SECONDS - 0.005).abs() < 1e-12,
+            "EOP_DELTA_T_UNCERTAINTY_SECONDS = {EOP_DELTA_T_UNCERTAINTY_SECONDS}, want 0.005"
+        );
+        // IERS 実測帯（< 0.1 s）。
+        assert!(got < 0.1, "EOP-domain uncertainty {got} must be < 0.1 s");
+    }
+
+    /// 外挿域（EOP coverage 外）の不確実性は
+    /// EspenakMeeusDeltaT.uncertainty_seconds(decimal_year(jd)) に一致。
+    /// 変異: 外挿域でも固定定数 0.005 を返す、引数の取り違え、を殺す。
+    #[test]
+    fn composite_uncertainty_outside_eop_matches_espenak_meeus() {
+        let comp = CompositeDeltaT::new(eop_2020());
+        let utc = eop_utc(2030, 1, 1, 0, 0, 0.0); // 2020 coverage の外（外挿域）。
+        let got = comp.uncertainty_seconds(utc);
+        let want = EspenakMeeusDeltaT.uncertainty_seconds(decimal_year(utc.jd2()));
+        assert!(
+            (got - want).abs() < 1e-12,
+            "extrapolated uncertainty = {got}, want EM {want}"
+        );
+        // 外挿域の値は固定定数 0.005 とは別物であること（分岐取り違えを更に固定）。
+        assert!(
+            (got - EOP_DELTA_T_UNCERTAINTY_SECONDS).abs() > 1e-6,
+            "外挿域の不確実性 {got} は実測帯定数と区別できること"
+        );
+    }
+
+    /// 単調性プロパティ: 外挿域では将来ほど不確実（accuracy.md §0）。
+    /// 2100 相当 > 2030 相当（いずれも 2020 coverage の外 = 外挿域）。
+    /// 外挿域で Espenak の年依存不確実性に従っていること（定数化する変異）を殺す。
+    #[test]
+    fn composite_uncertainty_grows_into_the_future_in_extrapolation() {
+        let comp = CompositeDeltaT::new(eop_2020());
+        let near = comp.uncertainty_seconds(eop_utc(2030, 1, 1, 0, 0, 0.0));
+        let far = comp.uncertainty_seconds(eop_utc(2100, 1, 1, 0, 0, 0.0));
+        assert!(
+            far > near,
+            "future uncertainty {far} (2100) must exceed nearer {near} (2030)"
+        );
+    }
+
+    // ---- trait 経由呼び出し / Send + Sync -----------------------------
+
+    /// CompositeDeltaT は DeltaTSource として（trait 越しに）呼べる。
+    /// dyn DeltaTSource 経由で delta_t_seconds を呼び、恒等式オラクルと一致することを固定する
+    /// （trait 実装の取り違え・未配線を殺す）。
+    #[test]
+    fn composite_callable_through_delta_t_source_trait() {
+        let comp = CompositeDeltaT::new(eop_2020());
+        let src: &dyn DeltaTSource = &comp;
+        let utc = eop_utc(2020, 1, 1, 0, 0, 0.0);
+        let got = src.delta_t_seconds(utc);
+        assert!(
+            (got - (37.0 + 32.184 - UT1_20200101)).abs() < 1e-9,
+            "trait-object ΔT = {got}, want 69.3611222"
+        );
+        // 不確実性も trait 越しに供給される。
+        assert!((src.uncertainty_seconds(utc) - EOP_DELTA_T_UNCERTAINTY_SECONDS).abs() < 1e-12);
+    }
+
+    /// ジェネリック越し（`fn call<S: DeltaTSource>`）でも呼べることを固定する。
+    #[test]
+    fn composite_callable_through_generic_bound() {
+        fn delta_via<S: DeltaTSource>(src: &S, utc: UtcInstant) -> f64 {
+            src.delta_t_seconds(utc)
+        }
+        let comp = CompositeDeltaT::new(eop_2020());
+        let utc = eop_utc(2020, 1, 1, 0, 0, 0.0);
+        let got = delta_via(&comp, utc);
+        assert!((got - (37.0 + 32.184 - UT1_20200101)).abs() < 1e-9, "{got}");
+    }
+
+    /// `CompositeDeltaT<IersEopData>: Send + Sync`（DeltaTSource: Send + Sync 制約）の
+    /// コンパイル時アサーション。trait 境界から Send/Sync を外す変異を殺す。
+    #[test]
+    fn composite_delta_t_is_send_sync() {
+        fn _assert_send_sync<T: Send + Sync>() {}
+        _assert_send_sync::<CompositeDeltaT<IersEopData>>();
     }
 }
