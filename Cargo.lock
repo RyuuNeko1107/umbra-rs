@@ -254,6 +254,7 @@ dependencies = [
  "thiserror",
  "umbra-core",
  "umbra-ephemeris",
+ "umbra-geo",
 ]
 
 [[package]]
