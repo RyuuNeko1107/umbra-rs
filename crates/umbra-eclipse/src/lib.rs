@@ -12,6 +12,7 @@ pub mod eclipse_filter;
 pub mod error;
 pub mod fundamental;
 pub mod global;
+pub mod local_contacts;
 pub mod polynomial;
 pub mod projection;
 pub mod shadow;
