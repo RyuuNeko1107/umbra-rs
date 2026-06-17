@@ -32,6 +32,9 @@ jobs:
         #     docs/reviews/mutation-conjunction.md。solver.rs 除外と同方針）
         #   - assess_eclipse_possibility の `< → <=`: separation==limit ちょうどの一点のみの境界等価変異
         #     （docs/reviews/mutation-eclipse-filter.md）
+        #   - scan_point_count: 粗走査の分割数（窓幅/刻み）を決めるだけで、最大食・接触の検出正否には
+        #     影響しない（n が十分大きければ括れる）。算術変異は等価（細かい n でも同結果）/timeout（巨大 n）
+        #     （docs/reviews/mutation-local-contacts.md, mutation-local-maximum.md。solver.rs 除外と同方針）
         run: >-
           docker compose -p umbra-rs run --rm rust
-          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --package xtask --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds' --exclude-re 'with <= in.*BesselianPolynomial>::at' --exclude-re 'with >= in.*BesselianPolynomial>::at' --exclude-re 'in solve_zero_in_window' --exclude-re 'with <= in.*assess_eclipse_possibility'"
+          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --package xtask --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds' --exclude-re 'with <= in.*BesselianPolynomial>::at' --exclude-re 'with >= in.*BesselianPolynomial>::at' --exclude-re 'in solve_zero_in_window' --exclude-re 'with <= in.*assess_eclipse_possibility' --exclude-re 'in scan_point_count'"

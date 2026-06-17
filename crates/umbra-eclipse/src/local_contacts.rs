@@ -156,6 +156,15 @@ fn g_inner<B: BesselianSource>(
     Ok(m2 - l2 * l2)
 }
 
+/// 粗走査の分割数（窓幅 / 刻み, 最低 2）。**走査解像度のみ**を決め、接触検出の正否には影響しない
+/// （n が十分大きければ符号変化を捉える＝偽陰性回避は刻みの細かさで担保）。`span`/`n` の算術には
+/// 振る舞い契約が無く、ここの算術変異は等価（細かい n でも根は同じ）/timeout（巨大 n）になるため
+/// `mutation.yml` で `--exclude-re 'in scan_point_count'` 除外する（docs/reviews/mutation-local-contacts.md）。
+fn scan_point_count(t0_jd: f64, t1_jd: f64, step_seconds: f64) -> usize {
+    let span_seconds = (t1_jd - t0_jd) * SECONDS_PER_DAY;
+    (span_seconds / step_seconds).ceil().max(2.0) as usize
+}
+
 /// `[t0_jd, t1_jd]`（TT-JD）を一定刻みで粗走査し、`f` の符号変化区間を Brent で精解して全根を返す。
 /// 接触が無ければ空 Vec（その地点・窓に該当接触なし＝食なしは正常, エラーにしない）。
 /// 偽陰性回避のため刻みは [`CONTACT_SCAN_STEP_SECONDS`]。無条件 Newton 禁止（conventions §11）。
@@ -168,8 +177,7 @@ fn scan_sign_change_roots<F>(
 where
     F: FnMut(f64) -> Result<f64, EclipseError>,
 {
-    let span_seconds = (t1_jd - t0_jd) * SECONDS_PER_DAY;
-    let n = (span_seconds / CONTACT_SCAN_STEP_SECONDS).ceil().max(2.0) as usize;
+    let n = scan_point_count(t0_jd, t1_jd, CONTACT_SCAN_STEP_SECONDS);
 
     let mut roots = Vec::new();
     let mut prev_jd = t0_jd;

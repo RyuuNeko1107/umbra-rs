@@ -13,6 +13,7 @@ pub mod error;
 pub mod fundamental;
 pub mod global;
 pub mod local_contacts;
+pub mod local_maximum;
 pub mod polynomial;
 pub mod projection;
 pub mod shadow;
