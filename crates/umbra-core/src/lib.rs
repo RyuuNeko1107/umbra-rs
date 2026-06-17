@@ -15,6 +15,7 @@ pub mod error;
 pub mod julian;
 pub mod matrix;
 pub mod metadata;
+pub mod observer;
 pub mod solver;
 pub mod time;
 pub mod timescales;
@@ -32,6 +33,7 @@ pub use error::{DomainError, SolverError, TimeError};
 pub use julian::JulianDate2;
 pub use matrix::Matrix3;
 pub use metadata::DataSetMetadata;
+pub use observer::{EastLongitude, GeodeticLatitude, Kilometers, Meters, Observer};
 pub use solver::{brent_root, minimize_golden};
 pub use time::{
     tai_minus_utc, LeapSecondEntry, LeapSecondTable, TaiInstant, TdbInstant, TimeInterval,
