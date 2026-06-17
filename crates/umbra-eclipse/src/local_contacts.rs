@@ -9,8 +9,9 @@
 //! 探索窓を粗走査で符号変化区間に分割 → 各区間を Brent（ISSUE-008、無条件 Newton 禁止・conventions §11）。
 //! 接触時刻は TT と UTC の両方を返す（accuracy.md §0）。
 //!
-//! 注: `LocalContact` の高度・方位・position_angle・可視性（ISSUE-028）は本 issue の非目的。本層は
-//! 接触時刻求解が責務で、観測フィールドは ISSUE-028/043 で充足する。
+//! 注: [`ContactInstant`] は**接触時刻（TT/UTC）のみの幾何ソルバ出力**（本層の責務）。高度・方位・
+//! position_angle・可視性を伴う公開 result 型 `LocalContact`（ISSUE-043 S4e, `results` モジュール）は、
+//! 本ソルバの時刻に ISSUE-028 の太陽地平座標等を付与して EclipseEngine（S7）が組み立てる。
 
 // solve_local_contacts（pub(crate)）は ISSUE-043（EclipseEngine 結線）が消費するまで未使用。
 // 結線され次第この許容は外す（conjunction.rs / candidates.rs と同手順）。
@@ -42,24 +43,24 @@ const SECONDS_PER_DAY: f64 = 86_400.0;
 /// 高度・方位・position_angle・可視性（ISSUE-028）は本 issue の非目的のため持たない
 /// （ISSUE-028/043 で拡張）。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LocalContact {
-    /// 接触の TT 時刻（幾何相対の一級値, conventions §6）。
-    pub time_tt: TtInstant,
+pub struct ContactInstant {
     /// 接触の UTC 時刻（TT→UTC は ΔT 経由 ISSUE-007、将来は予測律速）。
     pub time_utc: UtcInstant,
+    /// 接触の TT 時刻（幾何相対の一級値, conventions §6）。
+    pub time_tt: TtInstant,
 }
 
 /// C1〜C4 の局地接触集合。部分食地点では `c2`/`c3` が `None`（api-draft §6）。
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct LocalContactSet {
+pub struct ContactInstantSet {
     /// 第1接触（部分食開始・外接）。
-    pub c1: Option<LocalContact>,
+    pub c1: Option<ContactInstant>,
     /// 第2接触（皆既/金環開始・内接, 中心食地点のみ）。
-    pub c2: Option<LocalContact>,
+    pub c2: Option<ContactInstant>,
     /// 第3接触（皆既/金環終了・内接, 中心食地点のみ）。
-    pub c3: Option<LocalContact>,
+    pub c3: Option<ContactInstant>,
     /// 第4接触（部分食終了・外接）。
-    pub c4: Option<LocalContact>,
+    pub c4: Option<ContactInstant>,
 }
 
 /// 観測地点の局地接触 C1〜C4 を探索窓内で求解する。
@@ -74,7 +75,7 @@ pub(crate) fn solve_local_contacts<B: BesselianSource>(
     east_longitude: Radians,
     search: TimeInterval<TtInstant>,
     config: RootConfig,
-) -> Result<LocalContactSet, EclipseError> {
+) -> Result<ContactInstantSet, EclipseError> {
     let t0 = search.start.jd2().jd();
     let t1 = search.end.jd2().jd();
 
@@ -102,7 +103,7 @@ pub(crate) fn solve_local_contacts<B: BesselianSource>(
         c3_jd = inner.iter().rev().find(|r| r.ascending).map(|r| r.time_jd);
     }
 
-    Ok(LocalContactSet {
+    Ok(ContactInstantSet {
         c1: contact_at(c1_jd)?,
         c2: contact_at(c2_jd)?,
         c3: contact_at(c3_jd)?,
@@ -217,13 +218,13 @@ where
     Ok(roots)
 }
 
-/// TT-JD（あれば）から `LocalContact`（TT + UTC）を作る。UTC は ΔT 経由（ISSUE-007）。
-fn contact_at(jd: Option<f64>) -> Result<Option<LocalContact>, EclipseError> {
+/// TT-JD（あれば）から `ContactInstant`（TT + UTC）を作る。UTC は ΔT 経由（ISSUE-007）。
+fn contact_at(jd: Option<f64>) -> Result<Option<ContactInstant>, EclipseError> {
     match jd {
         Some(jd) => {
             let time_tt = tt(jd);
             let time_utc = tt_to_utc(time_tt)?;
-            Ok(Some(LocalContact { time_tt, time_utc }))
+            Ok(Some(ContactInstant { time_tt, time_utc }))
         }
         None => Ok(None),
     }
@@ -733,7 +734,7 @@ mod tests {
             .expect("window without contacts is a no-eclipse case and must be Ok, not Err");
         assert_eq!(
             set,
-            LocalContactSet::default(),
+            ContactInstantSet::default(),
             "window without contacts must yield all-None set, got {set:?}"
         );
     }
@@ -905,7 +906,7 @@ mod tests {
 
         // 2 秒 = 2/86400 day。窓幅由来の刻み感度を弾く（root_tolerance 1e-9 day より十分緩い実用許容）。
         let tol = 2.0 / SECONDS_PER_DAY;
-        let pick = |s: &LocalContactSet| {
+        let pick = |s: &ContactInstantSet| {
             [
                 jd_of(s.c1.expect("C1").time_tt),
                 jd_of(s.c2.expect("C2").time_tt),

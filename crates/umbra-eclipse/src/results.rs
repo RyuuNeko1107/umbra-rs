@@ -22,6 +22,7 @@ use umbra_geo::GeoPoint;
 use crate::bessel_poly::BesselianPolynomial;
 use crate::calc_metadata::CalculationMetadata;
 use crate::global::SolarEclipseKind;
+use crate::horizontal::Visibility;
 use crate::magnitude::{EclipseMagnitude, Obscuration};
 
 /// 全球接触点（時刻 TT/UTC ＋ 地表点）。
@@ -90,6 +91,68 @@ pub struct SolarEclipse {
     pub metadata: CalculationMetadata,
 }
 
+/// 局地接触（時刻 TT/UTC ＋ 観測フィールド, api-draft §3.4）。
+///
+/// `local_contacts::ContactInstant`（時刻のみの幾何ソルバ出力）に、ISSUE-028 の太陽地平座標・
+/// position angle・可視を付与した公開 result 型。EclipseEngine（S7）が組み立てる。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocalContact {
+    /// 接触の UTC 時刻。
+    pub time_utc: UtcInstant,
+    /// 接触の TT 時刻（幾何相対の一級値, conventions §6）。
+    pub time_tt: TtInstant,
+    /// 接触時の太陽高度（conventions §7）。
+    pub sun_altitude: Degrees,
+    /// 接触時の太陽方位（北 0°・東回り）。
+    pub sun_azimuth: Degrees,
+    /// 接触の位置角（太陽周縁上, 北 0°・東回り）。
+    pub position_angle: Degrees,
+    /// 接触時に太陽が地平上か（可視）。
+    pub visible: bool,
+}
+
+/// 局地接触集合（A3: c1..c4 は部分食地点で `None`、`maximum` は常に存在＝非 Option）。
+/// フィールドは時系列順（c1, c2, maximum, c3, c4）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocalContactSet {
+    /// 第1接触 C1（部分食開始・外接）。
+    pub c1: Option<LocalContact>,
+    /// 第2接触 C2（皆既/金環開始・内接, 中心食地点のみ）。
+    pub c2: Option<LocalContact>,
+    /// 最大食（どの地点でも定義される＝非 Option）。
+    pub maximum: LocalContact,
+    /// 第3接触 C3（皆既/金環終了・内接, 中心食地点のみ）。
+    pub c3: Option<LocalContact>,
+    /// 第4接触 C4（部分食終了・外接）。
+    pub c4: Option<LocalContact>,
+}
+
+/// 観測地点の局地条件（`local_circumstances()` の結果）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalCircumstances {
+    /// 接触集合（C1〜C4 ＋ 最大食）。
+    pub contacts: LocalContactSet,
+    /// 最大食での食分（皆既で 1 超可）。
+    pub magnitude: EclipseMagnitude,
+    /// 最大食での食面積（0..1）。
+    pub obscuration: Obscuration,
+    /// 最大食での太陽高度。
+    pub maximum_altitude: Degrees,
+    /// 可視性（6 値）。
+    pub visibility: Visibility,
+    /// 計算メタデータ（accuracy.md §0）。
+    pub metadata: CalculationMetadata,
+}
+
+/// 可視日食（`next_visible_eclipse()` の結果）。日食とその観測地点の局地条件。
+#[derive(Clone, Debug)]
+pub struct VisibleSolarEclipse {
+    /// 全球日食。
+    pub eclipse: SolarEclipse,
+    /// 観測地点の局地条件。
+    pub local: LocalCircumstances,
+}
+
 #[cfg(test)]
 mod tests {
     //! ISSUE-043 S4d 受け入れテスト（strict・全球 result 型）。
@@ -112,9 +175,13 @@ mod tests {
     use crate::calc_metadata::CalculationMetadata;
     use crate::config::AccuracyProfile;
     use crate::global::SolarEclipseKind;
+    use crate::horizontal::Visibility;
     use crate::magnitude::{EclipseMagnitude, Obscuration};
     use crate::polynomial::Polynomial;
-    use crate::results::{GlobalCircumstances, GlobalContact, GreatestEclipse, SolarEclipse};
+    use crate::results::{
+        GlobalCircumstances, GlobalContact, GreatestEclipse, LocalCircumstances, LocalContact,
+        LocalContactSet, SolarEclipse, VisibleSolarEclipse,
+    };
 
     use umbra_core::{Degrees, JulianDate2, Kilometers, TimeInterval, TtInstant, UtcInstant};
     use umbra_geo::GeoPoint;
@@ -502,5 +569,400 @@ mod tests {
         );
         // 原本も有効（Clone であって move でない）。
         assert_eq!(se.event_key, "2023-10-14#1248", "原本 se は Clone 後も有効");
+    }
+
+    // ==================================================================
+    // 局地 result 型（ISSUE-043 S4e, api-draft §3.4 rich 版）
+    // ==================================================================
+    //
+    // ## オラクル戦略（S4d と同方針）
+    // 局地型もすべて **pub フィールドのデータコンテナ**。振る舞いは「struct リテラルで構築した
+    // 各フィールドを取り違えず保持・読み出す」「derive が仕様どおり付く」「Option/非 Option の
+    // 区別」に尽きる。よって:
+    //   1. 各フィールドを **互いに異なる非対称値**で構築し read-back（フィールド取り違え変異を撃破）。
+    //   2. `maximum` は **非 Option**（型レベルで `LocalContact`）、c1..c4 は `Option`。部分食地点で
+    //      c2/c3=None・c1/c4=Some、中心食地点で全 Some の 2 パターンを構築（Option 取り違え・
+    //      maximum の Option 化変異を撃破）。
+    //   3. 異値で `ne`・同値で `eq`、`Copy`/`Clone` をコンパイル時境界で縛る（derive 脱落を撃破）。
+    //   4. `VisibleSolarEclipse` は PartialEq 非実装（SolarEclipse が PartialEq なし）。Clone 後に
+    //      比較可能フィールドを個別照合する。
+
+    // ------------------------------------------------------------------
+    // 局地用 構築ヘルパ（非対称な既知値で各部品を作る）
+    // ------------------------------------------------------------------
+
+    /// `LocalContact` を **6 フィールドすべて異なる値**で組む（取り違え判別用）。
+    /// `seed` で各フィールドが互いにずれるようにし、`vis` で visible を真偽切替する。
+    /// sun_altitude / sun_azimuth / position_angle は **互いに異なる値域**を選び、
+    /// time_utc と time_tt は別スケール（UTC は暦・TT は JD）で区別する。
+    fn local_contact(seed: f64, vis: bool) -> LocalContact {
+        LocalContact {
+            // 暦由来（秒だけ seed に連動）。
+            time_utc: utc(2024, 4, 8, 18, 17, seed),
+            // JD 由来・別スケール（time_utc とは取り違え不能な値）。
+            time_tt: tt(2_460_409.0, 0.1 + seed * 0.001),
+            // 高度・方位・位置角は互いに大きく異なる値域（取り違えを撃破）。
+            sun_altitude: Degrees(10.0 + seed),
+            sun_azimuth: Degrees(200.0 + seed),
+            position_angle: Degrees(300.0 + seed),
+            visible: vis,
+        }
+    }
+
+    /// 中心食地点の `LocalContactSet`（c1..c4 すべて Some・maximum は値）。
+    /// 5 接触を **互いに異なる time（seed）** で組み、時系列の取り違え（c1↔c4, c2↔c3）を撃破する。
+    fn local_set_central() -> LocalContactSet {
+        LocalContactSet {
+            c1: Some(local_contact(1.0, true)),
+            c2: Some(local_contact(2.0, true)),
+            maximum: local_contact(3.0, true),
+            c3: Some(local_contact(4.0, true)),
+            c4: Some(local_contact(5.0, true)),
+        }
+    }
+
+    /// 部分食地点の `LocalContactSet`（c2/c3 は None・c1/c4 は Some・maximum は値）。
+    /// 部分食では内接（C2/C3）が無いため None、外接（C1/C4）と最大食のみ。
+    fn local_set_partial() -> LocalContactSet {
+        LocalContactSet {
+            c1: Some(local_contact(11.0, true)),
+            c2: None,
+            maximum: local_contact(13.0, false),
+            c3: None,
+            c4: Some(local_contact(15.0, true)),
+        }
+    }
+
+    /// 代表的な `LocalCircumstances`（6 フィールド非対称・magnitude≠obscuration）。
+    fn local_circumstances() -> LocalCircumstances {
+        LocalCircumstances {
+            contacts: local_set_central(),
+            magnitude: EclipseMagnitude(1.0234),
+            obscuration: Obscuration(0.987),
+            maximum_altitude: Degrees(55.5),
+            visibility: Visibility::FullyVisible,
+            metadata: metadata(),
+        }
+    }
+
+    // ==================================================================
+    // LocalContact: 6 フィールド保持・取り違えない / Copy・PartialEq
+    // ==================================================================
+
+    /// `LocalContact` の 6 フィールド（time_utc / time_tt / sun_altitude / sun_azimuth /
+    /// position_angle / visible）が構築値どおり保持され、互いに取り違えられない。
+    /// 高度・方位・位置角は **異なる値域**（10°台 / 200°台 / 300°台）で与え、3 つの Degrees
+    /// フィールドの相互取り違えを撃破。time_utc≠time_tt（別スケール）、visible 真偽も縛る。
+    /// 殺す変異: sun_altitude↔sun_azimuth↔position_angle の入れ替え、time_utc↔time_tt の入れ替え、
+    /// visible の固定化（常に true/false）。
+    #[test]
+    fn local_contact_holds_each_field() {
+        let t_utc = utc(2024, 4, 8, 18, 17, 6.5);
+        let t_tt = tt(2_460_409.0, 0.234);
+        let c = LocalContact {
+            time_utc: t_utc,
+            time_tt: t_tt,
+            sun_altitude: Degrees(42.0),
+            sun_azimuth: Degrees(210.0),
+            position_angle: Degrees(305.0),
+            visible: true,
+        };
+        assert_eq!(c.time_utc, t_utc, "time_utc を保持");
+        assert_eq!(c.time_tt, t_tt, "time_tt を保持");
+        assert_eq!(c.sun_altitude, Degrees(42.0), "sun_altitude を保持");
+        assert_eq!(c.sun_azimuth, Degrees(210.0), "sun_azimuth を保持");
+        assert_eq!(c.position_angle, Degrees(305.0), "position_angle を保持");
+        assert!(c.visible, "visible=true を保持");
+        // 3 つの角度フィールドは互いに別値（取り違え変異を撃破）。
+        assert_ne!(
+            c.sun_altitude, c.sun_azimuth,
+            "sun_altitude と sun_azimuth は別フィールド・別値"
+        );
+        assert_ne!(
+            c.sun_azimuth, c.position_angle,
+            "sun_azimuth と position_angle は別フィールド・別値"
+        );
+        assert_ne!(
+            c.sun_altitude, c.position_angle,
+            "sun_altitude と position_angle は別フィールド・別値"
+        );
+
+        // visible=false 側も保持する（真偽の固定化変異を撃破）。
+        let invisible = LocalContact {
+            visible: false,
+            ..c
+        };
+        assert!(!invisible.visible, "visible=false を保持");
+    }
+
+    /// `LocalContact` は `Copy`・`PartialEq`。同値は `eq`、各フィールド違いは `ne`。
+    /// 殺す変異: `#[derive(Copy)]`/`#[derive(PartialEq)]` の脱落、visible を比較から外す。
+    #[test]
+    fn local_contact_is_copy_and_partial_eq() {
+        fn assert_copy<T: Copy>(_: T) {}
+        let a = local_contact(1.0, true);
+        let b = a; // Copy（move されない）
+        assert_copy(b);
+        assert_eq!(a, b, "Copy 後も等しい（a は有効）");
+        // 同一構築値は eq。
+        assert_eq!(
+            local_contact(1.0, true),
+            local_contact(1.0, true),
+            "同一構築値は eq"
+        );
+        // seed 違い（time/角度すべてずれる）は ne。
+        assert_ne!(
+            local_contact(1.0, true),
+            local_contact(2.0, true),
+            "seed 違いは ne"
+        );
+        // visible だけ違っても ne（visible が比較に効く）。
+        assert_ne!(
+            local_contact(1.0, true),
+            local_contact(1.0, false),
+            "visible 違いは ne"
+        );
+    }
+
+    // ==================================================================
+    // LocalContactSet: c1/c2/maximum/c3/c4 保持・maximum は非 Option
+    // ==================================================================
+
+    /// 中心食地点の `LocalContactSet`: c1..c4 がすべて Some、maximum は値。**5 接触を互いに
+    /// 異なる time** で構築し、各フィールドから正しい接触を read-back（時系列の取り違えを撃破）。
+    /// 殺す変異: c1↔c4 / c2↔c3 の入れ替え、maximum と他接触の取り違え。
+    #[test]
+    fn local_contact_set_central_holds_all_contacts() {
+        let c1 = local_contact(1.0, true);
+        let c2 = local_contact(2.0, true);
+        let mx = local_contact(3.0, true);
+        let c3 = local_contact(4.0, true);
+        let c4 = local_contact(5.0, true);
+        let set = LocalContactSet {
+            c1: Some(c1),
+            c2: Some(c2),
+            maximum: mx,
+            c3: Some(c3),
+            c4: Some(c4),
+        };
+        assert_eq!(set.c1, Some(c1), "c1 を保持");
+        assert_eq!(set.c2, Some(c2), "c2 を保持");
+        assert_eq!(set.maximum, mx, "maximum を保持（非 Option で値）");
+        assert_eq!(set.c3, Some(c3), "c3 を保持");
+        assert_eq!(set.c4, Some(c4), "c4 を保持");
+        // 時系列の取り違え検出（互いに異なる time なので相互に ne）。
+        assert_ne!(set.c1, set.c4, "c1 と c4 は別接触（時系列取り違え撃破）");
+        assert_ne!(set.c2, set.c3, "c2 と c3 は別接触（時系列取り違え撃破）");
+        assert_ne!(set.maximum, c1, "maximum と c1 は別接触");
+    }
+
+    /// 部分食地点の `LocalContactSet`: c2/c3 が None（内接なし）、c1/c4 は Some、maximum は値。
+    /// **maximum はどの地点でも非 Option で存在する**こと（部分食でも値を持つ）を縛る。
+    /// 殺す変異: 部分食で c2/c3 を常に Some にする、maximum を Option 化して部分食で None にする、
+    /// c1/c4 を None と取り違える。
+    #[test]
+    fn local_contact_set_partial_has_none_inner_contacts() {
+        let c1 = local_contact(11.0, true);
+        let mx = local_contact(13.0, false);
+        let c4 = local_contact(15.0, true);
+        let set = LocalContactSet {
+            c1: Some(c1),
+            c2: None,
+            maximum: mx,
+            c3: None,
+            c4: Some(c4),
+        };
+        assert_eq!(set.c1, Some(c1), "部分食 c1=Some");
+        assert_eq!(set.c2, None, "部分食 c2=None（内接なし）");
+        assert_eq!(set.c3, None, "部分食 c3=None（内接なし）");
+        assert_eq!(set.c4, Some(c4), "部分食 c4=Some");
+        // maximum は部分食でも非 Option の値として存在（Option 化変異を撃破）。
+        assert_eq!(
+            set.maximum, mx,
+            "部分食でも maximum は値（非 Option・常に存在）"
+        );
+    }
+
+    /// `LocalContactSet` は `Copy`・`PartialEq`。中心食集合と部分食集合（c2/c3 の Some/None 差）は
+    /// `ne`、同値は `eq`。
+    /// 殺す変異: `#[derive(Copy)]`/`#[derive(PartialEq)]` の脱落、Option フィールドを比較から外す。
+    #[test]
+    fn local_contact_set_is_copy_and_partial_eq() {
+        fn assert_copy<T: Copy>(_: T) {}
+        let central = local_set_central();
+        let copied = central; // Copy
+        assert_copy(copied);
+        assert_eq!(central, copied, "Copy 後も等しい（central は有効）");
+        assert_eq!(local_set_central(), local_set_central(), "同一構築値は eq");
+        // 中心食（c2/c3=Some）と部分食（c2/c3=None）は ne。
+        assert_ne!(
+            local_set_central(),
+            local_set_partial(),
+            "中心食集合 と 部分食集合 は ne（Some/None 差）"
+        );
+
+        // maximum だけ違っても ne（maximum が比較に効く）。seed は秒域 [0,60) 内の別値。
+        let mut max_diff = central;
+        max_diff.maximum = local_contact(42.0, true);
+        assert_ne!(central, max_diff, "maximum 違いは ne");
+    }
+
+    // ==================================================================
+    // LocalCircumstances: 6 フィールド保持 / Clone・PartialEq（Copy 不可）
+    // ==================================================================
+
+    /// `LocalCircumstances` の 6 フィールド（contacts / magnitude / obscuration /
+    /// maximum_altitude / visibility / metadata）が構築値どおり保持される。
+    /// magnitude(1.0234) と obscuration(0.987) を **異なる値**で与え、両者の取り違えを撃破。
+    /// 殺す変異: magnitude↔obscuration の取り違え、各フィールドの read-back 入れ替え。
+    #[test]
+    fn local_circumstances_holds_each_field() {
+        let contacts = local_set_central();
+        let meta = metadata();
+        let lc = LocalCircumstances {
+            contacts,
+            magnitude: EclipseMagnitude(1.0234),
+            obscuration: Obscuration(0.987),
+            maximum_altitude: Degrees(55.5),
+            visibility: Visibility::FullyVisible,
+            metadata: meta.clone(),
+        };
+        assert_eq!(lc.contacts, contacts, "contacts を保持");
+        assert_eq!(lc.magnitude, EclipseMagnitude(1.0234), "magnitude を保持");
+        assert_eq!(lc.obscuration, Obscuration(0.987), "obscuration を保持");
+        // magnitude と obscuration は別フィールド・別値（取り違え撃破）。
+        assert!(
+            (lc.magnitude.0 - lc.obscuration.0).abs() > 1e-9,
+            "magnitude と obscuration は別フィールド・別値であること"
+        );
+        assert_eq!(
+            lc.maximum_altitude,
+            Degrees(55.5),
+            "maximum_altitude を保持"
+        );
+        assert_eq!(lc.visibility, Visibility::FullyVisible, "visibility を保持");
+        assert_eq!(lc.metadata, meta, "metadata を保持");
+    }
+
+    /// `LocalCircumstances` は `Clone`・`PartialEq`（CalculationMetadata の String ゆえ Copy 不可）。
+    /// Clone 後も全フィールドが一致し、異なる circumstances は `ne`、同値は `eq`。
+    /// 殺す変異: `#[derive(Clone)]`/`#[derive(PartialEq)]` の脱落、フィールドの取りこぼし。
+    #[test]
+    fn local_circumstances_is_clone_and_partial_eq() {
+        let a = local_circumstances();
+        let cloned = a.clone();
+        assert_eq!(a, cloned, "Clone 後も等しい");
+        assert_eq!(a.metadata, cloned.metadata, "metadata（String 込み）が一致");
+        // 原本も有効（Clone であって move でない）。
+        assert_eq!(
+            a.maximum_altitude,
+            Degrees(55.5),
+            "原本 a は Clone 後も有効"
+        );
+        // 同一構築値は eq。
+        assert_eq!(local_circumstances(), local_circumstances(), "同値は eq");
+
+        // visibility だけ違えば ne（visibility が比較に効く）。
+        let mut vis_diff = a.clone();
+        vis_diff.visibility = Visibility::PartialVisible;
+        assert_ne!(a, vis_diff, "visibility 違いは ne");
+
+        // contacts（中心食→部分食）が違えば ne。
+        let mut contacts_diff = a.clone();
+        contacts_diff.contacts = local_set_partial();
+        assert_ne!(a, contacts_diff, "contacts 違いは ne");
+    }
+
+    // ==================================================================
+    // VisibleSolarEclipse: eclipse/local 保持 + Clone 後一致（PartialEq なし）
+    // ==================================================================
+
+    /// `VisibleSolarEclipse` の 2 フィールド（eclipse / local）を構築値どおり保持する。
+    /// `VisibleSolarEclipse` は PartialEq 非実装（SolarEclipse が PartialEq なし）のため、
+    /// 比較可能な内部フィールドを個別照合する（eclipse の event_key・local の各フィールド）。
+    /// 殺す変異: eclipse↔local のフィールド取り違え、フィールドの差し替え。
+    #[test]
+    fn visible_solar_eclipse_holds_each_field() {
+        let global = GlobalCircumstances {
+            kind: SolarEclipseKind::Total,
+            partial_begin: Some(contact(16, 10.0)),
+            central_begin: Some(contact(17, 20.0)),
+            greatest: greatest_central(),
+            central_end: Some(contact(19, 40.0)),
+            partial_end: Some(contact(20, 50.0)),
+            gamma: 0.3431,
+        };
+        let eclipse = SolarEclipse {
+            event_key: "2024-04-08#1252".to_string(),
+            kind: SolarEclipseKind::Total,
+            global,
+            bessel: minimal_bessel(),
+            metadata: metadata(),
+        };
+        let local = local_circumstances();
+        let vse = VisibleSolarEclipse {
+            eclipse: eclipse.clone(),
+            local: local.clone(),
+        };
+        // eclipse フィールド（PartialEq なし）の比較可能な部分を照合。
+        assert_eq!(
+            vse.eclipse.event_key, "2024-04-08#1252",
+            "eclipse.event_key を保持"
+        );
+        assert_eq!(
+            vse.eclipse.kind,
+            SolarEclipseKind::Total,
+            "eclipse.kind を保持"
+        );
+        assert_eq!(vse.eclipse.global, global, "eclipse.global を保持");
+        // local フィールド（LocalCircumstances は PartialEq）を丸ごと照合。
+        assert_eq!(vse.local, local, "local を保持");
+    }
+
+    /// `VisibleSolarEclipse` は `Clone`。Clone 後も eclipse・local が一致する。
+    /// PartialEq は無い前提（SolarEclipse が PartialEq 非実装）でフィールド個別比較する。
+    /// 殺す変異: `#[derive(Clone)]` の脱落（コンパイルで露見）、Clone がフィールドを取りこぼす。
+    #[test]
+    fn visible_solar_eclipse_clone_preserves_fields() {
+        let global = GlobalCircumstances {
+            kind: SolarEclipseKind::Annular,
+            partial_begin: Some(contact(8, 5.0)),
+            central_begin: Some(contact(9, 6.0)),
+            greatest: greatest_central(),
+            central_end: Some(contact(11, 7.0)),
+            partial_end: Some(contact(12, 8.0)),
+            gamma: -0.4,
+        };
+        let vse = VisibleSolarEclipse {
+            eclipse: SolarEclipse {
+                event_key: "2023-10-14#1248".to_string(),
+                kind: SolarEclipseKind::Annular,
+                global,
+                bessel: minimal_bessel(),
+                metadata: metadata(),
+            },
+            local: local_circumstances(),
+        };
+        let cloned = vse.clone();
+        // eclipse（PartialEq なし）は比較可能フィールドで照合。
+        assert_eq!(
+            cloned.eclipse.event_key, vse.eclipse.event_key,
+            "eclipse.event_key が Clone で一致"
+        );
+        assert_eq!(
+            cloned.eclipse.kind, vse.eclipse.kind,
+            "eclipse.kind が Clone で一致"
+        );
+        assert_eq!(
+            cloned.eclipse.global, vse.eclipse.global,
+            "eclipse.global が Clone で一致"
+        );
+        // local（PartialEq あり）は丸ごと照合。
+        assert_eq!(cloned.local, vse.local, "local が Clone で一致");
+        // 原本も有効（Clone であって move でない）。
+        assert_eq!(
+            vse.eclipse.event_key, "2023-10-14#1248",
+            "原本 vse は Clone 後も有効"
+        );
     }
 }

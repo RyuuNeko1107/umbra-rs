@@ -38,6 +38,9 @@ pub use horizontal::{Horizontal, RefractionModel, Visibility};
 pub use magnitude::{EclipseMagnitude, Obscuration};
 pub use polynomial::Polynomial;
 pub use projection::{project_observer_to_fundamental, ObserverFundamental};
-pub use results::{GlobalCircumstances, GlobalContact, GreatestEclipse, SolarEclipse};
+pub use results::{
+    GlobalCircumstances, GlobalContact, GreatestEclipse, LocalCircumstances, LocalContact,
+    LocalContactSet, SolarEclipse, VisibleSolarEclipse,
+};
 pub use shadow::{shadow_cone, ShadowCone};
 pub use source::{BesselianSource, DirectBesselianSource, InstantaneousEvaluator};
