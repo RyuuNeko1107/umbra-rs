@@ -203,6 +203,13 @@ impl LeapSecondTable {
         lookup_tai_minus_utc(&self.entries, utc)
     }
 
+    /// テーブル最初の発効日（0h UTC）。これより前は `tai_minus_utc` が Missing を返す
+    /// （[`TimeData::valid_range`](crate::timescales::TimeData::valid_range) の下限算出に使う）。
+    pub fn earliest_utc(&self) -> UtcInstant {
+        let mjd = self.entries.first().expect("non-empty by construction").mjd;
+        UtcInstant::from_jd2(JulianDate2::from_jd(f64::from(mjd) + MJD_JD_OFFSET))
+    }
+
     /// 出所・完全性メタデータ。
     pub fn metadata(&self) -> &DataSetMetadata {
         &self.metadata
@@ -390,7 +397,7 @@ pub fn utc_to_tt(utc: UtcInstant) -> Result<TtInstant, TimeError> {
 }
 
 /// TAI → UTC。ΔAT は UTC 依存だが、tai を UTC とみなして ΔAT を引く単純法を用いる
-/// （閏秒境界の ±ΔAT 秒以内でのみ 1 秒ずれうる。出力用途では十分。conventions / 要確認）。
+/// （閏秒挿入の前後 1 s 以内でのみ最大 1 s ずれうる。出力用途では十分。conventions / 要確認）。
 pub fn tai_to_utc(tai: TaiInstant) -> Result<UtcInstant, TimeError> {
     let dat = tai_minus_utc(UtcInstant(tai.0))?;
     Ok(UtcInstant(tai.0.add_days(-dat / SECONDS_PER_DAY)))

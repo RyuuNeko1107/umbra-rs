@@ -17,6 +17,7 @@ pub mod matrix;
 pub mod metadata;
 pub mod solver;
 pub mod time;
+pub mod timescales;
 pub mod vector;
 
 pub use angle::{Degrees, Radians};
@@ -36,4 +37,5 @@ pub use time::{
     tai_minus_utc, LeapSecondEntry, LeapSecondTable, TaiInstant, TdbInstant, TimeInterval,
     TimeRange, TtInstant, Ut1Instant, UtcInstant,
 };
+pub use timescales::{TimeData, TimeScales};
 pub use vector::{UnitVector3, Vector3};
