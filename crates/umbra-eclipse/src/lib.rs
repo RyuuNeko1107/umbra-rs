@@ -20,6 +20,7 @@ pub mod local_maximum;
 pub mod magnitude;
 pub mod polynomial;
 pub mod projection;
+pub mod results;
 pub mod shadow;
 pub mod source;
 
@@ -37,5 +38,6 @@ pub use horizontal::{Horizontal, RefractionModel, Visibility};
 pub use magnitude::{EclipseMagnitude, Obscuration};
 pub use polynomial::Polynomial;
 pub use projection::{project_observer_to_fundamental, ObserverFundamental};
+pub use results::{GlobalCircumstances, GlobalContact, GreatestEclipse, SolarEclipse};
 pub use shadow::{shadow_cone, ShadowCone};
 pub use source::{BesselianSource, DirectBesselianSource, InstantaneousEvaluator};
