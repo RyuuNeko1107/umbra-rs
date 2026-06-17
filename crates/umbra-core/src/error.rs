@@ -33,6 +33,9 @@ pub enum TimeError {
     /// 供給された EOP テーブルが不正（空・mjd 非昇順/重複, ISSUE-007 `IersEopData::from_records`）。
     #[error("invalid EOP data table (empty or non-ascending/duplicate mjd)")]
     InvalidEopData,
+    /// 供給された閏秒テーブルが不正（空・mjd 非昇順/重複, ISSUE-042 `LeapSecondTable::from_entries`）。
+    #[error("invalid leap-second table (empty or non-ascending/duplicate mjd)")]
+    InvalidLeapSecondData,
 }
 
 /// 数値解法（求根・最小化）の失敗。

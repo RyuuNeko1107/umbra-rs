@@ -11,45 +11,243 @@ use crate::calendar::{gregorian_to_jd2, jd2_to_gregorian};
 use crate::constants::TT_MINUS_TAI_SECONDS;
 use crate::error::{DomainError, TimeError};
 use crate::julian::JulianDate2;
+use crate::metadata::DataSetMetadata;
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
+/// MJD = JD − 2400000.5（修正ユリウス日のオフセット, `eop.rs` と同値）。
+const MJD_JD_OFFSET: f64 = 2_400_000.5;
 
-/// 閏秒テーブル `(year, month, day, TAI−UTC[s])`（各 0h UTC で発効）。IERS, 1972–。
-const LEAP_SECONDS: &[(i32, u8, u8, f64)] = &[
-    (1972, 1, 1, 10.0),
-    (1972, 7, 1, 11.0),
-    (1973, 1, 1, 12.0),
-    (1974, 1, 1, 13.0),
-    (1975, 1, 1, 14.0),
-    (1976, 1, 1, 15.0),
-    (1977, 1, 1, 16.0),
-    (1978, 1, 1, 17.0),
-    (1979, 1, 1, 18.0),
-    (1980, 1, 1, 19.0),
-    (1981, 7, 1, 20.0),
-    (1982, 7, 1, 21.0),
-    (1983, 7, 1, 22.0),
-    (1985, 7, 1, 23.0),
-    (1988, 1, 1, 24.0),
-    (1990, 1, 1, 25.0),
-    (1991, 1, 1, 26.0),
-    (1992, 7, 1, 27.0),
-    (1993, 7, 1, 28.0),
-    (1994, 7, 1, 29.0),
-    (1996, 1, 1, 30.0),
-    (1997, 7, 1, 31.0),
-    (1999, 1, 1, 32.0),
-    (2006, 1, 1, 33.0),
-    (2009, 1, 1, 34.0),
-    (2012, 7, 1, 35.0),
-    (2015, 7, 1, 36.0),
-    (2017, 1, 1, 37.0),
+/// 同梱 IERS 閏秒（各 0h UTC で発効する暦日の MJD と、その日以降の TAI−UTC[s]）。1972–2017。
+/// MJD は各発効日 0h UTC の修正ユリウス日（例 1972-01-01 = 41317, 2017-01-01 = 57754）。
+const BUNDLED_LEAP_SECONDS: &[LeapSecondEntry] = &[
+    LeapSecondEntry {
+        mjd: 41317,
+        tai_minus_utc_s: 10.0,
+    }, // 1972-01-01
+    LeapSecondEntry {
+        mjd: 41499,
+        tai_minus_utc_s: 11.0,
+    }, // 1972-07-01
+    LeapSecondEntry {
+        mjd: 41683,
+        tai_minus_utc_s: 12.0,
+    }, // 1973-01-01
+    LeapSecondEntry {
+        mjd: 42048,
+        tai_minus_utc_s: 13.0,
+    }, // 1974-01-01
+    LeapSecondEntry {
+        mjd: 42413,
+        tai_minus_utc_s: 14.0,
+    }, // 1975-01-01
+    LeapSecondEntry {
+        mjd: 42778,
+        tai_minus_utc_s: 15.0,
+    }, // 1976-01-01
+    LeapSecondEntry {
+        mjd: 43144,
+        tai_minus_utc_s: 16.0,
+    }, // 1977-01-01
+    LeapSecondEntry {
+        mjd: 43509,
+        tai_minus_utc_s: 17.0,
+    }, // 1978-01-01
+    LeapSecondEntry {
+        mjd: 43874,
+        tai_minus_utc_s: 18.0,
+    }, // 1979-01-01
+    LeapSecondEntry {
+        mjd: 44239,
+        tai_minus_utc_s: 19.0,
+    }, // 1980-01-01
+    LeapSecondEntry {
+        mjd: 44786,
+        tai_minus_utc_s: 20.0,
+    }, // 1981-07-01
+    LeapSecondEntry {
+        mjd: 45151,
+        tai_minus_utc_s: 21.0,
+    }, // 1982-07-01
+    LeapSecondEntry {
+        mjd: 45516,
+        tai_minus_utc_s: 22.0,
+    }, // 1983-07-01
+    LeapSecondEntry {
+        mjd: 46247,
+        tai_minus_utc_s: 23.0,
+    }, // 1985-07-01
+    LeapSecondEntry {
+        mjd: 47161,
+        tai_minus_utc_s: 24.0,
+    }, // 1988-01-01
+    LeapSecondEntry {
+        mjd: 47892,
+        tai_minus_utc_s: 25.0,
+    }, // 1990-01-01
+    LeapSecondEntry {
+        mjd: 48257,
+        tai_minus_utc_s: 26.0,
+    }, // 1991-01-01
+    LeapSecondEntry {
+        mjd: 48804,
+        tai_minus_utc_s: 27.0,
+    }, // 1992-07-01
+    LeapSecondEntry {
+        mjd: 49169,
+        tai_minus_utc_s: 28.0,
+    }, // 1993-07-01
+    LeapSecondEntry {
+        mjd: 49534,
+        tai_minus_utc_s: 29.0,
+    }, // 1994-07-01
+    LeapSecondEntry {
+        mjd: 50083,
+        tai_minus_utc_s: 30.0,
+    }, // 1996-01-01
+    LeapSecondEntry {
+        mjd: 50630,
+        tai_minus_utc_s: 31.0,
+    }, // 1997-07-01
+    LeapSecondEntry {
+        mjd: 51179,
+        tai_minus_utc_s: 32.0,
+    }, // 1999-01-01
+    LeapSecondEntry {
+        mjd: 53736,
+        tai_minus_utc_s: 33.0,
+    }, // 2006-01-01
+    LeapSecondEntry {
+        mjd: 54832,
+        tai_minus_utc_s: 34.0,
+    }, // 2009-01-01
+    LeapSecondEntry {
+        mjd: 56109,
+        tai_minus_utc_s: 35.0,
+    }, // 2012-07-01
+    LeapSecondEntry {
+        mjd: 57204,
+        tai_minus_utc_s: 36.0,
+    }, // 2015-07-01
+    LeapSecondEntry {
+        mjd: 57754,
+        tai_minus_utc_s: 37.0,
+    }, // 2017-01-01
 ];
 
-fn leap_threshold_jd(entry: &(i32, u8, u8, f64)) -> f64 {
-    gregorian_to_jd2(entry.0, entry.1, entry.2, 0, 0, 0.0)
-        .expect("leap-second table dates are valid")
-        .jd()
+/// 1 件の閏秒エントリ: 発効する暦日（0h UTC）の MJD と、その日 0h 以降の TAI−UTC（整数秒）。
+///
+/// 前方互換のため `#[non_exhaustive]`（`eop.rs::EopRecord` と対称）。外部 crate は
+/// 構造体リテラルではなく [`LeapSecondEntry::new`] で構築する。
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeapSecondEntry {
+    /// 発効日 0h UTC の修正ユリウス日（整数）。
+    pub mjd: i32,
+    /// その日 0h 以降の TAI − UTC（秒, 整数値）。
+    pub tai_minus_utc_s: f64,
+}
+
+impl LeapSecondEntry {
+    /// 1 件の閏秒エントリを構築する（`#[non_exhaustive]` のため外部 crate はこの経路を使う）。
+    pub fn new(mjd: i32, tai_minus_utc_s: f64) -> Self {
+        Self {
+            mjd,
+            tai_minus_utc_s,
+        }
+    }
+}
+
+/// IERS 閏秒テーブル（1972–, ΔAT = TAI − UTC）。発効日 MJD 厳密昇順・非空。
+///
+/// `eop.rs::IersEopData` と対称の純粋データ型（データは外部供給か同梱定数から）。
+/// 最初の発効日より前は [`TimeError::MissingLeapSecondData`]、最終エントリ以降は
+/// 最後の値を据え置く（閏秒は約半年前に告知され将来予報では最終値が最良推定）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeapSecondTable {
+    /// 厳密昇順・mjd 一意の発効エントリ（非空）。
+    entries: Vec<LeapSecondEntry>,
+    /// 出所・完全性メタデータ。
+    metadata: DataSetMetadata,
+}
+
+impl LeapSecondTable {
+    /// 発効エントリから構築する。`entries` は**非空・mjd 厳密昇順（一意）**であること。
+    ///
+    /// 空・非昇順・重複 mjd は [`TimeError::InvalidLeapSecondData`]。
+    pub fn from_entries(
+        entries: Vec<LeapSecondEntry>,
+        metadata: DataSetMetadata,
+    ) -> Result<Self, TimeError> {
+        if entries.is_empty() {
+            return Err(TimeError::InvalidLeapSecondData);
+        }
+        for pair in entries.windows(2) {
+            if pair[1].mjd <= pair[0].mjd {
+                return Err(TimeError::InvalidLeapSecondData);
+            }
+        }
+        Ok(Self { entries, metadata })
+    }
+
+    /// 同梱 IERS 閏秒（1972-01-01 .. 2017-01-01, TAI−UTC 10 .. 37 s）。
+    ///
+    /// 同梱データは公開事実（IERS Bulletin C / IANA `leap-seconds.list`）。checksum は
+    /// packed-LE-f64 `[n, then per entry: mjd, tai_minus_utc_s]` の SHA-256（EOP と同形式）。
+    pub fn bundled() -> Self {
+        Self::from_entries(BUNDLED_LEAP_SECONDS.to_vec(), bundled_leap_metadata())
+            .expect("bundled leap-second entries are non-empty and strictly ascending")
+    }
+
+    /// `utc` における TAI − UTC（秒）。最初の発効日より前は [`TimeError::MissingLeapSecondData`]。
+    pub fn tai_minus_utc(&self, utc: UtcInstant) -> Result<f64, TimeError> {
+        lookup_tai_minus_utc(&self.entries, utc)
+    }
+
+    /// 出所・完全性メタデータ。
+    pub fn metadata(&self) -> &DataSetMetadata {
+        &self.metadata
+    }
+}
+
+/// 同梱閏秒の provenance。`checksum` は packed-LE-f64 `[n, then per entry: mjd, tai_minus_utc_s]`
+/// の SHA-256 を**オフライン算出**した値（EOP `eopc04_14.bin` と同形式）。本 S1 では閏秒は core の
+/// 定数 [`BUNDLED_LEAP_SECONDS`] でありファイル生成物ではないため、xtask による再生成・回帰検証
+/// 経路は未整備（EOP の `verify-generated` 相当は後続で閏秒を生成物化する場合に追加）。
+fn bundled_leap_metadata() -> DataSetMetadata {
+    DataSetMetadata {
+        name: "iers-leap-seconds".to_string(),
+        version: "IERS Bulletin C (1972-2017)".to_string(),
+        source: "IERS / IANA leap-seconds.list".to_string(),
+        license: "public-domain".to_string(),
+        valid_from: "1972-01-01".to_string(),
+        valid_to: "2017-01-01".to_string(),
+        checksum: "13ddc355a79126910081e0a33d1856dde530ca795e891c606d16899d92cd06bf".to_string(),
+    }
+}
+
+/// 発効日 0h UTC の MJD → 閾値 JD。
+fn leap_threshold_jd(entry: &LeapSecondEntry) -> f64 {
+    f64::from(entry.mjd) + MJD_JD_OFFSET
+}
+
+/// 昇順エントリ列に対する TAI−UTC ルックアップ（自由関数・[`LeapSecondTable`] 双方が共用）。
+///
+/// 最初の発効日より前は [`TimeError::MissingLeapSecondData`]。最終エントリ以降は最後の値を据え置く。
+fn lookup_tai_minus_utc(entries: &[LeapSecondEntry], utc: UtcInstant) -> Result<f64, TimeError> {
+    let jd = utc.0.jd();
+    let first = entries.first().expect("leap-second entries are non-empty");
+    if jd < leap_threshold_jd(first) {
+        return Err(TimeError::MissingLeapSecondData);
+    }
+    let mut dat = first.tai_minus_utc_s;
+    for entry in entries {
+        if jd >= leap_threshold_jd(entry) {
+            dat = entry.tai_minus_utc_s;
+        } else {
+            break;
+        }
+    }
+    Ok(dat)
 }
 
 /// 協定世界時 UTC の瞬時。
@@ -163,21 +361,11 @@ pub struct TimeInterval<T> {
 
 /// ΔAT = TAI − UTC（秒）。1972 年より前は `MissingLeapSecondData`。
 ///
+/// 同梱閏秒（[`BUNDLED_LEAP_SECONDS`]）に対する薄いラッパ。データ型を取る版は
+/// [`LeapSecondTable::tai_minus_utc`]（両者は同一の [`lookup_tai_minus_utc`] を共用）。
 /// 最終エントリ以降は最後の値を据え置く（閏秒は約半年前に告知され、2017 以降は増えていない）。
 pub fn tai_minus_utc(utc: UtcInstant) -> Result<f64, TimeError> {
-    let jd = utc.0.jd();
-    if jd < leap_threshold_jd(&LEAP_SECONDS[0]) {
-        return Err(TimeError::MissingLeapSecondData);
-    }
-    let mut dat = LEAP_SECONDS[0].3;
-    for entry in LEAP_SECONDS {
-        if jd >= leap_threshold_jd(entry) {
-            dat = entry.3;
-        } else {
-            break;
-        }
-    }
-    Ok(dat)
+    lookup_tai_minus_utc(BUNDLED_LEAP_SECONDS, utc)
 }
 
 /// UTC → TAI。
@@ -216,9 +404,233 @@ pub fn tt_to_utc(tt: TtInstant) -> Result<UtcInstant, TimeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::DataSetMetadata;
 
     fn utc(y: i32, mo: u8, d: u8) -> UtcInstant {
         UtcInstant::from_gregorian(y, mo, d, 0, 0, 0.0).unwrap()
+    }
+
+    // ===== ISSUE-042 S1: LeapSecondTable / LeapSecondEntry のデータ型化 =====
+
+    /// LeapSecondTable / from_entries 用の provenance 完全なメタデータ
+    /// （eop.rs の metadata() ヘルパに倣う。全フィールド非空）。
+    fn leap_metadata() -> DataSetMetadata {
+        DataSetMetadata {
+            name: "iers-leap-seconds".to_string(),
+            version: "IERS Bulletin C".to_string(),
+            source: "IERS Earth Orientation Center, datacenter.iers.org".to_string(),
+            license: "public-domain".to_string(),
+            valid_from: "1972-01-01".to_string(),
+            valid_to: "2017-01-01".to_string(),
+            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+        }
+    }
+
+    // ---- LeapSecondEntry::new -------------------------------------------
+
+    /// `LeapSecondEntry::new(mjd, tai_minus_utc_s)` が各フィールドを所定の位置へ
+    /// 設定する。引数の取り違え（mjd と秒の入れ替え）や片方無視の変異を殺す。
+    #[test]
+    fn leap_second_entry_new_sets_fields() {
+        let e = LeapSecondEntry::new(41317, 10.0);
+        assert_eq!(e.mjd, 41317, "mjd field must be the first argument");
+        assert_eq!(
+            e.tai_minus_utc_s, 10.0,
+            "tai_minus_utc_s field must be the second argument"
+        );
+    }
+
+    // ---- LeapSecondTable::from_entries（検証） ---------------------------
+
+    /// 空 Vec は構築不可（Err(InvalidLeapSecondData)）。
+    /// 「非空」検査の削除変異を殺す。
+    #[test]
+    fn from_entries_rejects_empty() {
+        let result = LeapSecondTable::from_entries(vec![], leap_metadata());
+        assert_eq!(
+            result.unwrap_err(),
+            TimeError::InvalidLeapSecondData,
+            "empty entries must be Err(InvalidLeapSecondData)"
+        );
+    }
+
+    /// mjd 降順（昇順でない）は構築不可（Err(InvalidLeapSecondData)）。
+    /// 昇順検査の比較の向きや検査削除の変異を殺す。
+    #[test]
+    fn from_entries_rejects_descending_mjd() {
+        let result = LeapSecondTable::from_entries(
+            vec![
+                LeapSecondEntry::new(41499, 11.0),
+                LeapSecondEntry::new(41317, 10.0),
+            ],
+            leap_metadata(),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            TimeError::InvalidLeapSecondData,
+            "descending mjd must be Err(InvalidLeapSecondData)"
+        );
+    }
+
+    /// mjd 重複（厳密増加でない）は構築不可（Err(InvalidLeapSecondData)）。
+    /// 「`<=`」を「`<`」に弱める（重複を許す）変異を殺す。
+    #[test]
+    fn from_entries_rejects_duplicate_mjd() {
+        let result = LeapSecondTable::from_entries(
+            vec![
+                LeapSecondEntry::new(41317, 10.0),
+                LeapSecondEntry::new(41317, 11.0),
+            ],
+            leap_metadata(),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            TimeError::InvalidLeapSecondData,
+            "duplicate mjd must be Err(InvalidLeapSecondData)"
+        );
+    }
+
+    /// 厳密昇順・非空なら構築できる（Ok）。
+    /// 上記の異常系テストが「常に Err」変異で通ってしまうのを防ぐ正常系の対。
+    #[test]
+    fn from_entries_accepts_ascending_nonempty() {
+        let result = LeapSecondTable::from_entries(
+            vec![
+                LeapSecondEntry::new(41317, 10.0),
+                LeapSecondEntry::new(41499, 11.0),
+            ],
+            leap_metadata(),
+        );
+        assert!(
+            result.is_ok(),
+            "ascending unique non-empty entries must be Ok"
+        );
+    }
+
+    // ---- LeapSecondTable::tai_minus_utc（既知値） -----------------------
+
+    /// 同梱テーブルの既知 ΔAT 値（IERS の公開事実）を固定する。
+    /// 2020=37, 2000-01-01=32, 1985-07-01=23, 1972-07-01=11, 1972-01-01=10。
+    /// テーブル参照・ステップ選択の取り違え変異を殺す。
+    #[test]
+    fn bundled_tai_minus_utc_known_values() {
+        let t = LeapSecondTable::bundled();
+        assert_eq!(t.tai_minus_utc(utc(2020, 6, 1)).unwrap(), 37.0);
+        assert_eq!(t.tai_minus_utc(utc(2000, 1, 1)).unwrap(), 32.0);
+        assert_eq!(t.tai_minus_utc(utc(1985, 7, 1)).unwrap(), 23.0);
+        assert_eq!(t.tai_minus_utc(utc(1972, 7, 1)).unwrap(), 11.0);
+        assert_eq!(t.tai_minus_utc(utc(1972, 1, 1)).unwrap(), 10.0);
+    }
+
+    /// 発効境界 2017-01-01 0h で 36 → 37 へ跳ぶ。境界当日は新しい値（37）。
+    /// 比較が `<` か `<=` か（境界当日を新旧どちらに含めるか）を固定する。
+    /// `>=` を `>` に弱めると当日 0h が 36 のままになり、これを殺す。
+    #[test]
+    fn bundled_tai_minus_utc_steps_exactly_on_boundary() {
+        let t = LeapSecondTable::bundled();
+        assert_eq!(
+            t.tai_minus_utc(utc(2016, 12, 31)).unwrap(),
+            36.0,
+            "day before effective date keeps the old value"
+        );
+        assert_eq!(
+            t.tai_minus_utc(utc(2017, 1, 1)).unwrap(),
+            37.0,
+            "effective day 0h takes the new value"
+        );
+    }
+
+    /// 最終エントリ（2017-01-01）以降は最後の値 37 を据え置く（将来予報用）。
+    /// 2026・2100 のような遠い未来でも 37。範囲外を Missing にしてしまう変異や
+    /// 末尾据え置きを落とす変異を殺す。
+    #[test]
+    fn bundled_tai_minus_utc_clamps_to_last_value() {
+        let t = LeapSecondTable::bundled();
+        assert_eq!(t.tai_minus_utc(utc(2026, 1, 1)).unwrap(), 37.0);
+        assert_eq!(t.tai_minus_utc(utc(2100, 1, 1)).unwrap(), 37.0);
+    }
+
+    /// 最初の発効日（1972-01-01 0h）より前（1971-12-31）は Missing。
+    /// 下側ガードの削除や比較の向きの変異を殺す。
+    #[test]
+    fn bundled_tai_minus_utc_before_1972_is_missing() {
+        let t = LeapSecondTable::bundled();
+        let pre = UtcInstant::from_gregorian(1971, 12, 31, 0, 0, 0.0).unwrap();
+        assert_eq!(
+            t.tai_minus_utc(pre).unwrap_err(),
+            TimeError::MissingLeapSecondData
+        );
+    }
+
+    // ---- bundled() の主要エントリ・件数 ---------------------------------
+
+    /// 同梱エントリの代表点（MJD, ΔAT秒）を MJD レベルで固定する。
+    /// from_gregorian で構築した既知日の MJD（= jd2().jd() − 2400000.5）が
+    /// 仕様値（1972-01-01=41317, 1972-07-01=41499, 2017-01-01=57754）と一致することで、
+    /// 既知値テストが正しい暦日を引いていることを保証する（オラクル MJD の独立確認）。
+    #[test]
+    #[allow(clippy::cast_possible_truncation)] // MJD は小整数域、round 後の i32 化は安全。
+    fn known_mjd_anchors() {
+        const MJD_JD_OFFSET: f64 = 2_400_000.5;
+        let mjd = |y, mo, d| (utc(y, mo, d).jd2().jd() - MJD_JD_OFFSET).round() as i32;
+        assert_eq!(mjd(1972, 1, 1), 41317);
+        assert_eq!(mjd(1972, 7, 1), 41499);
+        assert_eq!(mjd(2017, 1, 1), 57754);
+    }
+
+    // ---- bundled() の metadata ------------------------------------------
+
+    /// bundled() の metadata は provenance 完全で、valid_from/valid_to が
+    /// 同梱範囲（1972-01-01 .. 2017-01-01）を表す。
+    /// metadata 欠落・年代取り違えの変異を殺す。
+    #[test]
+    fn bundled_metadata_has_complete_provenance_and_range() {
+        let t = LeapSecondTable::bundled();
+        let md = t.metadata();
+        assert!(
+            md.has_complete_provenance(),
+            "bundled metadata must have complete provenance"
+        );
+        assert_eq!(
+            md.valid_from, "1972-01-01",
+            "valid_from must be the first effective date"
+        );
+        assert_eq!(
+            md.valid_to, "2017-01-01",
+            "valid_to must be the last effective date"
+        );
+    }
+
+    // ---- 同値性（型化リファクタが挙動を変えないことの固定・最重要） ----
+
+    /// 任意の代表 utc で free fn `tai_minus_utc` と `bundled().tai_minus_utc` が
+    /// 一致する（Ok 値も Err バリアントも）。境界・据え置き・1972前の Missing を含む。
+    /// 自由関数を別実装へ差し替える/据え置きやガードの分岐を一方だけ変える変異を殺す
+    /// （型化が観測可能な挙動を変えないことの回帰固定）。
+    #[test]
+    fn bundled_matches_free_function_everywhere() {
+        let table = LeapSecondTable::bundled();
+        let samples = [
+            UtcInstant::from_gregorian(1971, 12, 31, 0, 0, 0.0).unwrap(), // Missing
+            utc(1972, 1, 1),                                              // 最初の発効日
+            utc(1972, 7, 1),
+            utc(1985, 7, 1),
+            utc(2000, 1, 1),
+            utc(2016, 12, 31), // 境界の前日
+            utc(2017, 1, 1),   // 最終エントリ当日（跳び）
+            utc(2020, 6, 1),
+            utc(2026, 1, 1), // 末尾据え置き
+            utc(2100, 1, 1),
+        ];
+        for u in samples {
+            assert_eq!(
+                table.tai_minus_utc(u),
+                tai_minus_utc(u),
+                "table and free function must agree at jd = {}",
+                u.jd2().jd()
+            );
+        }
     }
 
     #[test]

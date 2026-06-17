@@ -33,6 +33,7 @@ pub use matrix::Matrix3;
 pub use metadata::DataSetMetadata;
 pub use solver::{brent_root, minimize_golden};
 pub use time::{
-    TaiInstant, TdbInstant, TimeInterval, TimeRange, TtInstant, Ut1Instant, UtcInstant,
+    tai_minus_utc, LeapSecondEntry, LeapSecondTable, TaiInstant, TdbInstant, TimeInterval,
+    TimeRange, TtInstant, Ut1Instant, UtcInstant,
 };
 pub use vector::{UnitVector3, Vector3};
