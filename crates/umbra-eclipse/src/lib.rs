@@ -34,4 +34,4 @@ pub use magnitude::{EclipseMagnitude, Obscuration};
 pub use polynomial::Polynomial;
 pub use projection::{project_observer_to_fundamental, ObserverFundamental};
 pub use shadow::{shadow_cone, ShadowCone};
-pub use source::{BesselianSource, DirectBesselianSource};
+pub use source::{BesselianSource, DirectBesselianSource, InstantaneousEvaluator};

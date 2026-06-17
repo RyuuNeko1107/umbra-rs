@@ -147,12 +147,29 @@ pub fn besselian_elements_at<M: DeltaTModel>(
 ) -> Result<InstantaneousBesselianElements, EclipseError> {
     let sun = sun_apparent_cirs(time_tt);
     let moon = moon_apparent_cirs(time_tt);
-    let geom = besselian_elements(sun, moon, r_sun_km, r_moon_km)?;
-    let axis = (sun - moon)
+    let ut1 = tt_to_ut1(time_tt, delta_t);
+    instantaneous_from_cirs(sun, moon, r_sun_km, r_moon_km, time_tt, ut1)
+}
+
+/// 見かけ CIRS 位置（太陽・月, km）と UT1 から瞬時ベッセル要素を組み立てる共有ルーチン。
+///
+/// 幾何（x,y,d,l1,l2,tan f）を [`besselian_elements`] で、時角 μ を [`besselian_mu`]（axis=(sun−moon)
+/// 正規化）で構成する。[`besselian_elements_at`]（具象 VSOP/ELP apparent）と
+/// `InstantaneousEvaluator`（ISSUE-043 S2 の `apparent_cirs<E>` 経由・暦ジェネリック）が共用し、
+/// apparent 取得元のみが異なる（組立は同一）。
+pub(crate) fn instantaneous_from_cirs(
+    sun_cirs: Vector3,
+    moon_cirs: Vector3,
+    r_sun_km: f64,
+    r_moon_km: f64,
+    time_tt: TtInstant,
+    time_ut1: Ut1Instant,
+) -> Result<InstantaneousBesselianElements, EclipseError> {
+    let geom = besselian_elements(sun_cirs, moon_cirs, r_sun_km, r_moon_km)?;
+    let axis = (sun_cirs - moon_cirs)
         .normalized()
         .ok_or(EclipseError::DegenerateGeometry)?;
-    let ut1 = tt_to_ut1(time_tt, delta_t);
-    let mu = besselian_mu(axis, ut1);
+    let mu = besselian_mu(axis, time_ut1);
     Ok(InstantaneousBesselianElements {
         x: geom.x,
         y: geom.y,
