@@ -26,13 +26,17 @@ pub struct Obscuration(pub f64);
 
 /// 基本面の中心間距離 `m` と影半径 `l1`（半影, 外接）・`l2`（本影, 符号付き）から食分を求める。
 ///
-/// `magnitude = (L1 − m)/(L1 + L2)`、ここで L1 = l1, L2 = |l2|（食分は内接縁までの食い込み割合）。
+/// `magnitude = (L1 − m)/(L1 + L2)`、ここで L2 = l2 は**符号付き**本影縁半径
+/// （l2<0=皆既 / l2>0=金環, 正本 B1）。食分は外接縁から内接縁への食い込み割合。
 /// 単位は Re（呼出側で統一, conventions §1）。`m ≥ L1`（離隔・食なし）は 0 にクランプ。
-/// 皆既/金環で 1 跨ぎを許容（`EclipseMagnitude` は 1 超可）。
+/// 皆既で 1 超を許容（`EclipseMagnitude` は 1 超可）。
 pub(crate) fn eclipse_magnitude(m: f64, l1: f64, l2: f64) -> EclipseMagnitude {
-    // Explanatory Supplement §11 / Meeus Ch.54: magnitude = (L1 − m)/(L1 + |L2|)。
-    // 離隔（m ≥ L1）は負になるので 0 にクランプ（食なし）。皆既/金環の 1 超は許容（上限クランプしない）。
-    let magnitude = (l1 - m) / (l1 + l2.abs());
+    // Explanatory Supplement §11 / Meeus Ch.54: magnitude = (L1 − m)/(L1 + L2)、L2 は符号付き。
+    // 皆既（l2<0）では分母 (l1 + l2) = (l1 − |l2|) < l1 となり、小さい m で magnitude>1（皆既で正しく
+    // 1 超, ISSUE-027）。金環/部分（l2≥0）は符号付きでも |l2| と同値。umbra 半径 |l2| < penumbra 半径
+    // l1 なので分母 (l1 + l2) > 0（物理域で 0 除算なし）。
+    // 離隔（m ≥ L1）は負になるので 0 にクランプ（食なし）。上限はクランプしない（皆既の 1 超を許容）。
+    let magnitude = (l1 - m) / (l1 + l2);
     EclipseMagnitude(magnitude.max(0.0))
 }
 
@@ -128,11 +132,14 @@ mod tests {
         (area / (PI * r_sun * r_sun)).clamp(0.0, 1.0)
     }
 
-    /// 食分の独立参照値: (L1 − m)/(L1 + |l2|)、負は 0 にクランプ。
-    /// 契約式と同形だが、ここでは「食い込み割合の定義そのもの」を最小限で別記したもの。
-    /// 個々のテストは加えて手計算した具体数値でも縛る（追認回避の本体はそちら）。
+    /// 食分の式参照（実装と**同形**・独立オラクルではない）: (L1 − m)/(L1 + L2)、L2 は符号付き、
+    /// 負は 0 にクランプ。ISSUE-027 / Explanatory Supplement §11 / Meeus Ch.54: 分母は符号付き L2
+    /// （`l2.abs()` ではない）。皆既（l2<0）では分母 (L1+L2)=(L1−|L2|)<L1 となり m 小で 1 を超えうる。
+    /// 注: 本関数は実装と同じ式なので「式レベルの誤り（符号反転等）」は捕捉できない（追認になる）。
+    /// **独立検証の本体は各テストに手計算で併記した具体数値**（grid もケースごとにコメントで手計算値を
+    /// 明示）。本関数は可読なクロスチェック／値域の健全性確認に限定して用いる。
     fn magnitude_oracle(m: f64, l1: f64, l2: f64) -> f64 {
-        let mag = (l1 - m) / (l1 + l2.abs());
+        let mag = (l1 - m) / (l1 + l2);
         if mag < 0.0 {
             0.0
         } else {
@@ -141,47 +148,47 @@ mod tests {
     }
 
     // ======================================================================
-    // 契約A: eclipse_magnitude = (L1 − m)/(L1 + |L2|), m≥L1 で 0 クランプ
+    // 契約A: eclipse_magnitude = (L1 − m)/(L1 + L2)（L2 符号付き）, m≥L1 で 0 クランプ
     // ======================================================================
 
-    /// 中心線上（m=0）: magnitude = L1/(L1+|l2|)。皆既配置（l2<0）で具体値を独立に手計算。
-    /// 例 L1=0.55, l2=-0.45 → |l2|=0.45 → mag = 0.55/(0.55+0.45) = 0.55。皆既近傍だが
-    /// この m=0/L1 配置では 1 未満（皆既の 1 超は別テストで縛る）。
+    /// 中心線上（m=0）の皆既配置（l2<0）: magnitude = L1/(L1+L2) = L1/(L1−|L2|)。
+    /// 例 L1=0.55, l2=-0.45 → 分母 0.55+(−0.45)=0.10 → mag = 0.55/0.10 = 5.5。
+    /// 符号付き L2 のため本影が小さい（|L2| が L1 に近い）皆既では中心通過で 1 を大きく超える。
+    /// （旧 |l2| 形では 0.55/1.00=0.55 だった — 符号が値を支配することの実証。）
     #[test]
-    fn magnitude_central_partial_value() {
+    fn magnitude_central_total_value() {
         let got = eclipse_magnitude(0.0, 0.55, -0.45).0;
-        // 手計算: 0.55 / 1.00 = 0.55。
+        // 手計算: (0.55 − 0.0) / (0.55 + (−0.45)) = 0.55 / 0.10 = 5.5。
         assert!(
-            close_abs(got, 0.55, MAG_TOL),
-            "central magnitude: got {got}, want 0.55"
+            close_abs(got, 5.5, MAG_TOL),
+            "central total magnitude: got {got}, want 5.5"
         );
+        assert!(got > 1.0, "central total magnitude must exceed 1");
     }
 
-    /// 皆既で magnitude > 1 を許容: m が小さく |l2| が小さいと比が 1 を超える。
-    /// 例 m=0.0, L1=0.6, l2=-0.1 → 0.6/(0.6+0.1) = 0.857…? いや 1 未満。
-    /// 1 超を出すには L1 − m > L1 + |l2| すなわち −m > |l2|、不可（m,|l2|≥0）。
-    /// 食分>1 は L1>1 かつ m 小の配置でなく、定義上は m<0 を含む配置で生じる。
-    /// 中心通過の皆既では m≈0、本影縁の内側に入るため (L1−m)/(L1+|l2|) は最大で
-    /// L1/(L1+|l2|)<1。よって本式単体では magnitude>1 は「m が負（影中心を跨ぐ）」で発生。
-    /// 例 m=-0.30, L1=0.55, l2=-0.45 → (0.55+0.30)/(0.55+0.45)=0.85/1.0=0.85。
-    /// 依然 1 未満。1 超は L1+|l2| < L1−m すなわち m < −|l2| のとき。
-    /// 例 m=-0.50, L1=0.55, l2=-0.05 → (0.55+0.50)/(0.55+0.05)=1.05/0.60=1.75。
+    /// 皆既で magnitude > 1 を許容（**物理的な m ≥ 0** で実証）。
+    /// 符号付き L2 では l2<0 のとき分母 (L1+L2)=(L1−|L2|)<L1。
+    /// m=0（中心通過, m≥0）で分子 (L1−0)=L1 > 分母 (L1−|L2|) となり magnitude>1。
+    /// 例 m=0.0, L1=0.55, l2=-0.05 → (0.55−0.0)/(0.55+(−0.05)) = 0.55/0.50 = 1.10。
+    /// 注: 実ソルバ（`solve_local_maximum`）が返す最小離隔は min_separation=√(m²)≥0 で
+    /// 常に非負。よって 1 超は m<0 という非物理配置を要さず、m≥0 だけで物理的に生じる。
     #[test]
     fn magnitude_total_exceeds_one_allowed() {
-        let got = eclipse_magnitude(-0.50, 0.55, -0.05).0;
-        // 手計算: (0.55 − (−0.50)) / (0.55 + 0.05) = 1.05 / 0.60 = 1.75。
+        let got = eclipse_magnitude(0.0, 0.55, -0.05).0;
+        // 手計算: (0.55 − 0.0) / (0.55 + (−0.05)) = 0.55 / 0.50 = 1.10。
         assert!(
-            close_abs(got, 1.75, MAG_TOL),
-            "total magnitude >1: got {got}, want 1.75"
+            close_abs(got, 1.10, MAG_TOL),
+            "total magnitude >1: got {got}, want 1.10"
         );
         assert!(got > 1.0, "EclipseMagnitude must allow >1 for totality");
+        assert!(got >= 0.0, "magnitude must never be negative");
     }
 
-    /// 外接（m = L1）: 食い込み 0 → magnitude = 0。
+    /// 外接（m = L1）: 食い込み 0 → magnitude = 0（L2 の符号に依らず分子 0）。
     #[test]
     fn magnitude_external_tangency_is_zero() {
         let got = eclipse_magnitude(0.7, 0.7, -0.3).0;
-        // 手計算: (0.7 − 0.7)/(0.7+0.3) = 0。
+        // 手計算: (0.7 − 0.7)/(0.7+(−0.3)) = 0/0.4 = 0。
         assert!(
             close_abs(got, 0.0, MAG_TOL),
             "external tangency magnitude: got {got}, want 0"
@@ -191,7 +198,7 @@ mod tests {
     /// 離隔（m > L1・食なし）: 負にせず 0 にクランプ。
     #[test]
     fn magnitude_no_eclipse_clamped_to_zero() {
-        // m=1.2 > L1=0.7: 生の式なら (0.7−1.2)/(0.7+0.3) = −0.5、クランプで 0。
+        // m=1.2 > L1=0.7: 生の式なら (0.7−1.2)/(0.7+(−0.3)) = (−0.5)/0.4 = −1.25、クランプで 0。
         let got = eclipse_magnitude(1.2, 0.7, -0.3).0;
         assert!(
             close_abs(got, 0.0, MAG_TOL),
@@ -207,11 +214,12 @@ mod tests {
         );
     }
 
-    /// 部分食域（0 < m < L1）で 0 < mag < 1、独立に手計算した値と一致。
+    /// 部分食/金環域（0 < m < L1, l2 ≥ 0）で 0 < mag < 1、独立に手計算した値と一致。
+    /// l2 ≥ 0（金環/部分）では符号付き形と |l2| 形は一致するため値域 (0,1) を保つ配置を選ぶ。
     #[test]
     fn magnitude_partial_in_open_unit_interval() {
-        // m=0.20, L1=0.80, l2=-0.40 → (0.80−0.20)/(0.80+0.40) = 0.60/1.20 = 0.5。
-        let got = eclipse_magnitude(0.20, 0.80, -0.40).0;
+        // m=0.20, L1=0.80, l2=+0.40 → (0.80−0.20)/(0.80+0.40) = 0.60/1.20 = 0.5。
+        let got = eclipse_magnitude(0.20, 0.80, 0.40).0;
         assert!(
             close_abs(got, 0.5, MAG_TOL),
             "partial magnitude: got {got}, want 0.5"
@@ -219,40 +227,55 @@ mod tests {
         assert!(got > 0.0 && got < 1.0, "partial magnitude must be in (0,1)");
     }
 
-    /// l2 の符号不問（|l2| を使う）: l2 = +x と l2 = −x で同一値。
+    /// L2 の符号は load-bearing（`.abs()` ではない）: 同一 |L2|>0・同一 m で、皆既配置（l2<0）は
+    /// 金環配置（l2>0）より厳密に大きい magnitude を与える。
+    /// 例 m=0.30, L1=0.90, |L2|=0.50:
+    ///   金環 (l2=+0.50): (0.90−0.30)/(0.90+0.50) = 0.60/1.40 = 0.428571428571…
+    ///   皆既 (l2=−0.50): (0.90−0.30)/(0.90−0.50) = 0.60/0.40 = 1.5
+    /// 皆既 > 金環（1.5 > 0.4286）かつ両者は別値。`.abs()` 再導入や符号脱落の変異を殺す。
     #[test]
-    fn magnitude_uses_abs_of_l2() {
-        let pos = eclipse_magnitude(0.30, 0.90, 0.50).0;
-        let neg = eclipse_magnitude(0.30, 0.90, -0.50).0;
-        // 手計算: (0.90−0.30)/(0.90+0.50) = 0.60/1.40 = 0.428571…
-        let want = 0.60 / 1.40;
+    fn magnitude_sign_of_l2_is_load_bearing() {
+        let annular = eclipse_magnitude(0.30, 0.90, 0.50).0;
+        let total = eclipse_magnitude(0.30, 0.90, -0.50).0;
+        // 手計算（独立）:
+        let want_annular = 0.60 / 1.40; // = 0.428571428571…
+        let want_total = 0.60 / 0.40; // = 1.5
         assert!(
-            close_abs(pos, want, MAG_TOL),
-            "magnitude with +l2: got {pos}, want {want}"
+            close_abs(annular, want_annular, MAG_TOL),
+            "annular (l2>0) magnitude: got {annular}, want {want_annular}"
         );
         assert!(
-            close_abs(neg, want, MAG_TOL),
-            "magnitude with -l2: got {neg}, want {want}"
+            close_abs(total, want_total, MAG_TOL),
+            "total (l2<0) magnitude: got {total}, want {want_total}"
+        );
+        // 符号が値を支配する: 皆既は金環より厳密に大きく、両者は明確に異なる。
+        assert!(
+            total > annular,
+            "total (l2<0) must give strictly larger magnitude than annular (l2>0): {total} vs {annular}"
         );
         assert!(
-            close_abs(pos, neg, MAG_TOL),
-            "magnitude must be invariant to sign of l2: {pos} vs {neg}"
+            !close_abs(total, annular, MAG_TOL),
+            "sign of l2 must change magnitude (no .abs()): {total} vs {annular}"
         );
     }
 
-    /// 独立オラクルとの広域照合（複数の部分食/皆既/離隔配置）。
+    /// 独立オラクルとの広域照合（皆既 l2<0・金環 l2>0・部分・外接・離隔）。
+    /// すべて物理的な m ≥ 0、かつ皆既配置で少なくとも 1 例が厳密に > 1。常に >= 0 を保証。
     #[test]
     fn magnitude_matches_independent_oracle_grid() {
+        // (m, l1, l2) — 手計算した期待値をコメントに併記（符号付き formula）:
         let cases = [
-            (0.0, 0.55, -0.45),
-            (0.10, 0.80, -0.40),
-            (0.50, 0.80, -0.40),
-            (-0.50, 0.55, -0.05),
-            (0.30, 0.90, 0.50),
-            (0.79, 0.80, -0.40),
-            (0.80, 0.80, -0.40), // 外接
-            (1.50, 0.80, -0.40), // 離隔 → 0
+            (0.0, 0.55, -0.45),  // 皆既 中心: 0.55/0.10 = 5.5  (>1)
+            (0.10, 0.80, -0.40), // 皆既: 0.70/0.40 = 1.75    (>1)
+            (0.50, 0.80, -0.40), // 皆既: 0.30/0.40 = 0.75
+            (0.0, 0.55, -0.05),  // 皆既 中心: 0.55/0.50 = 1.10 (>1)
+            (0.30, 0.90, 0.50),  // 金環: 0.60/1.40 = 0.428571…
+            (0.20, 0.80, 0.40),  // 部分/金環: 0.60/1.20 = 0.5
+            (0.79, 0.80, -0.40), // 皆既 縁近傍: 0.01/0.40 = 0.025
+            (0.80, 0.80, -0.40), // 外接: 0/0.40 = 0
+            (1.50, 0.80, -0.40), // 離隔: (0.80−1.50)/0.40 = −1.75 → 0
         ];
+        let mut saw_above_one = false;
         for &(m, l1, l2) in &cases {
             let got = eclipse_magnitude(m, l1, l2).0;
             let want = magnitude_oracle(m, l1, l2);
@@ -261,7 +284,15 @@ mod tests {
                 "magnitude({m},{l1},{l2}): got {got}, want {want}"
             );
             assert!(got >= 0.0, "magnitude never negative: {got}");
+            assert!(m >= 0.0 || got == 0.0, "physical solver yields m>=0");
+            if got > 1.0 {
+                saw_above_one = true;
+            }
         }
+        assert!(
+            saw_above_one,
+            "grid must include at least one physical (m>=0) case with magnitude > 1"
+        );
     }
 
     // ======================================================================
@@ -571,7 +602,7 @@ mod tests {
     /// 食分（基本面 Re）と食面積（視半径平面）は単位系が別だが、部分食の値域は共通に [0,1]。
     #[test]
     fn partial_eclipse_magnitude_and_obscuration_in_unit_interval() {
-        // 部分食: 0<m<L1。
+        // 部分食: 0<m<L1。符号付き formula: (0.80−0.40)/(0.80+(−0.30)) = 0.40/0.50 = 0.8 ∈ (0,1)。
         let mag = eclipse_magnitude(0.40, 0.80, -0.30).0;
         assert!(
             mag > 0.0 && mag < 1.0,
