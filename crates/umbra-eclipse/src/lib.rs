@@ -14,6 +14,7 @@ pub mod fundamental;
 pub mod global;
 pub mod local_contacts;
 pub mod local_maximum;
+pub mod magnitude;
 pub mod polynomial;
 pub mod projection;
 pub mod shadow;
@@ -27,6 +28,7 @@ pub use besselian::{
 pub use error::EclipseError;
 pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use global::{classify, SolarEclipseKind};
+pub use magnitude::{EclipseMagnitude, Obscuration};
 pub use polynomial::Polynomial;
 pub use projection::{project_observer_to_fundamental, ObserverFundamental};
 pub use shadow::{shadow_cone, ShadowCone};
