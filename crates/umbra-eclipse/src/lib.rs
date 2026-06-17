@@ -18,6 +18,7 @@ pub mod horizontal;
 pub mod local_contacts;
 pub mod local_maximum;
 pub mod magnitude;
+pub mod path;
 pub mod polynomial;
 pub mod projection;
 pub mod results;
@@ -36,6 +37,7 @@ pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use global::{classify, SolarEclipseKind};
 pub use horizontal::{Horizontal, RefractionModel, Visibility};
 pub use magnitude::{EclipseMagnitude, Obscuration};
+pub use path::{EclipsePath, PathOptions, PathSample};
 pub use polynomial::Polynomial;
 pub use projection::{project_observer_to_fundamental, ObserverFundamental};
 pub use results::{
