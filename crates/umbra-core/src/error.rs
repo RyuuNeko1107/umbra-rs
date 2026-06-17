@@ -30,6 +30,9 @@ pub enum TimeError {
     /// 当該時刻の地球姿勢（UT1/極運動）データが無い。
     #[error("Earth-orientation (UT1/polar motion) data unavailable for this instant")]
     MissingEarthOrientationData,
+    /// 供給された EOP テーブルが不正（空・mjd 非昇順/重複, ISSUE-007 `IersEopData::from_records`）。
+    #[error("invalid EOP data table (empty or non-ascending/duplicate mjd)")]
+    InvalidEopData,
 }
 
 /// 数値解法（求根・最小化）の失敗。
