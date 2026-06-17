@@ -17,6 +17,7 @@
 //! （= ERFA `ecm06(J2000)ᵀ`、frame bias + J2000 黄道傾斜を含む）で GCRS へ回す。慣性 vs 回転分点の
 //! 微小オフセット（~0.1″）は既知の近似で、M10 の JPL DE 差分で確定する（R06 章動と同じ実用判断）。
 
+use crate::ephemeris::{Body, Ephemeris, EphemerisError, EphemerisFrame, Origin};
 use crate::frames::ecliptic_to_gcrs_matrix;
 use crate::moon::moon_geocentric_j2000;
 use crate::sun::sun_geocentric_ecliptic_of_date;
@@ -172,6 +173,132 @@ pub fn sun_apparent_cirs(time_tt: TtInstant) -> Vector3 {
 /// （SOFA `iauAtciq` 相当, 偏向 iauLd は既定 OFF）。詳細は [`sun_apparent_cirs`] と同型。
 pub fn moon_apparent_cirs(time_tt: TtInstant) -> Vector3 {
     crate::cio::gcrs_to_cirs_matrix(time_tt).mul_vec(moon_aberrated_gcrs(time_tt))
+}
+
+// ====================================================================
+// ジェネリック見かけ位置（ISSUE-043 S2）。任意 `Ephemeris` バックエンドを駆動する。
+//
+// 上の具象関数（`sun_apparent_cirs` 等・VSOP/ELP 直結・erfa 検証済み）は AnalyticalEphemeris に
+// 特化した参照実装。本ジェネリック経路は `eph.state(..., Geocenter, Icrs)` から幾何位置・地球速度
+// （= −地心太陽速度, S1 規約）・太陽距離を導出し、同一のチェーン（光行時間→恒星光行差→CIRS）を
+// 回す。AnalyticalEphemeris + standard では具象関数とビット級に一致する（回帰ブリッジテストで担保）。
+// ====================================================================
+
+/// 見かけ位置補正の有効/無効フラグ（標準は全 ON、Mock 等の幾何検証は全 OFF）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AstrometryOptions {
+    /// 光行時間補正（放射時刻 t−τ ＋ 地球変位項）。
+    pub light_time: bool,
+    /// 恒星光行差（年周光行差, SOFA `iauAb`）。
+    pub aberration: bool,
+}
+
+impl AstrometryOptions {
+    /// 標準（本番）: 光行時間・恒星光行差を共に適用（偏向 iauLd は v0.1 既定 OFF）。
+    pub fn standard() -> Self {
+        Self {
+            light_time: true,
+            aberration: true,
+        }
+    }
+
+    /// 幾何のみ（補正なし）: Mock 等の幾何検証・速度を持たない暦向け。
+    pub fn geometric() -> Self {
+        Self {
+            light_time: false,
+            aberration: false,
+        }
+    }
+}
+
+/// `eph` から `body` の幾何地心 GCRS 位置（km）を取る（Geocenter/Icrs）。
+fn geocentric_gcrs_of<E: Ephemeris>(
+    eph: &E,
+    body: Body,
+    time_tt: TtInstant,
+) -> Result<Vector3, EphemerisError> {
+    let tdb = TdbInstant::from_jd2(time_tt.jd2());
+    Ok(eph
+        .state(body, tdb, Origin::Geocenter, EphemerisFrame::Icrs)?
+        .position)
+}
+
+/// 観測者（地球）速度 GCRS \[km/s\] = −(地心太陽速度)（S1 規約）。`velocity` 不在は
+/// [`EphemerisError::DataUnavailable`]（補正に速度が必要なバックエンドでのみ呼ぶ）。
+fn earth_velocity_gcrs<E: Ephemeris>(
+    eph: &E,
+    time_tt: TtInstant,
+) -> Result<Vector3, EphemerisError> {
+    let tdb = TdbInstant::from_jd2(time_tt.jd2());
+    let sun = eph.state(Body::Sun, tdb, Origin::Geocenter, EphemerisFrame::Icrs)?;
+    Ok(sun
+        .velocity
+        .ok_or(EphemerisError::DataUnavailable)?
+        .scale(-1.0))
+}
+
+/// 任意 [`Ephemeris`] の `body` の見かけ地心位置（CIRS, km）を `options` に従って計算する。
+///
+/// 幾何位置・地球速度・太陽距離は全て `eph.state(..., Geocenter, Icrs)` から導出する
+/// （地球＝観測者速度 = −(地心太陽速度) = −`eph.state(Sun, Geo, Icrs).velocity`）。チェーンは
+/// 光行時間（`options.light_time`）→ 恒星光行差（`options.aberration`）→ GCRS→CIRS 回転（常に）。
+/// `light_time`/`aberration` が ON で `velocity` が None なら [`EphemerisError::DataUnavailable`]。
+pub fn apparent_cirs<E: Ephemeris>(
+    eph: &E,
+    body: Body,
+    time_tt: TtInstant,
+    options: AstrometryOptions,
+) -> Result<Vector3, EphemerisError> {
+    let c = umbra_core::constants::SPEED_OF_LIGHT_KM_S;
+    let g0 = geocentric_gcrs_of(eph, body, time_tt)?;
+
+    // 速度は光行時間・恒星光行差のいずれかが ON のときに必要（地球変位項・光行差ベクトル）。
+    let earth_velocity = if options.light_time || options.aberration {
+        Some(earth_velocity_gcrs(eph, time_tt)?)
+    } else {
+        None
+    };
+
+    // 1. 光行時間補正（具象 `light_time_correct` と同式: s = body(t−τ) + v_E·(−τ)）。
+    let position = if options.light_time {
+        let v_e = earth_velocity.expect("velocity fetched when light_time is on");
+        let mut tau = g0.norm() / c;
+        let mut pos = g0;
+        for _ in 0..5 {
+            let emit = TtInstant::from_jd2(time_tt.jd2().add_days(-tau / 86400.0));
+            let s = geocentric_gcrs_of(eph, body, emit)? + v_e.scale(-tau);
+            let next = s.norm() / c;
+            pos = s;
+            let converged = (next - tau).abs() < 1e-6;
+            tau = next;
+            if converged {
+                break;
+            }
+        }
+        pos
+    } else {
+        g0
+    };
+
+    // 2. 恒星光行差（具象 `aberrated_gcrs` と同式・距離保存）。
+    let position = if options.aberration {
+        let v_e = earth_velocity.expect("velocity fetched when aberration is on");
+        let dist = position.norm();
+        let pnat = position
+            .normalized()
+            .expect("geometric position is non-zero");
+        let v = v_e.scale(1.0 / c);
+        // s_au = 太陽地心距離 \[AU\]（`iauAb` の s）。
+        let sun_pos = geocentric_gcrs_of(eph, Body::Sun, time_tt)?;
+        let s_au = sun_pos.norm() / ASTRONOMICAL_UNIT_KM;
+        let bm1 = (1.0 - v.dot(v)).sqrt();
+        apply_iau_ab(pnat, v, s_au, bm1).get().scale(dist)
+    } else {
+        position
+    };
+
+    // 3. GCRS→CIRS（歳差章動・CIO ベース, 常に適用・回転ゆえ距離保存）。
+    Ok(crate::cio::gcrs_to_cirs_matrix(time_tt).mul_vec(position))
 }
 
 #[cfg(test)]
@@ -911,5 +1038,385 @@ mod tests {
             "moon apparent CIRS(jd={jd}) rotated only {} arcsec from GCRS (no-rotation impl?)",
             theta / arcsec_to_rad(1.0)
         );
+    }
+
+    // ============================================================
+    // ISSUE-043 S2: ジェネリック apparent_cirs<E: Ephemeris>
+    // ============================================================
+    //
+    // 主オラクル = 回帰ブリッジ: AnalyticalEphemeris(S1) を通したジェネリック経路が、
+    //   erfa 検証済みの具象 sun_apparent_cirs / moon_apparent_cirs と一致すること。
+    //   AnalyticalEphemeris は VSOP/ELP 幾何位置と「地心太陽速度 = -(地球速度)」規約を供給する
+    //   ため、ジェネリック経路は具象チェーン（light_time→aberration→GCRS→CIRS）とビット級に一致する。
+    // 補助オラクル = MockEphemeris の幾何経路（geometric: 補正全 OFF → CIRS 回転のみ）。
+
+    use crate::analytical::AnalyticalEphemeris;
+    use crate::ephemeris::{Body, Ephemeris, EphemerisError, EphemerisFrame, Origin};
+    use crate::mock::MockEphemeris;
+
+    /// MockEphemeris(central_total) で body の幾何 Icrs 位置を取得（geometric オラクル組立用）。
+    fn mock_geom(mock: &MockEphemeris, body: Body, jd: f64) -> Vector3 {
+        mock.state(body, tdb(jd), Origin::Geocenter, EphemerisFrame::Icrs)
+            .expect("mock geometric position is Ok")
+            .position
+    }
+
+    // ---- (1) AstrometryOptions のフィールド値（コンストラクタ取り違えを殺す）----
+
+    /// standard() は light_time/aberration 共に true、geometric() は共に false。
+    /// 殺す変異: standard/geometric の入れ替え・どちらかのフラグの true/false 反転・
+    ///   PartialEq の取り違え。
+    #[test]
+    fn astrometry_options_standard_and_geometric_fields() {
+        let s = AstrometryOptions::standard();
+        assert!(s.light_time, "standard.light_time must be true");
+        assert!(s.aberration, "standard.aberration must be true");
+        let g = AstrometryOptions::geometric();
+        assert!(!g.light_time, "geometric.light_time must be false");
+        assert!(!g.aberration, "geometric.aberration must be false");
+        // PartialEq の経路も固定（derive 取り違え・フィールド入れ替えを殺す）。
+        assert_eq!(
+            s,
+            AstrometryOptions {
+                light_time: true,
+                aberration: true
+            }
+        );
+        assert_eq!(
+            g,
+            AstrometryOptions {
+                light_time: false,
+                aberration: false
+            }
+        );
+        assert_ne!(s, g, "standard と geometric は異なるオプション");
+    }
+
+    // ---- (2) 回帰ブリッジ（★最重要）: generic-standard == 具象 ----
+    //
+    // tol: 太陽 ~1.5e8 km に対し 1.0 km（≈1e-9 相対）、月 ~3.8e5 km に対し 1e-3 km。
+    //   ジェネリック経路が具象と「成分一致」することを要求し、チェーン段の欠落・順序入替・
+    //   オプション分岐の取り違え（standard なのに補正を飛ばす等）を殺す。
+
+    /// 太陽: apparent_cirs(Analytical, Sun, standard) == sun_apparent_cirs(具象)。2エポック。
+    /// 殺す変異: light_time/aberration/CIRS 回転のいずれかの段の欠落・順序入替・
+    ///   v_e 符号取り違え・幾何位置の body 取り違え。
+    #[test]
+    fn generic_sun_standard_matches_concrete_sun_apparent_cirs() {
+        let eph = AnalyticalEphemeris::new();
+        for &jd in &[J2000_JD, 2469807.0] {
+            let got = apparent_cirs(&eph, Body::Sun, tt(jd), AstrometryOptions::standard())
+                .expect("analytical sun standard is Ok");
+            let expected = sun_apparent_cirs(tt(jd));
+            assert!(
+                vec_close(got, expected, 1.0),
+                "generic sun standard(jd={jd}) = {got:?}, expected concrete {expected:?}"
+            );
+        }
+    }
+
+    /// 月: apparent_cirs(Analytical, Moon, standard) == moon_apparent_cirs(具象)。2エポック。
+    /// 月の velocity は None だが v_e は Sun state から取るため standard でも Ok になる点も担保。
+    /// 殺す変異: v_e を body(月) の velocity から取る誤実装（None で Err になる）・段欠落・順序入替。
+    #[test]
+    fn generic_moon_standard_matches_concrete_moon_apparent_cirs() {
+        let eph = AnalyticalEphemeris::new();
+        for &jd in &[J2000_JD, 2469807.0] {
+            let got = apparent_cirs(&eph, Body::Moon, tt(jd), AstrometryOptions::standard())
+                .expect("analytical moon standard is Ok");
+            let expected = moon_apparent_cirs(tt(jd));
+            assert!(
+                vec_close(got, expected, 1e-3),
+                "generic moon standard(jd={jd}) = {got:?}, expected concrete {expected:?}"
+            );
+        }
+    }
+
+    // ---- (3) Mock 幾何経路: generic-geometric == cio · mock幾何 ----
+    //
+    // geometric は light_time/aberration を OFF にするので、最終結果は幾何位置を CIRS 回転しただけ。
+    // MockEphemeris は時刻非依存・velocity None だが、geometric では velocity を一切要求しないため Ok。
+
+    /// 太陽(Mock geometric) == gcrs_to_cirs_matrix(tt) · mock幾何位置。2エポック相当。
+    /// 殺す変異: geometric でも補正を適用してしまう（light_time/aberration を OFF にしない）・
+    ///   CIRS 回転の欠落・行列の time 引数取り違え。
+    #[test]
+    fn generic_mock_sun_geometric_equals_cirs_times_geometric() {
+        let mock = MockEphemeris::central_total();
+        for &jd in &[J2000_JD, 2469807.0] {
+            let got = apparent_cirs(&mock, Body::Sun, tt(jd), AstrometryOptions::geometric())
+                .expect("mock sun geometric is Ok");
+            let expected = gcrs_to_cirs_matrix(tt(jd)).mul_vec(mock_geom(&mock, Body::Sun, jd));
+            assert!(
+                vec_close(got, expected, 1e-6),
+                "mock sun geometric(jd={jd}) = {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    /// 月(Mock geometric) == gcrs_to_cirs_matrix(tt) · mock幾何位置。2エポック相当。
+    /// 殺す変異: body 取り違え（Sun 幾何を使う）・補正 OFF の取り違え・CIRS 回転欠落。
+    #[test]
+    fn generic_mock_moon_geometric_equals_cirs_times_geometric() {
+        let mock = MockEphemeris::central_total();
+        for &jd in &[J2000_JD, 2469807.0] {
+            let got = apparent_cirs(&mock, Body::Moon, tt(jd), AstrometryOptions::geometric())
+                .expect("mock moon geometric is Ok");
+            let expected = gcrs_to_cirs_matrix(tt(jd)).mul_vec(mock_geom(&mock, Body::Moon, jd));
+            assert!(
+                vec_close(got, expected, 1e-6),
+                "mock moon geometric(jd={jd}) = {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    // ---- (4) オプション弁別: standard ≠ geometric（補正の有無で位置が変わる）----
+
+    /// Analytical 太陽の standard と geometric は異なり、その差は光行差(~20.5″)＋光行時間で有限・非ゼロ。
+    /// CIRS 回転は距離保存ゆえ、両者の差はもっぱら補正由来。差の大きさ（角度・位置）で弁別する。
+    /// 殺す変異: options を無視して常に同じ経路を通す（standard==geometric になる）・
+    ///   補正段を恒等にする。
+    #[test]
+    fn generic_sun_standard_differs_from_geometric() {
+        let eph = AnalyticalEphemeris::new();
+        for &jd in &[J2000_JD, 2469807.0] {
+            let std_pos = apparent_cirs(&eph, Body::Sun, tt(jd), AstrometryOptions::standard())
+                .expect("standard Ok");
+            let geo_pos = apparent_cirs(&eph, Body::Sun, tt(jd), AstrometryOptions::geometric())
+                .expect("geometric Ok");
+            // 位置差が有限かつ非ゼロ（光行時間 ~500s で太陽は数百 km 動く + 光行差方向ずれ）。
+            let d = (std_pos - geo_pos).norm();
+            assert!(
+                d.is_finite() && d > 1.0,
+                "sun standard vs geometric diff(jd={jd}) = {d} km, want finite & > 1km"
+            );
+            // 方向ずれは光行差オーダー（~20.5″）を含む有限角。下限は光行差・光行時間で確実に超える 5″。
+            let theta = angle_between(std_pos, geo_pos);
+            assert!(
+                theta > arcsec_to_rad(5.0) && theta < arcsec_to_rad(60.0),
+                "sun standard vs geometric angle(jd={jd}) = {} arcsec, want ~光行差オーダー",
+                theta / arcsec_to_rad(1.0)
+            );
+        }
+    }
+
+    // ---- (5) velocity None → DataUnavailable（Mock standard）、geometric なら Ok ----
+    //
+    // MockEphemeris の state は velocity を常に None で返す（mock.rs 確認済み）。standard は
+    // light_time/aberration で v_e（= -Sun velocity）を要するため DataUnavailable。geometric は Ok。
+
+    /// Mock standard（velocity 必要）→ Err(DataUnavailable)。一方 geometric は Ok。
+    /// 殺す変異: velocity None を無視して 0 等で続行する・geometric でも velocity を要求する・
+    ///   別エラー種別（OutOfSupportedRange）を返す。
+    #[test]
+    fn generic_mock_sun_standard_errors_data_unavailable_but_geometric_ok() {
+        let mock = MockEphemeris::central_total();
+        for &jd in &[J2000_JD, 2469807.0] {
+            let standard = apparent_cirs(&mock, Body::Sun, tt(jd), AstrometryOptions::standard());
+            assert_eq!(
+                standard,
+                Err(EphemerisError::DataUnavailable),
+                "mock sun standard(jd={jd}) must be DataUnavailable (velocity None), got {standard:?}"
+            );
+            let geometric = apparent_cirs(&mock, Body::Sun, tt(jd), AstrometryOptions::geometric());
+            assert!(
+                geometric.is_ok(),
+                "mock sun geometric(jd={jd}) must be Ok (no velocity needed), got {geometric:?}"
+            );
+        }
+    }
+
+    /// 個別フラグ: aberration だけ ON でも v_e を要するため Mock では DataUnavailable。
+    /// 殺す変異: aberration 経路で velocity 要求を落とす・light_time のみが velocity を要すると誤る。
+    #[test]
+    fn generic_mock_sun_aberration_only_requires_velocity() {
+        let mock = MockEphemeris::central_total();
+        let opts = AstrometryOptions {
+            light_time: false,
+            aberration: true,
+        };
+        let r = apparent_cirs(&mock, Body::Sun, tt(J2000_JD), opts);
+        assert_eq!(
+            r,
+            Err(EphemerisError::DataUnavailable),
+            "mock sun aberration-only must need velocity → DataUnavailable, got {r:?}"
+        );
+    }
+
+    /// 個別フラグ: light_time だけ ON でも v_e を要するため Mock では DataUnavailable。
+    /// 殺す変異: light_time 経路で velocity（地球変位項 -v_e·τ）を落とす。
+    #[test]
+    fn generic_mock_sun_light_time_only_requires_velocity() {
+        let mock = MockEphemeris::central_total();
+        let opts = AstrometryOptions {
+            light_time: true,
+            aberration: false,
+        };
+        let r = apparent_cirs(&mock, Body::Sun, tt(J2000_JD), opts);
+        assert_eq!(
+            r,
+            Err(EphemerisError::DataUnavailable),
+            "mock sun light_time-only must need velocity → DataUnavailable, got {r:?}"
+        );
+    }
+
+    // ---- (6) エラー透過: eph.state が Err（SSB）→ apparent_cirs も Err ----
+    //
+    // 注: AnalyticalEphemeris は Geocenter のみサポートし、apparent_cirs は内部で必ず Geocenter を
+    // 要求する設計のため、ここでは「未対応 body = EarthMoonBarycenter」で state Err を励起する
+    // （Analytical では EMB が全 frame で DataUnavailable, analytical.rs 確認済み）。
+
+    /// 未対応 body（EMB）は Analytical state が DataUnavailable → apparent_cirs も透過して Err。
+    /// 殺す変異: state の Err を握り潰してゼロ位置で続行する・別エラーに化かす。
+    #[test]
+    fn generic_analytical_unsupported_body_propagates_error() {
+        let eph = AnalyticalEphemeris::new();
+        for &opts in &[
+            AstrometryOptions::standard(),
+            AstrometryOptions::geometric(),
+        ] {
+            let r = apparent_cirs(&eph, Body::EarthMoonBarycenter, tt(J2000_JD), opts);
+            assert_eq!(
+                r,
+                Err(EphemerisError::DataUnavailable),
+                "unsupported body must propagate state Err, got {r:?} (opts={opts:?})"
+            );
+        }
+    }
+
+    // ---- (7) 距離保存: standard 経路の最終ノルム == light_time 後ノルム ----
+    //
+    // aberration（方向のみ）と CIRS（回転）は距離不変。よって standard の最終ノルムは light_time
+    // 適用後（aberration/CIRS 前）のノルムに一致する。light_time のみ ON の経路のノルムをオラクルに使う。
+
+    /// 太陽 standard の最終ノルム == light_time-only 経路のノルム（aberration/CIRS は距離保存）。
+    /// 殺す変異: aberration/CIRS をスケール付き（距離を変える）に実装する・距離を捨てて単位化する。
+    #[test]
+    fn generic_sun_standard_preserves_distance_through_aberration_and_cirs() {
+        let eph = AnalyticalEphemeris::new();
+        let lt_only = AstrometryOptions {
+            light_time: true,
+            aberration: false,
+        };
+        for &jd in &[J2000_JD, 2469807.0] {
+            let after_lt = apparent_cirs(&eph, Body::Sun, tt(jd), lt_only)
+                .expect("lt-only Ok")
+                .norm();
+            let full = apparent_cirs(&eph, Body::Sun, tt(jd), AstrometryOptions::standard())
+                .expect("standard Ok")
+                .norm();
+            assert!(
+                close(full, after_lt, after_lt * 1e-9),
+                "sun standard norm(jd={jd}) = {full}, light_time norm = {after_lt} (distance not preserved?)"
+            );
+            // オーダーサニティ（太陽 ~1 AU）。
+            assert!(
+                (1.4e8..1.6e8).contains(&full),
+                "sun standard norm(jd={jd}) = {full} out of [1.4e8,1.6e8]"
+            );
+        }
+    }
+
+    /// 月 standard の最終ノルム == light_time-only 経路のノルム。オーダー（~3.8e5 km）も確認。
+    /// 殺す変異: 月で距離を変える補正・body 取り違え（太陽距離になる）。
+    #[test]
+    fn generic_moon_standard_preserves_distance_through_aberration_and_cirs() {
+        let eph = AnalyticalEphemeris::new();
+        let lt_only = AstrometryOptions {
+            light_time: true,
+            aberration: false,
+        };
+        for &jd in &[J2000_JD, 2469807.0] {
+            let after_lt = apparent_cirs(&eph, Body::Moon, tt(jd), lt_only)
+                .expect("lt-only Ok")
+                .norm();
+            let full = apparent_cirs(&eph, Body::Moon, tt(jd), AstrometryOptions::standard())
+                .expect("standard Ok")
+                .norm();
+            assert!(
+                close(full, after_lt, after_lt * 1e-9),
+                "moon standard norm(jd={jd}) = {full}, light_time norm = {after_lt}"
+            );
+            assert!(
+                (356_000.0..407_000.0).contains(&full),
+                "moon standard norm(jd={jd}) = {full} out of [356000,407000]"
+            );
+        }
+    }
+
+    // ---- (8) 個別フラグの効果分離（mock 幾何ノルムで距離保存も確認）----
+
+    /// geometric（補正 OFF）の最終ノルムは Mock 幾何ノルムと一致（CIRS は回転＝距離保存）。
+    /// 殺す変異: geometric でも光行時間で距離が縮む実装・CIRS をスケール付きにする。
+    #[test]
+    fn generic_mock_geometric_preserves_geometric_norm() {
+        let mock = MockEphemeris::central_total();
+        for &body in &[Body::Sun, Body::Moon] {
+            for &jd in &[J2000_JD, 2469807.0] {
+                let got = apparent_cirs(&mock, body, tt(jd), AstrometryOptions::geometric())
+                    .expect("geometric Ok")
+                    .norm();
+                let geom_norm = mock_geom(&mock, body, jd).norm();
+                assert!(
+                    close(got, geom_norm, geom_norm * 1e-9),
+                    "mock {body:?} geometric norm(jd={jd}) = {got}, geometric = {geom_norm}"
+                );
+            }
+        }
+    }
+
+    /// aberration だけ ON（Analytical 太陽）は方向のみ変え距離を保存する。
+    ///   geometric とノルムは一致するが方向は ~20.5″ ずれる（光行差のみ）。
+    /// 殺す変異: aberration 経路で light_time まで巻き込む（距離が変わる）・方向を変えない恒等実装。
+    #[test]
+    fn generic_sun_aberration_only_changes_direction_not_distance() {
+        let eph = AnalyticalEphemeris::new();
+        let ab_only = AstrometryOptions {
+            light_time: false,
+            aberration: true,
+        };
+        for &jd in &[J2000_JD, 2469807.0] {
+            let geo = apparent_cirs(&eph, Body::Sun, tt(jd), AstrometryOptions::geometric())
+                .expect("geometric Ok");
+            let ab = apparent_cirs(&eph, Body::Sun, tt(jd), ab_only).expect("aberration-only Ok");
+            // 距離は保存（aberration も CIRS も回転/方向のみ）。
+            assert!(
+                close(ab.norm(), geo.norm(), geo.norm() * 1e-9),
+                "sun aberration-only norm(jd={jd}) = {}, geometric = {} (distance changed?)",
+                ab.norm(),
+                geo.norm()
+            );
+            // 方向は光行差ぶんずれる（~20.5″）。geometric と異なることを確認。
+            let theta = angle_between(ab, geo);
+            assert!(
+                theta > arcsec_to_rad(5.0) && theta < arcsec_to_rad(30.0),
+                "sun aberration-only angle(jd={jd}) = {} arcsec, want ~20.5",
+                theta / arcsec_to_rad(1.0)
+            );
+        }
+    }
+
+    // ---- (9) 全結果有限 ----
+
+    /// generic 経路（Analytical standard/geometric, Mock geometric）の成分が全て有限。
+    /// 殺す変異: NaN/Inf を生む段の混入。
+    #[test]
+    fn generic_apparent_cirs_results_are_finite() {
+        let eph = AnalyticalEphemeris::new();
+        let mock = MockEphemeris::central_total();
+        for &jd in &[J2000_JD, 2469807.0] {
+            for &body in &[Body::Sun, Body::Moon] {
+                let a = apparent_cirs(&eph, body, tt(jd), AstrometryOptions::standard())
+                    .expect("analytical standard Ok");
+                let g = apparent_cirs(&mock, body, tt(jd), AstrometryOptions::geometric())
+                    .expect("mock geometric Ok");
+                for v in [a, g] {
+                    assert!(
+                        v.x.is_finite() && v.y.is_finite() && v.z.is_finite(),
+                        "non-finite generic result(jd={jd}, {body:?}): {v:?}"
+                    );
+                }
+            }
+        }
     }
 }

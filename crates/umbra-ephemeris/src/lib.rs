@@ -18,6 +18,7 @@ pub mod sun;
 pub mod time_data;
 
 pub use analytical::AnalyticalEphemeris;
+pub use apparent::{apparent_cirs, AstrometryOptions};
 #[cfg(feature = "bundled-data")]
 pub use eop::bundled_eop;
 pub use ephemeris::{
