@@ -59,6 +59,16 @@ impl TimeData {
     pub fn metadata(&self) -> Vec<&DataSetMetadata> {
         vec![self.leap.metadata(), self.eop.metadata()]
     }
+
+    /// 束ねた IERS EOP（`EclipseEngine` の `EarthOrientation` 供給に使う, ISSUE-043）。
+    pub fn eop(&self) -> &IersEopData {
+        &self.eop
+    }
+
+    /// 束ねた閏秒テーブル。
+    pub fn leap(&self) -> &LeapSecondTable {
+        &self.leap
+    }
 }
 
 /// 時刻系変換 facade（006/007 を束ねる, 確定B3）。[`TimeData`] から構築し、変換は Result。

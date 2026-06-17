@@ -11,6 +11,7 @@ pub mod candidates;
 pub mod config;
 pub mod conjunction;
 pub mod eclipse_filter;
+pub mod engine;
 pub mod error;
 pub mod fundamental;
 pub mod global;
@@ -32,6 +33,7 @@ pub use besselian::{
 };
 pub use calc_metadata::CalculationMetadata;
 pub use config::{AccuracyProfile, EngineConfig, LunarRadiusModel, SolarRadiusModel};
+pub use engine::{standard_engine, EclipseEngine, StandardEngine, UtcRange};
 pub use error::EclipseError;
 pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use global::{classify, SolarEclipseKind};

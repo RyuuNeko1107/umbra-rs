@@ -11,9 +11,16 @@ description = "umbra-rs eclipse engine: shadow geometry, Besselian elements, glo
 [lints]
 workspace = true
 
+[features]
+# 同梱 IERS EOP C04 + 閏秒を埋め込む（既定 on, ISSUE-007/042 確定B3）。
+# umbra-ephemeris の `bundled-data` へ転送し、`standard_engine(bundled_time_data())` の
+# §78 標準構築経路（ISSUE-043 S5b）を有効にする。off 時は外部供給が必須となる。
+default = ["bundled-data"]
+bundled-data = ["umbra-ephemeris/bundled-data"]
+
 [dependencies]
 umbra-core = { path = "../umbra-core" }
-umbra-ephemeris = { path = "../umbra-ephemeris" }
+umbra-ephemeris = { path = "../umbra-ephemeris", default-features = false }
 # 全球/局地 result 型の地理座標（GeoPoint 等, ISSUE-043 S4d）。geo→core のみ＝循環なし。
 umbra-geo = { path = "../umbra-geo" }
 thiserror = "2"
