@@ -13,6 +13,7 @@ pub mod mock;
 pub mod moon;
 pub mod nutation;
 pub mod sun;
+pub mod time_data;
 
 #[cfg(feature = "bundled-data")]
 pub use eop::bundled_eop;
@@ -20,3 +21,6 @@ pub use ephemeris::{
     Body, Ephemeris, EphemerisError, EphemerisFrame, EphemerisMetadata, Origin, StateVector,
 };
 pub use mock::MockEphemeris;
+#[cfg(feature = "bundled-data")]
+pub use time_data::bundled_time_data;
+pub use time_data::{time_data_from_path, TimeDataError};

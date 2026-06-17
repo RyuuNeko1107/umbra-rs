@@ -20,3 +20,5 @@ bundled-data = []
 [dependencies]
 umbra-core = { path = "../umbra-core" }
 thiserror = "2"
+# from_path 外部 EOP データの SHA-256 完全性照合（ISSUE-042 S3）。xtask と同版・deny.toml 許可。
+sha2 = "0.10"
