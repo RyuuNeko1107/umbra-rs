@@ -1,0 +1,3 @@
+# ゴールデンフィクスチャは LF を正本とする（`include_str!` 取り込みバイト列の決定性・
+# umbra-fixtures チェックサムの移植性。core.autocrlf 環境でも作業ツリーを LF に固定する）。
+crates/umbra-fixtures/data/golden/*.toml text eol=lf

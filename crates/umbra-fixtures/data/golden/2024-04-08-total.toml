@@ -1,0 +1,84 @@
+# ゴールデンフィクスチャ: 2024-04-08 皆既日食（メキシコ→米国→カナダ）。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+
+event_key = "2024-04-08-total"
+kind = "Total"
+greatest_utc = "2024-04-08 18:17:18.3"
+greatest_tt = "2024-04-08 18:18:29.0"
+gamma = 0.3431
+magnitude = 1.0566
+delta_t_seconds = 70.6
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2024Apr08Tbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-17"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=70.6s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=72.8s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Torreon, Coahuila, Mexico"
+latitude_deg = 25.54
+east_longitude_deg = -103.41
+elevation_m = 1120.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.018
+obscuration = 1.000
+max_altitude_deg = 70.1
+max_azimuth_deg = 152.7
+maximum = { utc = "2024-04-08 18:18:56.2", altitude_deg = 70.1 }
+c1 = { utc = "2024-04-08 16:59:53.0", altitude_deg = 57.2 }
+c2 = { utc = "2024-04-08 18:16:51.2", altitude_deg = 69.8 }
+c3 = { utc = "2024-04-08 18:21:03.5", altitude_deg = 70.3 }
+c4 = { utc = "2024-04-08 19:41:23.3", altitude_deg = 69.0 }
+
+[[location]]
+name = "Mazatlan, Sinaloa, Mexico"
+latitude_deg = 23.25
+east_longitude_deg = -106.41
+elevation_m = 10.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.021
+obscuration = 1.000
+max_altitude_deg = 69.1
+max_azimuth_deg = 136.2
+maximum = { utc = "2024-04-08 18:09:33.9", altitude_deg = 69.1 }
+c1 = { utc = "2024-04-08 16:51:24.8", altitude_deg = 53.8 }
+c2 = { utc = "2024-04-08 18:07:25.6", altitude_deg = 68.7 }
+c3 = { utc = "2024-04-08 18:11:44.5", altitude_deg = 69.4 }
+c4 = { utc = "2024-04-08 19:32:06.5", altitude_deg = 73.3 }
+
+[[location]]
+name = "Montreal, QC, Canada (near northern limit)"
+latitude_deg = 45.50
+east_longitude_deg = -73.57
+elevation_m = 30.0
+class = "NearLimit"
+visibility = "FullyVisible"
+magnitude = 1.002
+obscuration = 1.000
+max_altitude_deg = 40.0
+max_azimuth_deg = 232.8
+maximum = { utc = "2024-04-08 19:27:27.7", altitude_deg = 40.0 }
+c1 = { utc = "2024-04-08 18:14:24.2", altitude_deg = 48.5 }
+c2 = { utc = "2024-04-08 19:26:43.9", altitude_deg = 40.1 }
+c3 = { utc = "2024-04-08 19:28:13.0", altitude_deg = 39.9 }
+c4 = { utc = "2024-04-08 20:36:47.0", altitude_deg = 29.4 }
+
+[[location]]
+name = "Los Angeles, CA, USA"
+latitude_deg = 34.05
+east_longitude_deg = -118.24
+elevation_m = 90.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.580
+obscuration = 0.489
+max_altitude_deg = 54.6
+max_azimuth_deg = 132.4
+maximum = { utc = "2024-04-08 18:12:13.1", altitude_deg = 54.6 }
+c1 = { utc = "2024-04-08 17:06:08.0", altitude_deg = 43.1 }
+c4 = { utc = "2024-04-08 19:22:03.9", altitude_deg = 62.5 }

@@ -13,3 +13,7 @@ workspace = true
 
 [dependencies]
 umbra-core = { path = "../umbra-core" }
+umbra-eclipse = { path = "../umbra-eclipse" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+sha2 = "0.10"

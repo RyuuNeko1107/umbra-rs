@@ -1,0 +1,67 @@
+# ゴールデンフィクスチャ: 2023-10-14 金環日食（米国西部→中米→南米）。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+
+event_key = "2023-10-14-annular"
+kind = "Annular"
+greatest_utc = "2023-10-14 17:59:29.5"
+greatest_tt = "2023-10-14 18:00:39.9"
+gamma = 0.3754
+magnitude = 0.9520
+delta_t_seconds = 70.5
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2023Oct14Abeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-17"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=70.5s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=72.5s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Albuquerque, NM, USA"
+latitude_deg = 35.08
+east_longitude_deg = -106.65
+elevation_m = 1620.0
+class = "HighElevation"
+visibility = "FullyVisible"
+magnitude = 0.970
+obscuration = 0.897
+max_altitude_deg = 36.1
+max_azimuth_deg = 136.8
+maximum = { utc = "2023-10-14 16:36:52.6", altitude_deg = 36.1 }
+c1 = { utc = "2023-10-14 15:13:11.6", altitude_deg = 22.6 }
+c2 = { utc = "2023-10-14 16:34:30.0", altitude_deg = 35.8 }
+c3 = { utc = "2023-10-14 16:39:17.0", altitude_deg = 36.5 }
+c4 = { utc = "2023-10-14 18:09:22.2", altitude_deg = 45.5 }
+
+[[location]]
+name = "San Antonio, TX, USA"
+latitude_deg = 29.42
+east_longitude_deg = -98.49
+elevation_m = 200.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.962
+obscuration = 0.901
+max_altitude_deg = 47.1
+max_azimuth_deg = 147.9
+maximum = { utc = "2023-10-14 16:54:13.8", altitude_deg = 47.1 }
+c1 = { utc = "2023-10-14 15:23:48.0", altitude_deg = 33.3 }
+c2 = { utc = "2023-10-14 16:52:04.1", altitude_deg = 46.8 }
+c3 = { utc = "2023-10-14 16:56:25.4", altitude_deg = 47.3 }
+c4 = { utc = "2023-10-14 18:32:57.2", altitude_deg = 52.2 }
+
+[[location]]
+name = "Los Angeles, CA, USA"
+latitude_deg = 34.05
+east_longitude_deg = -118.24
+elevation_m = 90.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.781
+obscuration = 0.708
+max_altitude_deg = 27.5
+max_azimuth_deg = 123.1
+maximum = { utc = "2023-10-14 16:24:27.2", altitude_deg = 27.5 }
+c1 = { utc = "2023-10-14 15:07:56.1", altitude_deg = 13.3 }
+c4 = { utc = "2023-10-14 17:50:03.8", altitude_deg = 40.5 }

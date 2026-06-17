@@ -1,0 +1,65 @@
+# ゴールデンフィクスチャ: 2025-03-29 部分日食（北大西洋・欧州・北米北東部）。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 北米北東部では日の出中に進行（sunrise eclipse）。
+
+event_key = "2025-03-29-partial"
+kind = "Partial"
+greatest_utc = "2025-03-29 10:47:24.7"
+greatest_tt = "2025-03-29 10:48:35.7"
+gamma = 1.0404
+magnitude = 0.9378
+delta_t_seconds = 71.0
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2025Mar29Pbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-17"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=71.0s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=73.3s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+# Caribou, ME: 最大食は日の出直後（USNO max altitude = -0.0 deg = 地平・上昇中）。C1 は地平下のため
+# 転記なし（None・捏造しない）。可視は最大食〜C4。class=Sunrise / visibility=SunriseEclipse。
+[[location]]
+name = "Caribou, ME, USA (sunrise eclipse)"
+latitude_deg = 46.86
+east_longitude_deg = -68.01
+elevation_m = 190.0
+class = "Sunrise"
+visibility = "SunriseEclipse"
+magnitude = 0.879
+obscuration = 0.856
+max_altitude_deg = 0.0
+max_azimuth_deg = 84.8
+maximum = { utc = "2025-03-29 10:21:27.5", altitude_deg = 0.0 }
+c4 = { utc = "2025-03-29 11:16:20.4", altitude_deg = 9.4 }
+
+[[location]]
+name = "London, United Kingdom"
+latitude_deg = 51.51
+east_longitude_deg = -0.13
+elevation_m = 11.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.417
+obscuration = 0.306
+max_altitude_deg = 40.3
+max_azimuth_deg = 159.6
+maximum = { utc = "2025-03-29 11:03:20.2", altitude_deg = 40.3 }
+c1 = { utc = "2025-03-29 10:07:21.3", altitude_deg = 36.1 }
+c4 = { utc = "2025-03-29 12:00:44.7", altitude_deg = 42.1 }
+
+[[location]]
+name = "Reykjavik, Iceland"
+latitude_deg = 64.13
+east_longitude_deg = -21.90
+elevation_m = 40.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.736
+obscuration = 0.677
+max_altitude_deg = 23.9
+max_azimuth_deg = 139.3
+maximum = { utc = "2025-03-29 11:05:29.0", altitude_deg = 23.9 }
+c1 = { utc = "2025-03-29 10:05:44.1", altitude_deg = 19.0 }
+c4 = { utc = "2025-03-29 12:07:06.7", altitude_deg = 27.5 }

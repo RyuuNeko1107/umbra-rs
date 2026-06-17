@@ -1,0 +1,68 @@
+# ゴールデンフィクスチャ: 2017-08-21 皆既日食（北米横断 "Great American Eclipse"）。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources §4）。
+
+event_key = "2017-08-21-total"
+kind = "Total"
+greatest_utc = "2017-08-21 18:25:31.8"
+greatest_tt = "2017-08-21 18:26:40.3"
+gamma = 0.4367
+magnitude = 1.0306
+delta_t_seconds = 68.4
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2017Aug21Tbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-17"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=68.4s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=69.4s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Hopkinsville, KY, USA"
+latitude_deg = 36.86
+east_longitude_deg = -87.49
+elevation_m = 150.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.015
+obscuration = 1.000
+max_altitude_deg = 63.9
+max_azimuth_deg = 198.6
+maximum = { utc = "2017-08-21 18:25:59.8", altitude_deg = 63.9 }
+c1 = { utc = "2017-08-21 16:56:31.8", altitude_deg = 62.0 }
+c2 = { utc = "2017-08-21 18:24:39.6", altitude_deg = 64.0 }
+c3 = { utc = "2017-08-21 18:27:21.8", altitude_deg = 63.8 }
+c4 = { utc = "2017-08-21 19:51:41.8", altitude_deg = 53.5 }
+
+[[location]]
+name = "Jackson, WY, USA"
+latitude_deg = 43.48
+east_longitude_deg = -110.76
+elevation_m = 1900.0
+class = "HighElevation"
+visibility = "FullyVisible"
+magnitude = 1.011
+obscuration = 1.000
+max_altitude_deg = 50.5
+max_azimuth_deg = 134.7
+maximum = { utc = "2017-08-21 17:36:00.2", altitude_deg = 50.5 }
+c1 = { utc = "2017-08-21 16:16:42.2", altitude_deg = 38.5 }
+c2 = { utc = "2017-08-21 17:34:52.4", altitude_deg = 50.3 }
+c3 = { utc = "2017-08-21 17:37:10.3", altitude_deg = 50.6 }
+c4 = { utc = "2017-08-21 19:00:27.0", altitude_deg = 57.9 }
+
+[[location]]
+name = "New York, NY, USA"
+latitude_deg = 40.71
+east_longitude_deg = -74.01
+elevation_m = 10.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.770
+obscuration = 0.716
+max_altitude_deg = 52.9
+max_azimuth_deg = 226.4
+maximum = { utc = "2017-08-21 18:44:57.3", altitude_deg = 52.9 }
+c1 = { utc = "2017-08-21 17:23:13.9", altitude_deg = 60.7 }
+c4 = { utc = "2017-08-21 20:00:42.9", altitude_deg = 40.9 }

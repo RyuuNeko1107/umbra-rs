@@ -1,0 +1,66 @@
+# ゴールデンフィクスチャ: 2023-04-20 ハイブリッド日食（インド洋→豪州→インドネシア）。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 全球種別は Hybrid（中心線上で金環↔皆既が遷移）。Exmouth は皆既帯内。
+
+event_key = "2023-04-20-hybrid"
+kind = "Hybrid"
+greatest_utc = "2023-04-20 04:16:44.8"
+greatest_tt = "2023-04-20 04:17:55.1"
+gamma = -0.3952
+magnitude = 1.0132
+delta_t_seconds = 70.3
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2023Apr20Hbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-17"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=70.3s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=72.3s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Exmouth, WA, Australia"
+latitude_deg = -21.93
+east_longitude_deg = 114.13
+elevation_m = 5.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.003
+obscuration = 1.000
+max_altitude_deg = 54.3
+max_azimuth_deg = 22.3
+maximum = { utc = "2023-04-20 03:30:12.5", altitude_deg = 54.3 }
+c1 = { utc = "2023-04-20 02:04:29.3", altitude_deg = 42.5 }
+c2 = { utc = "2023-04-20 03:29:45.0", altitude_deg = 54.2 }
+c3 = { utc = "2023-04-20 03:30:42.2", altitude_deg = 54.3 }
+c4 = { utc = "2023-04-20 05:02:28.6", altitude_deg = 55.2 }
+
+[[location]]
+name = "Perth, WA, Australia"
+latitude_deg = -31.95
+east_longitude_deg = 115.86
+elevation_m = 15.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.766
+obscuration = 0.707
+max_altitude_deg = 44.7
+max_azimuth_deg = 19.2
+maximum = { utc = "2023-04-20 03:20:25.5", altitude_deg = 44.7 }
+c1 = { utc = "2023-04-20 01:59:58.3", altitude_deg = 35.9 }
+c4 = { utc = "2023-04-20 04:46:28.6", altitude_deg = 46.0 }
+
+[[location]]
+name = "Jakarta, Indonesia"
+latitude_deg = -6.21
+east_longitude_deg = 106.85
+elevation_m = 8.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.498
+obscuration = 0.390
+max_altitude_deg = 65.8
+max_azimuth_deg = 43.2
+maximum = { utc = "2023-04-20 03:45:13.2", altitude_deg = 65.8 }
+c1 = { utc = "2023-04-20 02:29:21.0", altitude_deg = 50.5 }
+c4 = { utc = "2023-04-20 05:06:34.0", altitude_deg = 72.0 }
