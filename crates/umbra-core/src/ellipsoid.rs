@@ -6,6 +6,14 @@
 use crate::constants::{EARTH_EQUATORIAL_RADIUS_M, WGS84_FLATTENING};
 use crate::vector::Vector3;
 
+/// 地球モデル（観測者座標・楕円体の選択。既定は WGS84, conventions §4）。
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EarthModel {
+    /// WGS84 楕円体。
+    Wgs84,
+}
+
 /// 回転楕円体（長半径 a と扁平率 f）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ellipsoid {
@@ -215,5 +223,28 @@ mod tests {
         let pole = geodetic_to_ecef_km(&WGS84, PI / 2.0, 0.0, 0.0);
         assert!((pole.z - WGS84.b_m() / 1000.0).abs() < 1e-6);
         assert!(pole.x.abs() < 1e-6);
+    }
+
+    // ============================================================
+    // EarthModel（地球モデル列挙, conventions §4・api-draft §3.1）
+    // ============================================================
+
+    /// `EarthModel` は `Copy`（move されず複製で渡る）であること。コンパイル時に Copy 境界へ
+    /// 通すことで `#[derive(Copy)]` の脱落変異を撃破する（束縛 `m` を消費後も `orig` を使える）。
+    #[test]
+    fn earth_model_is_copy() {
+        fn assert_copy<T: Copy>(_: T) {}
+        let orig = EarthModel::Wgs84;
+        let m = orig; // Copy: orig は move されない
+        assert_copy(m);
+        // orig がなお有効（Copy でなければムーブ済みでコンパイル不可）。
+        assert_eq!(orig, m);
+    }
+
+    /// `EarthModel` の `PartialEq`/`Eq`: 同一バリアントは等しい。WGS84 のみの現状で
+    /// 反射律（自分自身と等しい）を縛り、PartialEq 導出の脱落を撃破する。
+    #[test]
+    fn earth_model_equality_is_reflexive() {
+        assert_eq!(EarthModel::Wgs84, EarthModel::Wgs84);
     }
 }

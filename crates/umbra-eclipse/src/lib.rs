@@ -6,7 +6,9 @@
 
 pub mod bessel_poly;
 pub mod besselian;
+pub mod calc_metadata;
 pub mod candidates;
+pub mod config;
 pub mod conjunction;
 pub mod eclipse_filter;
 pub mod error;
@@ -26,6 +28,8 @@ pub use besselian::{
     besselian_elements, besselian_elements_at, besselian_mu, BesselianElements,
     InstantaneousBesselianElements,
 };
+pub use calc_metadata::CalculationMetadata;
+pub use config::{AccuracyProfile, EngineConfig, LunarRadiusModel, SolarRadiusModel};
 pub use error::EclipseError;
 pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use global::{classify, SolarEclipseKind};

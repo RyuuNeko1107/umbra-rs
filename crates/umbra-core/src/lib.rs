@@ -26,7 +26,7 @@ pub use deltat::{
     tt_to_ut1, ut1_to_tt, utc_to_ut1, CompositeDeltaT, DeltaTModel, DeltaTSource,
     EspenakMeeusDeltaT, EOP_DELTA_T_UNCERTAINTY_SECONDS,
 };
-pub use ellipsoid::{Ellipsoid, GeocentricObserver};
+pub use ellipsoid::{EarthModel, Ellipsoid, GeocentricObserver};
 pub use eop::{EarthOrientation, EopRecord, IersEopData};
 pub use error::{DomainError, SolverError, TimeError};
 pub use julian::JulianDate2;
