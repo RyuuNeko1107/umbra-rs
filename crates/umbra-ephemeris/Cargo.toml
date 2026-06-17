@@ -11,6 +11,12 @@ description = "umbra-rs ephemeris backends (VSOP87D, ELP/MPP02, JPL DE) — work
 [lints]
 workspace = true
 
+[features]
+# 同梱 IERS EOP C04 を埋め込む（既定 on, ISSUE-007 EOP P2b / ISSUE-042 確定B3）。
+# off 時は `bundled_eop()` がシンボルごと消え、外部供給（from_path 相当）が必須となる。
+default = ["bundled-data"]
+bundled-data = []
+
 [dependencies]
 umbra-core = { path = "../umbra-core" }
 thiserror = "2"

@@ -6,6 +6,7 @@
 
 pub mod apparent;
 pub mod cio;
+pub mod eop;
 pub mod ephemeris;
 pub mod frames;
 pub mod mock;
@@ -13,6 +14,8 @@ pub mod moon;
 pub mod nutation;
 pub mod sun;
 
+#[cfg(feature = "bundled-data")]
+pub use eop::bundled_eop;
 pub use ephemeris::{
     Body, Ephemeris, EphemerisError, EphemerisFrame, EphemerisMetadata, Origin, StateVector,
 };
