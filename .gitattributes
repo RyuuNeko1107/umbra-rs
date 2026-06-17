@@ -1,3 +1,8 @@
 # ゴールデンフィクスチャは LF を正本とする（`include_str!` 取り込みバイト列の決定性・
 # umbra-fixtures チェックサムの移植性。core.autocrlf 環境でも作業ツリーを LF に固定する）。
 crates/umbra-fixtures/data/golden/*.toml text eol=lf
+
+# IERS EOP C04 原データは LF 正本（PROVENANCE checksum の安定・`include_str!` 取り込みの決定性）。
+# 生成物 .bin はバイナリ（CRLF 変換禁止・既定でバイナリ判定だが明示）。
+data/coefficient-source/eop/*.txt text eol=lf
+generated/eop/*.bin binary

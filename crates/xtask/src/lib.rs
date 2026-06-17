@@ -9,6 +9,7 @@
 pub mod checksum;
 pub mod dataset;
 pub mod elp;
+pub mod eop;
 pub mod error;
 pub mod nutation;
 pub mod packed;
@@ -21,7 +22,7 @@ const USAGE: &str = "\
 umbra-rs xtask — internal build tasks (ISSUE-046)
 
 USAGE:
-    cargo xtask <SUBCOMMAND> [--dataset <vsop87|elp-mpp02|nutation-iau2000a|all>]
+    cargo xtask <SUBCOMMAND> [--dataset <vsop87|elp2000-82b|elp-mpp02|nutation-iau2000a|eop-c04|all>]
 
 SUBCOMMANDS:
     generate-coefficients   一次データ→packed 係数を決定的に生成（033/034/040）
@@ -103,14 +104,20 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
                 "generate-coefficients (dataset: elp-mpp02) — 将来の MPP02 アップグレード候補"
                     .to_string(),
             )),
+            Some(Dataset::EopC04) => {
+                let m = eop::generate_to_disk()?;
+                println!("generated eop-c04 (checksum {})", m.checksum);
+                Ok(())
+            }
             None => {
-                // all（実装済みデータセット: nutation + vsop87 + elp2000-82b）。
+                // all（実装済みデータセット: nutation + vsop87 + elp2000-82b + eop-c04）。
                 let n = nutation::generate_to_disk()?;
                 let v = vsop87::generate_to_disk()?;
                 let e = elp::generate_to_disk()?;
+                let o = eop::generate_to_disk()?;
                 println!(
-                    "generated nutation-iau2000a ({}) + vsop87 ({}) + elp2000-82b ({})",
-                    n.checksum, v.checksum, e.checksum
+                    "generated nutation-iau2000a ({}) + vsop87 ({}) + elp2000-82b ({}) + eop-c04 ({})",
+                    n.checksum, v.checksum, e.checksum, o.checksum
                 );
                 Ok(())
             }
@@ -123,10 +130,12 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
                 "verify-generated (dataset: elp-mpp02) — 将来の MPP02 アップグレード候補"
                     .to_string(),
             )),
+            Some(Dataset::EopC04) => eop::verify_against_disk(),
             None => {
                 nutation::verify_against_disk()?;
                 vsop87::verify_against_disk()?;
-                elp::verify_against_disk()
+                elp::verify_against_disk()?;
+                eop::verify_against_disk()
             }
         },
         "verify-data" => Err(XtaskError::NotImplemented(

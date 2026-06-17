@@ -17,6 +17,8 @@ pub enum Dataset {
     ElpMpp02,
     /// IAU2000A 章動 nut00a（ISSUE-040）。
     NutationIau2000a,
+    /// IERS EOP 14 C04 地球姿勢（UT1−UTC・極運動, ISSUE-007 EOP）。
+    EopC04,
 }
 
 impl Dataset {
@@ -27,6 +29,7 @@ impl Dataset {
             "elp2000-82b" => Ok(Dataset::Elp200082b),
             "elp-mpp02" => Ok(Dataset::ElpMpp02),
             "nutation-iau2000a" => Ok(Dataset::NutationIau2000a),
+            "eop-c04" => Ok(Dataset::EopC04),
             other => Err(XtaskError::UnknownDataset(other.to_string())),
         }
     }
@@ -38,6 +41,7 @@ impl Dataset {
             Dataset::Elp200082b => "elp2000-82b",
             Dataset::ElpMpp02 => "elp-mpp02",
             Dataset::NutationIau2000a => "nutation-iau2000a",
+            Dataset::EopC04 => "eop-c04",
         }
     }
 
@@ -48,6 +52,7 @@ impl Dataset {
             Dataset::Elp200082b,
             Dataset::ElpMpp02,
             Dataset::NutationIau2000a,
+            Dataset::EopC04,
         ]
     }
 }
@@ -69,6 +74,7 @@ mod tests {
             Dataset::from_arg("nutation-iau2000a").unwrap(),
             Dataset::NutationIau2000a
         );
+        assert_eq!(Dataset::from_arg("eop-c04").unwrap(), Dataset::EopC04);
     }
 
     /// as_arg → from_arg の往復で同一 Dataset に戻る（正準文字列の一貫性）。
@@ -94,15 +100,16 @@ mod tests {
         );
     }
 
-    /// all() は 4 種をちょうど重複なく列挙する。
+    /// all() は 5 種をちょうど重複なく列挙する。
     #[test]
     fn all_contains_distinct_datasets() {
         let all = Dataset::all();
-        assert_eq!(all.len(), 4, "exactly four datasets");
+        assert_eq!(all.len(), 5, "exactly five datasets");
         assert!(all.contains(&Dataset::Vsop87));
         assert!(all.contains(&Dataset::Elp200082b));
         assert!(all.contains(&Dataset::ElpMpp02));
         assert!(all.contains(&Dataset::NutationIau2000a));
+        assert!(all.contains(&Dataset::EopC04));
         // 重複なし: 各ペアが相異なる。
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {

@@ -35,6 +35,10 @@ jobs:
         #   - scan_point_count: 粗走査の分割数（窓幅/刻み）を決めるだけで、最大食・接触の検出正否には
         #     影響しない（n が十分大きければ括れる）。算術変異は等価（細かい n でも同結果）/timeout（巨大 n）
         #     （docs/reviews/mutation-local-contacts.md, mutation-local-maximum.md。solver.rs 除外と同方針）
+        #   - xtask::eop（ISSUE-007-EOP）: read_source / verify_against_disk は IO ラッパで CWD 依存・
+        #     unit 不能（manifest 相対 include_bytes 回帰 + CLI 統合で実効検証済み）、unpack_records の
+        #     `> MAX_EOP_RECORDS` 境界（==/>=）は 1e7 件≒320MB を要する作れない等価変異。
+        #     （docs/reviews/mutation-eop.md）
         run: >-
           docker compose -p umbra-rs run --rm rust
-          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --package xtask --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds' --exclude-re 'with <= in.*BesselianPolynomial>::at' --exclude-re 'with >= in.*BesselianPolynomial>::at' --exclude-re 'in solve_zero_in_window' --exclude-re 'with <= in.*assess_eclipse_possibility' --exclude-re 'in scan_point_count'"
+          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --package xtask --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds' --exclude-re 'with <= in.*BesselianPolynomial>::at' --exclude-re 'with >= in.*BesselianPolynomial>::at' --exclude-re 'in solve_zero_in_window' --exclude-re 'with <= in.*assess_eclipse_possibility' --exclude-re 'in scan_point_count' --exclude-re 'eop.rs.* read_source' --exclude-re 'eop.rs.* verify_against_disk' --exclude-re 'eop.rs.*with == in unpack_records' --exclude-re 'eop.rs.*with >= in unpack_records'"
