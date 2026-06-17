@@ -4,6 +4,7 @@
 //! 全球/局地は順次追加（`docs/algorithms/` §5–§9）。
 //! 幾何ロジックは [`umbra_ephemeris::MockEphemeris`] 上で検証する（accuracy.md §3.1）。
 
+pub mod axis_intercept;
 pub mod bessel_poly;
 pub mod besselian;
 pub mod calc_metadata;
