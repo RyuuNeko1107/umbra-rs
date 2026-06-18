@@ -13,21 +13,42 @@
 //! `.at(time)` を呼ぶ。`AnalyticalEphemeris` ＋ `AstrometryOptions::standard()` では
 //! `besselian_elements_at`（ISSUE-021）と同等の瞬時要素になる（S2 回帰ブリッジ済）。
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use umbra_core::constants::EARTH_EQUATORIAL_RADIUS_M;
-use umbra_core::deltat::DeltaTModel;
+use umbra_core::deltat::{decimal_year, DeltaTModel};
+use umbra_core::ellipsoid::Ellipsoid;
 use umbra_core::eop::EarthOrientation;
 use umbra_core::{
-    EspenakMeeusDeltaT, IersEopData, TimeData, TimeInterval, TimeRange, TimeScales, TtInstant,
-    UtcInstant,
+    EspenakMeeusDeltaT, IersEopData, JulianDate2, TimeData, TimeInterval, TimeRange, TimeScales,
+    TtInstant, UtcInstant,
 };
 use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
 
+use crate::bessel_poly::{BesselFitError, BesselianPolynomial};
 use crate::besselian::InstantaneousBesselianElements;
+use crate::calc_metadata::CalculationMetadata;
+use crate::candidates::new_moon_candidates;
 use crate::config::EngineConfig;
+use crate::conjunction::{solve_conjunction, ConjunctionKind, RootConfig};
+use crate::eclipse_filter::assess_eclipse_possibility;
 use crate::error::EclipseError;
+use crate::global::{classify_global_kind, solve_greatest_eclipse};
+use crate::global_contacts::solve_global_contact_set;
 use crate::path::{EclipsePath, PathOptions};
-use crate::results::SolarEclipse;
+use crate::results::{GlobalCircumstances, SolarEclipse};
 use crate::source::{BesselianSource, InstantaneousEvaluator};
+
+/// 1 日 = 86400 SI 秒。
+const SECONDS_PER_DAY: f64 = 86_400.0;
+/// 探索段の Brent 反復上限。
+const SEARCH_ROOT_MAX_ITER: usize = 200;
+/// ベッセル多項式 fit の開始次数（NASA 慣習 3。残差未達なら内部で自動昇次, ≤6）。
+const BESSEL_FIT_START_DEGREE: usize = 3;
+/// ベッセル多項式 fit の残差ゲート（Re。x/y/l1/l2 の最大残差上限。v0.1 標準・要精緻化）。
+const BESSEL_FIT_TOLERANCE: f64 = 1.0e-4;
+/// UNIX エポックの UTC ユリウス日（generated_at の壁時計変換に使用）。
+const UNIX_EPOCH_JD: f64 = 2_440_587.5;
 
 /// 探索範囲（UTC）。
 pub type UtcRange = TimeRange<UtcInstant>;
@@ -98,6 +119,115 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
         evaluator.at(time)
     }
 
+    /// UTC 範囲の日食を探索して `SolarEclipse` のリストを返す（ISSUE-043 S6c）。
+    ///
+    /// パイプライン: 新月候補（ISSUE-016）→ 合（ISSUE-017）→ 早期棄却（ISSUE-018, 偽陰性不可）→
+    /// 残候補ごとに供給源（暦ジェネリック `InstantaneousEvaluator`）を構築し、最大食（S6a）・
+    /// 全球接触（S6b-i/ii）・種別（S6b-iii）・ベッセル多項式 fit（ISSUE-022）を計算して
+    /// `SolarEclipse`（event_key・GlobalCircumstances・bessel・metadata）を組み立てる。
+    pub fn search(&self, range: UtcRange) -> Result<Vec<SolarEclipse>, EclipseError> {
+        let root_config = RootConfig {
+            x_tolerance_days: self.config.root_tolerance_seconds / SECONDS_PER_DAY,
+            max_iterations: SEARCH_ROOT_MAX_ITER,
+        };
+        let re_km = EARTH_EQUATORIAL_RADIUS_M / 1000.0;
+        let r_sun_km = self.config.solar_radius_model.radius_km();
+        let r_moon_km = self.config.lunar_radius_model.k() * re_km;
+        // earth_model は現状 WGS84 のみ（projection/global と同様に定数で扱う）。
+        let _ = self.config.earth_model;
+        let ellipsoid = Ellipsoid::WGS84;
+        let generated_at = utc_now();
+
+        let mut eclipses = Vec::new();
+        for candidate in new_moon_candidates(range)? {
+            // 合 → 早期棄却（偽陰性不可・偽陽性可）。棄却された朔は日食でない。
+            let conjunction =
+                solve_conjunction(&candidate, ConjunctionKind::EclipticLongitude, root_config)?;
+            if !assess_eclipse_possibility(&conjunction).possible {
+                continue;
+            }
+
+            // 候補窓の供給源（暦ジェネリック直接評価, ISSUE-037）。全球 solver を直接源で駆動する。
+            let source = InstantaneousEvaluator::new(
+                &self.ephemeris,
+                &self.delta_t,
+                r_sun_km,
+                r_moon_km,
+                AstrometryOptions::standard(),
+                candidate.search_window,
+            );
+
+            // 種別。`None` は全球で日食なし（早期棄却の偽陽性）→ 採用しない。
+            let Some(kind) = classify_global_kind(&source, root_config)? else {
+                continue;
+            };
+            let solution = solve_greatest_eclipse(&source, &self.delta_t, &self.config)?;
+            let contacts = solve_global_contact_set(&source, &ellipsoid, root_config)?;
+
+            // ベッセル多項式（結果の携帯表現）。fit 区間は全球部分食 [P1,P4]（無ければ候補窓）、
+            // エポックは最大食 TT。次数は開始 3 から自動昇次（≤6）で残差ゲートを満たす。
+            let fit_interval = match (contacts.p1, contacts.p4) {
+                (Some(p1), Some(p4)) => TimeInterval {
+                    start: p1.time_tt,
+                    end: p4.time_tt,
+                },
+                _ => candidate.search_window,
+            };
+            let tolerance = BesselFitError {
+                max_x: BESSEL_FIT_TOLERANCE,
+                max_y: BESSEL_FIT_TOLERANCE,
+                max_l1: BESSEL_FIT_TOLERANCE,
+                max_l2: BESSEL_FIT_TOLERANCE,
+            };
+            let bessel = BesselianPolynomial::fit(
+                &source,
+                solution.greatest.time_tt,
+                fit_interval,
+                BESSEL_FIT_START_DEGREE,
+                tolerance,
+            )?;
+
+            let global = GlobalCircumstances {
+                kind,
+                partial_begin: contacts.p1,
+                central_begin: contacts.u1,
+                greatest: solution.greatest,
+                central_end: contacts.u4,
+                partial_end: contacts.p4,
+                gamma: solution.gamma,
+            };
+            let event_key = format_event_key(solution.greatest.time_utc, candidate.lunation_number);
+            let metadata = self.build_metadata(solution.greatest.time_tt, generated_at);
+            eclipses.push(SolarEclipse {
+                event_key,
+                kind,
+                global,
+                bessel,
+                metadata,
+            });
+        }
+        Ok(eclipses)
+    }
+
+    /// 計算メタデータ（レシピ＋生成時刻印）を組み立てる（accuracy.md §0）。暦名は `ephemeris.metadata()`、
+    /// ΔT 名は `delta_t.model_name()`、ΔT 不確かさは最大食 TT の十進年で評価、月半径名は Debug
+    /// （バリアント名）、地球モデルは WGS84 固定（現状単一）、ライブラリ版は crate version。
+    fn build_metadata(&self, time_tt: TtInstant, generated_at: UtcInstant) -> CalculationMetadata {
+        let em = self.ephemeris.metadata();
+        let year = decimal_year(time_tt.jd2());
+        CalculationMetadata {
+            library_version: env!("CARGO_PKG_VERSION").to_string(),
+            ephemeris_model: em.model,
+            ephemeris_version: em.version,
+            delta_t_model: self.delta_t.model_name().to_string(),
+            delta_t_uncertainty_seconds: self.delta_t.uncertainty_seconds(year),
+            earth_model: "WGS84".to_string(),
+            lunar_radius_model: self.config.lunar_radius_model.name().to_string(),
+            accuracy_profile: self.config.accuracy,
+            generated_at,
+        }
+    }
+
     /// v0.1 未実装（経路は umbra-geo・M9）。panic でなく `Err(NotImplemented)`（PATH/045）。
     pub fn path(
         &self,
@@ -106,6 +236,26 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
     ) -> Result<EclipsePath, EclipseError> {
         Err(EclipseError::NotImplemented)
     }
+}
+
+/// 現在の壁時計 UTC を `UtcInstant` で返す（`generated_at` 用）。std 時計 → UNIX 秒 → UTC-JD。
+/// fingerprint からは除外される時刻印なので再現性に影響しない（確定: std 時計で生成時に刻む）。
+/// 時計取得失敗時は UNIX エポックにフォールバック（生成時刻印のみゆえ無害）。
+fn utc_now() -> UtcInstant {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    UtcInstant::from_jd2(JulianDate2::from_jd(UNIX_EPOCH_JD + secs / SECONDS_PER_DAY))
+}
+
+/// `event_key` = `"YYYY-MM-DD#K"`（最大食の UTC 暦日 ＋ `#` ＋ lunation 番号, ISSUE-043）。
+/// lunation は **符号付き 10 進**（Meeus lunation index, `k=0`↔2000-01-06 朔。1900–2100 では
+/// 約 −1240…+1240）。負（2000 年朔より前）も素直に `-K` で表す（固定幅ゼロ詰めは符号で崩れるため
+/// 使わない。日付は固定幅 YYYY-MM-DD）。
+fn format_event_key(greatest_utc: UtcInstant, lunation_number: i64) -> String {
+    let (year, month, day, _, _, _) = greatest_utc.to_gregorian();
+    format!("{year:04}-{month:02}-{day:02}#{lunation_number}")
 }
 
 /// 標準エンジン型エイリアス（確定A1, dyn 不使用）。
@@ -152,7 +302,7 @@ mod tests {
     };
     use umbra_ephemeris::AnalyticalEphemeris;
 
-    use crate::config::{EngineConfig, LunarRadiusModel, SolarRadiusModel};
+    use crate::config::{AccuracyProfile, EngineConfig, LunarRadiusModel, SolarRadiusModel};
     use crate::error::EclipseError;
     use crate::global::SolarEclipseKind;
     use crate::magnitude::{EclipseMagnitude, Obscuration};
@@ -579,6 +729,327 @@ mod tests {
             EARTH_EQUATORIAL_RADIUS_M / 1000.0,
             6378.137,
             "地球赤道半径 [km]（月半径 = k·Re の足場）"
+        );
+    }
+
+    // ==================================================================
+    // 7. search(): UTC 範囲の日食探索（ISSUE-043 S6c）
+    //
+    // ## オラクル戦略（full pipeline・実装方針に立ち入らない）
+    // - **kind / gamma = NASA 公表値（ballpark）**: 2017-08-21 は皆既（Total）・gamma≈0.4367。
+    //   kind は厳密一致（独立事実）、gamma は `[0.40, 0.47]` の ballpark で締める（要素レベルの
+    //   既存ゲートより緩い帯。search は最大食を別途解くため要素 gamma と微差しうる）。
+    // - **ephemeris_model = 暦自身の metadata().model**（独立オラクル）: ハードコード値ではなく
+    //   `AnalyticalEphemeris::new().metadata().model` と一致することで、暦メタの転記を縛る。
+    // - **event_key = "YYYY-MM-DD#KKKK" 形式**（独立・形式オラクル）: `#` で 2 分割し、左が
+    //   最大食 UTC 日付プレフィクス（`2017-08-21`）、右が非空の数字列（lunation）であることを縛る。
+    // - **bessel が最大食を bracket**: `fit_interval.start <= greatest.time_tt <= fit_interval.end`
+    //   を JD（`jd2().jd()`）の不等式で縛る（多項式が最大食を含む区間で fit される確定仕様）。
+    // - **空結果**: 新月のない短窓 ⇒ 候補ゼロ ⇒ `Vec::new()`（独立・構造オラクル）。
+    //
+    // ## red 設計（本体未実装）
+    // `search` は現状 `Err(EclipseError::NotImplemented)` を返すため、`Ok` を要求する本群は
+    // `expect`／`assert!` で失敗する（想定どおりの理由で red）。
+    // ==================================================================
+
+    /// 緯度・経度が有限かつ範囲内の妥当な `GeoPoint` であることを縛るヘルパ。
+    fn assert_valid_geo_point(p: umbra_geo::GeoPoint) {
+        let lat = p.lat.degrees().0;
+        let lon = p.lon.degrees().0;
+        assert!(lat.is_finite(), "緯度が有限: {lat}");
+        assert!(lon.is_finite(), "経度が有限: {lon}");
+        assert!((-90.0..=90.0).contains(&lat), "緯度が範囲内: {lat}");
+        assert!((-180.0..=180.0).contains(&lon), "経度が範囲内: {lon}");
+    }
+
+    /// event_key が `"YYYY-MM-DD#KKKK"` 形式（指定日付プレフィクス ＋ `#` ＋ 非空数字列）か検証する。
+    /// 形式オラクル: `#` で 2 分割し、左が `date_prefix`、右がすべて ASCII 数字で非空であること。
+    fn assert_event_key_format(event_key: &str, date_prefix: &str) {
+        let (date, lunation) = event_key
+            .split_once('#')
+            .unwrap_or_else(|| panic!("event_key は '#' を含む: {event_key:?}"));
+        assert_eq!(
+            date, date_prefix,
+            "event_key の日付部は最大食 UTC 日付（{date_prefix}）: {event_key:?}"
+        );
+        assert!(
+            !lunation.is_empty() && lunation.chars().all(|c| c.is_ascii_digit()),
+            "event_key の lunation 部は非空の数字列: {event_key:?}"
+        );
+    }
+
+    /// **主要テスト**: 2017-08-21 皆既日食を含む 1 か月窓を探索すると、その日食が見つかる。
+    /// kind=Total・gamma≈0.4367（ballpark `[0.40,0.47]`）・全 4 接触 Some（中心皆既）・
+    /// event_key 形式・bessel が最大食を bracket・metadata レシピ（暦 metadata と一致・ΔT/地球/月
+    /// モデル・標準プロファイル・非空 library_version・正の ΔT 不確かさ）を縛る。
+    ///
+    /// 殺す変異: pipeline 段の取りこぼし（候補→合→可能性→ソルバ）、kind 誤判定、gamma 計算ミス、
+    /// 接触の取りこぼし（中心食で None）、event_key 組み立て誤り、bessel 区間ずれ、metadata 転記漏れ。
+    #[test]
+    fn search_finds_2017_08_21_total_eclipse() {
+        let engine = standard_engine_from_synthetic();
+        let range = UtcRange {
+            start: utc(2017, 8, 1, 0, 0, 0.0),
+            end: utc(2017, 9, 1, 0, 0, 0.0),
+        };
+        let results = engine.search(range).expect("2017 年 8 月の探索は成功する");
+
+        // 2017-08-21 を最大食日付に持つ日食を 1 つ取り出す（8 月の日食は 1 つ）。
+        let eclipse = results
+            .iter()
+            .find(|e| e.event_key.starts_with("2017-08-21"))
+            .expect("2017-08-21 の皆既日食が結果に含まれる");
+
+        // kind は皆既（NASA 事実・厳密一致）。
+        assert_eq!(
+            eclipse.kind,
+            SolarEclipseKind::Total,
+            "2017-08-21 は皆既日食（NASA 事実）"
+        );
+
+        // gamma は NASA≈0.4367 を ballpark `[0.40, 0.47]` で締める。
+        assert!(
+            (0.40..=0.47).contains(&eclipse.global.gamma),
+            "gamma = {} (NASA≈0.4367)",
+            eclipse.global.gamma
+        );
+
+        // 最大食: 食分 > 1（皆既）・位置は妥当な地表点。
+        assert!(
+            eclipse.global.greatest.magnitude.0 > 1.0,
+            "皆既なので食分 > 1: {}",
+            eclipse.global.greatest.magnitude.0
+        );
+        assert_valid_geo_point(eclipse.global.greatest.position);
+
+        // 中心皆既なので 4 接触（P1/U1/U4/P4）がすべて Some。
+        assert!(
+            eclipse.global.partial_begin.is_some(),
+            "P1(partial_begin)=Some（中心皆既）"
+        );
+        assert!(
+            eclipse.global.central_begin.is_some(),
+            "U1(central_begin)=Some（中心皆既）"
+        );
+        assert!(
+            eclipse.global.central_end.is_some(),
+            "U4(central_end)=Some（中心皆既）"
+        );
+        assert!(
+            eclipse.global.partial_end.is_some(),
+            "P4(partial_end)=Some（中心皆既）"
+        );
+
+        // 4 接触の時系列順 P1 < U1 < U4 < P4（GlobalCircumstances のフィールド swap を撃破）。
+        // 全 Some だけでは partial_begin↔central_begin や central_end↔partial_end の取り違えを
+        // 見逃すため、TT の単調増加を縛る。
+        let p1 = eclipse.global.partial_begin.unwrap().time_tt.jd2().jd();
+        let u1 = eclipse.global.central_begin.unwrap().time_tt.jd2().jd();
+        let u4 = eclipse.global.central_end.unwrap().time_tt.jd2().jd();
+        let p4 = eclipse.global.partial_end.unwrap().time_tt.jd2().jd();
+        assert!(
+            p1 < u1 && u1 < u4 && u4 < p4,
+            "接触の時系列順 P1<U1<U4<P4: P1={p1} U1={u1} U4={u4} P4={p4}"
+        );
+
+        // event_key 形式: "2017-08-21#<digits>"。
+        assert_event_key_format(&eclipse.event_key, "2017-08-21");
+
+        // bessel が最大食 TT を bracket（多項式 fit 区間が最大食を含む確定仕様）。
+        let start_jd = eclipse.bessel.fit_interval.start.jd2().jd();
+        let greatest_jd = eclipse.global.greatest.time_tt.jd2().jd();
+        let end_jd = eclipse.bessel.fit_interval.end.jd2().jd();
+        assert!(
+            start_jd <= greatest_jd && greatest_jd <= end_jd,
+            "bessel.fit_interval が最大食を bracket: start={start_jd} \
+             greatest={greatest_jd} end={end_jd}"
+        );
+
+        // fit_interval は全球部分食 [P1,P4]（候補窓ではない）。`(Some,Some)` match arm の削除＝
+        // 候補窓フォールバックを撃破する（候補窓も最大食を bracket するため上の bracket 検証だけでは
+        // 見逃す）。
+        assert_eq!(
+            eclipse.bessel.fit_interval.start,
+            eclipse.global.partial_begin.unwrap().time_tt,
+            "bessel.fit_interval.start は P1"
+        );
+        assert_eq!(
+            eclipse.bessel.fit_interval.end,
+            eclipse.global.partial_end.unwrap().time_tt,
+            "bessel.fit_interval.end は P4"
+        );
+
+        // 半径配線ピン（S5b と同方針）: search の `r_moon = k()*Re`（line 135 の `k()+Re` 取り違えを
+        // 撃破）。bessel を最大食 TT で評価した l1/l2 が、**未変異**の `instantaneous_elements`
+        // （同一 config・別経路の半径計算）と一致する。gamma は半径非依存ゆえ上の判定では捕捉
+        // できない月/太陽半径配線を l1/l2 の絶対値（fit 残差 1e-4 ≪ 1e-3 ≪ 半径取り違え誤差）で縛る。
+        let want = engine
+            .instantaneous_elements(eclipse.global.greatest.time_tt)
+            .expect("最大食 TT の瞬時要素（未変異の半径配線）");
+        let got = eclipse
+            .bessel
+            .at(eclipse.global.greatest.time_tt)
+            .expect("bessel 多項式の最大食評価");
+        assert!(
+            (got.l1 - want.l1).abs() < 1.0e-3,
+            "bessel l1={} は独立 instantaneous_elements l1={}（半径配線）に一致",
+            got.l1,
+            want.l1
+        );
+        assert!(
+            (got.l2 - want.l2).abs() < 1.0e-3,
+            "bessel l2={} は独立 instantaneous_elements l2={}（月半径 k×Re 配線）に一致",
+            got.l2,
+            want.l2
+        );
+
+        // metadata レシピ: 暦モデルは暦自身の metadata().model（独立オラクル）と一致。
+        let m = &eclipse.metadata;
+        assert_eq!(
+            m.ephemeris_model,
+            AnalyticalEphemeris::new().metadata().model,
+            "ephemeris_model は暦の metadata().model を転記"
+        );
+        assert_eq!(
+            m.ephemeris_version,
+            AnalyticalEphemeris::new().metadata().version,
+            "ephemeris_version は暦の metadata().version を転記"
+        );
+        assert_eq!(m.delta_t_model, "Espenak-Meeus", "ΔT モデル名");
+        assert_eq!(m.earth_model, "WGS84", "地球モデル名");
+        assert_eq!(
+            m.lunar_radius_model, "IauMean",
+            "月半径モデル名（Standard）"
+        );
+        assert_eq!(
+            m.accuracy_profile,
+            AccuracyProfile::Standard,
+            "精度プロファイルは Standard"
+        );
+        assert!(!m.library_version.is_empty(), "library_version は非空");
+        assert!(
+            m.delta_t_uncertainty_seconds > 0.0,
+            "ΔT 不確かさは正: {}",
+            m.delta_t_uncertainty_seconds
+        );
+    }
+
+    /// **空結果**: 新月を含まない短窓（中旬・約 3 日）を探索すると候補ゼロ ⇒ `Ok(vec![])`。
+    /// 2017-08-21 が新月（皆既）なので、そこから十分離れた 8 月初旬の 3 日窓には新月がない。
+    /// （新月を含むが日食でない窓ではなく、確実に候補ゼロな短窓を選ぶ＝偽陽性に強い構造オラクル。）
+    ///
+    /// 殺す変異: 候補ゼロでも非空を返す・常に Some を返す・空判定の反転。
+    #[test]
+    fn search_empty_when_no_new_moon_in_window() {
+        let engine = standard_engine_from_synthetic();
+        // 2017-08-21 の新月から 2 週間ほど前の 3 日窓（新月なし＝候補ゼロ）。
+        let range = UtcRange {
+            start: utc(2017, 8, 5, 0, 0, 0.0),
+            end: utc(2017, 8, 8, 0, 0, 0.0),
+        };
+        let results = engine
+            .search(range)
+            .expect("新月のない短窓でも探索は成功する");
+        assert!(
+            results.is_empty(),
+            "新月を含まない短窓は日食ゼロ（空 Vec）: {} 件",
+            results.len()
+        );
+    }
+
+    // ==================================================================
+    // 8. 純ヘルパの独立ピン（FAST・search() パイプラインを呼ばない）
+    //
+    // format_event_key / utc_now / build_metadata は search() の構成部品だが、
+    // 直接呼べる純ヘルパ・私有メソッドなので、月単位の遅い探索を回さずに高速に縛る。
+    // ==================================================================
+
+    /// `format_event_key` の文字列整形を 3 ケースで exact 検証（FAST・パイプライン非依存）。
+    /// 日付は固定幅 `YYYY-MM-DD`、lunation は符号付き 10 進（ゼロ詰めなし）。
+    ///
+    /// 手計算オラクル:
+    /// - `utc(2017,8,21,...)`, k=211 → `"2017-08-21#211"`。
+    /// - `utc(1950,9,12,...)`, k=-589 → `"1950-09-12#-589"`（先頭 `-` を確認。`:04` 幅指定なら
+    ///   `-589` が `-589`→`0-589` 等に崩れる＝符号付き 10 進であることを縛る）。
+    /// - `utc(2000,1,6,...)`, k=0 → `"2000-01-06#0"`（小さい正値にゼロ詰めが入らない）。
+    ///
+    /// 殺す変異: 日付フィールド幅（`:02`/`:04`）の改変・lunation のゼロ詰め化・区切り `#` の変更。
+    #[test]
+    fn format_event_key_positive_and_negative_lunation() {
+        // 2017-08-21 最大食・lunation 211 → "2017-08-21#211"。
+        assert_eq!(
+            format_event_key(utc(2017, 8, 21, 18, 25, 0.0), 211),
+            "2017-08-21#211"
+        );
+        // 負（2000 年朔より前）・lunation -589 → "1950-09-12#-589"（先頭 '-' を保持）。
+        let neg = format_event_key(utc(1950, 9, 12, 3, 0, 0.0), -589);
+        assert_eq!(neg, "1950-09-12#-589");
+        assert!(
+            neg.starts_with("1950-09-12#-"),
+            "負 lunation は符号付き 10 進（先頭 '-'）: {neg:?}"
+        );
+        // k=0（小さい正値）→ ゼロ詰めなしの "2000-01-06#0"。
+        assert_eq!(
+            format_event_key(utc(2000, 1, 6, 0, 0, 0.0), 0),
+            "2000-01-06#0"
+        );
+    }
+
+    /// `build_metadata` がレシピ各フィールドを正しく充填する（FAST・search() を呼ばない）。
+    /// 暦モデル/版は暦自身の `metadata()`（独立オラクル）、ΔT モデル名・地球/月モデル・
+    /// 精度プロファイル・非空 library_version・正の ΔT 不確かさ・生成時刻印の逐語保持を縛る。
+    ///
+    /// 殺す変異: フィールド転記漏れ・取り違え・generated_at の上書き・モデル名のハードコード誤り。
+    #[test]
+    fn build_metadata_populates_recipe_fields() {
+        let engine = standard_engine_from_synthetic();
+        let stamp = utc(2026, 6, 18, 0, 0, 0.0);
+        let md = engine.build_metadata(tt_2017_max(), stamp);
+
+        // 暦モデル/版は暦自身の metadata()（独立オラクル）。
+        assert_eq!(
+            md.ephemeris_model,
+            AnalyticalEphemeris::new().metadata().model,
+            "ephemeris_model は暦の metadata().model"
+        );
+        assert_eq!(
+            md.ephemeris_version,
+            AnalyticalEphemeris::new().metadata().version,
+            "ephemeris_version は暦の metadata().version"
+        );
+        assert_eq!(md.delta_t_model, "Espenak-Meeus", "ΔT モデル名");
+        assert_eq!(md.earth_model, "WGS84", "地球モデル名");
+        assert_eq!(
+            md.lunar_radius_model, "IauMean",
+            "月半径モデル名（Standard config）"
+        );
+        assert_eq!(
+            md.accuracy_profile,
+            crate::config::AccuracyProfile::Standard,
+            "精度プロファイルは Standard"
+        );
+        assert!(!md.library_version.is_empty(), "library_version は非空");
+        assert!(
+            md.delta_t_uncertainty_seconds > 0.0,
+            "ΔT 不確かさは正: {}",
+            md.delta_t_uncertainty_seconds
+        );
+        // 渡した時刻印は逐語保持（壁時計で上書きしない）。
+        assert_eq!(md.generated_at, stamp, "generated_at は渡した値を逐語保持");
+    }
+
+    /// `utc_now` が最近の壁時計 UTC を返す（FAST・パイプライン非依存）。
+    /// 年が `[2024, 2100)` に収まることで UNIX_EPOCH_JD 定数・秒→JD 換算の足場を縛る
+    /// （誤ったエポック JD や単位は現在から大きく外れる）。緩い範囲で時計差を許容する。
+    ///
+    /// 殺す変異: UNIX_EPOCH_JD の値ずれ・`secs / SECONDS_PER_DAY` の単位取り違え。
+    #[test]
+    fn utc_now_returns_plausible_recent_instant() {
+        let now = utc_now();
+        let (y, ..) = now.to_gregorian();
+        assert!(
+            (2024..2100).contains(&y),
+            "utc_now の年が最近（2024..2100）: {y}"
         );
     }
 }

@@ -45,6 +45,15 @@ impl LunarRadiusModel {
             LunarRadiusModel::EspenakUmbral => 0.272_281,
         }
     }
+
+    /// モデル名（`CalculationMetadata.lunar_radius_model` のレシピ識別子）。
+    pub fn name(&self) -> &'static str {
+        match self {
+            LunarRadiusModel::IauMean => "IauMean",
+            LunarRadiusModel::EspenakUmbral => "EspenakUmbral",
+            LunarRadiusModel::EspenakPenumbral => "EspenakPenumbral",
+        }
+    }
 }
 
 /// 太陽半径モデル。
@@ -169,6 +178,20 @@ mod tests {
         assert!(
             LunarRadiusModel::EspenakUmbral.k() < LunarRadiusModel::IauMean.k(),
             "EspenakUmbral の k は IauMean より小さい"
+        );
+    }
+
+    /// `LunarRadiusModel::name()` の 3 値 exact（レシピ識別子）:
+    /// IauMean="IauMean", EspenakUmbral="EspenakUmbral", EspenakPenumbral="EspenakPenumbral"。
+    /// 各バリアントの name を個別に exact 比較し、name アームの取り違え（文字列入れ替え・
+    /// 定数置換）変異を撃破する。
+    #[test]
+    fn lunar_radius_model_name_values_are_exact() {
+        assert_eq!(LunarRadiusModel::IauMean.name(), "IauMean");
+        assert_eq!(LunarRadiusModel::EspenakUmbral.name(), "EspenakUmbral");
+        assert_eq!(
+            LunarRadiusModel::EspenakPenumbral.name(),
+            "EspenakPenumbral"
         );
     }
 

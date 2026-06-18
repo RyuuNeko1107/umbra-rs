@@ -20,6 +20,8 @@ pub trait DeltaTModel {
     fn delta_t_seconds(&self, decimal_year: f64) -> f64;
     /// ΔT の不確実性（秒, 1σ 目安。accuracy.md §0 の不確実性帯）。
     fn uncertainty_seconds(&self, decimal_year: f64) -> f64;
+    /// モデル名（`CalculationMetadata.delta_t_model` のレシピ識別子, accuracy.md §0）。
+    fn model_name(&self) -> &'static str;
 }
 
 /// Espenak & Meeus の ΔT 区分多項式（NASA TP-2006-214141）。
@@ -77,6 +79,10 @@ impl DeltaTModel for EspenakMeeusDeltaT {
         } else {
             1.0 + 0.5 * (y - 2006.0) // 2006 以降の外挿は年々増大
         }
+    }
+
+    fn model_name(&self) -> &'static str {
+        "Espenak-Meeus"
     }
 }
 
