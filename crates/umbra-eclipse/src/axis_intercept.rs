@@ -71,20 +71,38 @@ pub(crate) fn shadow_axis_surface_point(
         .ok_or(EclipseError::Solver(SolverError::RootNotBracketed))?;
     let zeta = brent_root(residual, a, b, ZETA_ROOT_TOL, ZETA_ROOT_MAX_ITER)?;
 
-    // 零点 ζ から地心成分・局地時角を復元。
-    let px = zeta * cos_d - y * sin_d;
-    let pz = zeta * sin_d + y * cos_d;
-    let rho_cos = (px * px + x * x).sqrt();
+    // 零点 ζ・基本面交点 (x,y) から測地座標を復元（ξ=x, η=y）。
+    fundamental_to_geodetic(x, y, zeta, elements.declination, elements.mu, ellipsoid)
+}
+
+/// 基本面座標 (ξ, η, ζ) と影軸の赤緯 d・時角 μ から測地座標（φ, λ_east）を復元する。
+///
+/// 前方射影 [`project_observer_to_fundamental`](crate::projection) の回転 `R_x(d)·R_z` の**転置**で
+/// 観測者地心成分を組み（px=ζcosd−η sind, py=ξ, pz=ζsind+η cosd）、ρcos=√(px²+py²)・ρsin=pz・
+/// 局地時角 H=atan2(py,px) を得て、東経 λ=H−μ（[-π,π) 正規化）・測地緯度
+/// φ=atan2(ρsin, ρcos·(1−f)²)（`observer_geocentric(h=0)` の逆）を返す。ζ を与える側が決める
+/// （影軸の地表貫通点 S6a-i は ζ 根、全球接触の地球縁点 S6b-ii は ζ=0）。
+///
+/// ρcos ≥ 0・(1−f)²>0 なので φ の atan2 は [-π/2, π/2] を返し `GeodeticLatitude` 検証は常に通る。
+pub(crate) fn fundamental_to_geodetic(
+    xi: f64,
+    eta: f64,
+    zeta: f64,
+    declination: Radians,
+    mu: Radians,
+    ellipsoid: &Ellipsoid,
+) -> Result<GeoPoint, EclipseError> {
+    let (sin_d, cos_d) = declination.0.sin_cos();
+    let omf = 1.0 - ellipsoid.f; // b/a
+    let px = zeta * cos_d - eta * sin_d;
+    let py = xi;
+    let pz = zeta * sin_d + eta * cos_d;
+    let rho_cos = (px * px + py * py).sqrt();
     let rho_sin = pz;
-    // 局地時角 H = atan2(py, px) = atan2(x, px)（前方の H=μ+λ_east と整合）。
-    let h = x.atan2(px);
-    // 東経 λ_east = H − μ（[-π,π) へ正規化）。
-    let longitude = EastLongitude::from_radians(Radians::new(h - elements.mu.0));
-    // 測地緯度: tan φ = ρsin / (ρcos·(1−f)²)（observer_geocentric(h=0) の逆）。
-    // ρcos ≥ 0・(1−f)²>0 なので atan2 は [-π/2, π/2] を返し常に有効。
+    let h = py.atan2(px);
+    let longitude = EastLongitude::from_radians(Radians::new(h - mu.0));
     let phi = rho_sin.atan2(rho_cos * omf * omf);
     let latitude = GeodeticLatitude::from_radians(Radians::new(phi))?;
-
     Ok(GeoPoint::new(latitude, longitude))
 }
 

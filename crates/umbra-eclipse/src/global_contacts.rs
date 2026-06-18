@@ -22,12 +22,17 @@
     clippy::cast_sign_loss
 )]
 
+use umbra_core::ellipsoid::Ellipsoid;
 use umbra_core::time::tt_to_utc;
 use umbra_core::{brent_root, JulianDate2, TtInstant};
+use umbra_geo::GeoPoint;
 
+use crate::axis_intercept::fundamental_to_geodetic;
+use crate::besselian::InstantaneousBesselianElements;
 use crate::conjunction::RootConfig;
 use crate::error::EclipseError;
 use crate::local_contacts::ContactInstant;
+use crate::results::GlobalContact;
 use crate::source::BesselianSource;
 
 /// 地球縁の基本面射影半径 ρ_g（Re）。球近似 1.0（扁平込み有効半径は要確認, algorithms 08 §B/§C）。
@@ -92,6 +97,85 @@ pub(crate) fn solve_global_contacts<B: BesselianSource>(
         u4: contact_at(u4_jd)?,
         p4: contact_at(p4_jd)?,
     })
+}
+
+/// 全球接触の集合（地表点付き, P1/U1/U4/P4）。U1/U4 は中心食でなければ `None`。
+/// `solve_global_contacts`（時刻）＋各接触時の地球縁点（[`global_contact_ground_point`]）の合成。
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(crate) struct GlobalContactSet {
+    /// P1: 部分食開始（半影縁が地球縁に最初に外接）。
+    pub p1: Option<GlobalContact>,
+    /// U1: 中心食開始（中心食のみ）。
+    pub u1: Option<GlobalContact>,
+    /// U4: 中心食終了（中心食のみ）。
+    pub u4: Option<GlobalContact>,
+    /// P4: 部分食終了。
+    pub p4: Option<GlobalContact>,
+}
+
+/// 全球接触時の地球縁接触点（影錐の縁が地球縁に外接する地表点）を測地座標で返す。
+///
+/// 接触時、影軸は地心から ρ_axis=√(x²+y²)=ρ_g+l（>ρ_g）にあり地表を貫かない。影縁が触れる地表点は
+/// **地球縁（ζ=0 のターミネータ円・半径 ρ_g）上で軸に最も近い点**＝軸方位の縁点
+/// `(ρ_g·x/ρ_axis, ρ_g·y/ρ_axis, 0)`。これを [`fundamental_to_geodetic`] で測地座標へ復元する
+/// （ρ_g=1 球近似・扁平込みは要確認, S6b-i と同方針）。
+pub(crate) fn global_contact_ground_point(
+    elements: &InstantaneousBesselianElements,
+    ellipsoid: &Ellipsoid,
+) -> Result<GeoPoint, EclipseError> {
+    // 縁点は ζ=0 円（半径 ρ_g）上の軸方位の点 (ρ_g·x/ρ_axis, ρ_g·y/ρ_axis, 0)。だが
+    // `fundamental_to_geodetic` は **方向のみ** を使い（H・φ の atan2 で正の共通因子 ρ_g/ρ_axis は
+    // 相殺）、測地緯度経度はスケールに**不変**。よって (x, y, 0) を直接渡す（ρ_g 倍と同一結果）。
+    // スケール乗算は出力に効かないデッドコードで等価変異を生むため置かない（numerical-policy・
+    // local_maximum の /(2h) 除去と同方針）。軸が地心（x=y=0）は縁方向が未定義（接触では起きないが
+    // 安全に弾く）。
+    if elements.x == 0.0 && elements.y == 0.0 {
+        return Err(EclipseError::DegenerateGeometry);
+    }
+    fundamental_to_geodetic(
+        elements.x,
+        elements.y,
+        0.0,
+        elements.declination,
+        elements.mu,
+        ellipsoid,
+    )
+}
+
+/// 全球接触 P1/U1/U4/P4 を**地表点付き**で求解する（[`solve_global_contacts`] の時刻に
+/// [`global_contact_ground_point`] の縁点を付与）。U1/U4 は中心食でなければ `None`。
+pub(crate) fn solve_global_contact_set<B: BesselianSource>(
+    source: &B,
+    ellipsoid: &Ellipsoid,
+    config: RootConfig,
+) -> Result<GlobalContactSet, EclipseError> {
+    let times = solve_global_contacts(source, config)?;
+    Ok(GlobalContactSet {
+        p1: contact_point(source, ellipsoid, times.p1)?,
+        u1: contact_point(source, ellipsoid, times.u1)?,
+        u4: contact_point(source, ellipsoid, times.u4)?,
+        p4: contact_point(source, ellipsoid, times.p4)?,
+    })
+}
+
+/// 接触時刻（あれば）に地表縁点（[`global_contact_ground_point`]）を付けて `GlobalContact` を作る。
+fn contact_point<B: BesselianSource>(
+    source: &B,
+    ellipsoid: &Ellipsoid,
+    contact: Option<ContactInstant>,
+) -> Result<Option<GlobalContact>, EclipseError> {
+    match contact {
+        Some(c) => {
+            let e = source.at(c.time_tt)?;
+            let position = global_contact_ground_point(&e, ellipsoid)?;
+            Ok(Some(GlobalContact {
+                time_utc: c.time_utc,
+                time_tt: c.time_tt,
+                position,
+            }))
+        }
+        None => Ok(None),
+    }
 }
 
 /// 粗走査で見つけた符号変化の根（TT-JD）と、その点で関数が「−→+（昇）」か「+→−（降）」か。
@@ -221,10 +305,16 @@ mod tests {
     use super::*;
 
     use umbra_core::constants::{EARTH_EQUATORIAL_RADIUS_M, SOLAR_RADIUS_KM};
+    use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid};
     use umbra_core::{EspenakMeeusDeltaT, JulianDate2, Radians, TimeInterval, TtInstant};
 
     use crate::besselian::InstantaneousBesselianElements;
+    use crate::horizontal::{sun_horizontal, RefractionModel};
+    use crate::projection::project_observer_to_fundamental;
     use crate::source::{BesselianSource, DirectBesselianSource};
+
+    /// WGS84（地表点復元・前方射影の基準楕円）。
+    const WGS84: Ellipsoid = Ellipsoid::WGS84;
 
     /// 1 日 = 86400 SI 秒。秒↔日換算に使う。
     const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -708,5 +798,273 @@ mod tests {
                 (a[k] - b[k]).abs() * SECONDS_PER_DAY
             );
         }
+    }
+
+    // ============================================================
+    // S6b-ii: 全球接触の地表点（global_contact_ground_point /
+    //         solve_global_contact_set）
+    //
+    // ## オラクル戦略（追認回避）
+    // `global_contact_ground_point` は検証済み逆射影 [`fundamental_to_geodetic`] を
+    // 「軸方位の地球縁点 (ρ_g·x/ρ_axis, ρ_g·y/ρ_axis, 0), ρ_g=1」に適用する**球近似**
+    // （扁平込みの厳密縁は deferred＝S6a-i の ρ_g と同方針）。よって往復は bit-exact では
+    // ない。オラクルは 3 系統:
+    //   (1) 自明幾何（EXACT, tight）: x=1.5,y=0,d=0,μ の縁点は赤道（φ=0・λ=normalize(π/2−μ)）。
+    //       赤道海面 ρ=1 は WGS84 面**上**ゆえ球近似と厳密が一致し EXACT。手導出はテスト doc。
+    //   (2) 太陽地平（PHYSICAL, 独立, loose）: 実 2017 の各接触点・時刻で太陽の幾何高度
+    //       ≈0（地平線で食が始まる/終わる）。検証済み `sun_horizontal`（実太陽位置）を使うので
+    //       逆射影とは独立。許容 ~2°（球近似＋軸赤緯≠太陽赤緯＋太陽視半径を吸収）。
+    //   (3) ターミネータ（loose geometric）: 復元点を前方射影し直すと |ζ|<0.02（縁=ζ≈0・
+    //       扁平分の緩さ）かつ横方向の符号が x,y に一致（tight な往復ではない）。
+    //   (4) 集合整合: solve_global_contact_set の time_tt は solve_global_contacts と一致、
+    //       P1<U1<U4<P4、位置は妥当な GeoPoint。非中心合成源では U1/U4=None。
+    // ============================================================
+
+    /// 縁点計算用の瞬時ベッセル要素を最小構成する（縁点に効くのは x,y,d,μ）。
+    /// l1/l2/tan_f/time_tt は地球縁点計算に無関係なのでダミー（有限値）。
+    fn limb_elems(x: f64, y: f64, d: f64, mu: f64) -> InstantaneousBesselianElements {
+        InstantaneousBesselianElements {
+            x,
+            y,
+            declination: Radians(d),
+            mu: Radians(mu),
+            l1: 0.54,
+            l2: -0.01,
+            tan_f1: 0.0047,
+            tan_f2: 0.0046,
+            time_tt: tt_jd(2_457_986.768),
+        }
+    }
+
+    /// オラクル(1)（自明幾何・EXACT・tight）: x=1.5, y=0, d=0, μ。
+    ///
+    /// 手導出（spec の縁点公式 + 検証済み `fundamental_to_geodetic` から）:
+    ///   ρ_axis = √(x²+y²) = √(1.5²) = 1.5（> ρ_g=1 ⇒ 軸は地表を貫かない接触配置）。
+    ///   縁点（基本面）: ξ = ρ_g·x/ρ_axis = 1.0·1.5/1.5 = 1.0, η = ρ_g·y/ρ_axis = 0, ζ = 0。
+    ///   `fundamental_to_geodetic(ξ=1, η=0, ζ=0, d=0, μ)` に d=0 を代入:
+    ///     px = ζ·cosd − η·sind = 0,  py = ξ = 1,  pz = ζ·sind + η·cosd = 0。
+    ///     H = atan2(py, px) = atan2(1, 0) = π/2 ⇒ λ_east = normalize(H − μ) = normalize(π/2 − μ)。
+    ///     ρsin = pz = 0 ⇒ φ = atan2(0, ρcos·(1−f)²) = 0（赤道）。
+    ///   赤道海面では ρ=1 が WGS84 面**上**にあり球近似と扁平厳密が一致 ⇒ この点は EXACT。
+    ///   ∴ 期待 φ≈0（1e-9）, λ≈normalize(π/2 − μ)（1e-9）。
+    #[test]
+    fn ground_point_equator_is_exact() {
+        let mu = 0.7_f64;
+        let e = limb_elems(1.5, 0.0, 0.0, mu);
+        let p = global_contact_ground_point(&e, &WGS84)
+            .expect("contact config (ρ_axis=1.5>ρ_g) ⇒ limb point exists");
+        let phi = p.lat.radians().0;
+        let lam = p.lon.radians().0;
+        assert!(phi.abs() < 1e-9, "φ={phi} expected 0 (equator, exact)");
+        let expected_lam = Radians::new(core::f64::consts::FRAC_PI_2 - mu)
+            .normalized_signed()
+            .0;
+        assert!(
+            (lam - expected_lam).abs() < 1e-9,
+            "λ={lam} expected normalize(π/2−μ)={expected_lam} (exact)"
+        );
+    }
+
+    /// オラクル(3)（ターミネータ・loose geometric）: 合成接触配置（軸が地球を外す ρ_axis>1）の
+    /// 縁点を**前方射影し直す**と、(a) |ζ|<0.02（地球縁=ζ≈0・球近似/扁平分の緩さ）、
+    /// (b) 横方向の符号が一致（ξ' と x が同符号・η' と y が同符号＝軸方位の縁点）。
+    /// tight な往復一致ではない（扁平分ずれる）。逆射影内部は再実装しない（追認回避）。
+    #[test]
+    fn ground_point_lies_on_terminator_on_axis_side() {
+        // ρ_axis = √(1.2²+0.9²) = 1.5 > 1（接触配置）。x>0,y>0。
+        let e = limb_elems(1.2, 0.9, 0.18, 2.3);
+        let p =
+            global_contact_ground_point(&e, &WGS84).expect("contact config ⇒ limb point exists");
+        let phi = p.lat.radians().0;
+        let lam = p.lon.radians().0;
+        let obs = observer_geocentric(&WGS84, phi, 0.0);
+        let r = project_observer_to_fundamental(&obs, Radians::new(lam), &e);
+        // (a) 地球縁（ζ≈0・ターミネータ）。球近似/扁平で bit-exact ではないので緩く。
+        assert!(
+            r.zeta.abs() < 0.02,
+            "ζ={} must be ≈0 (point on terminator/limb)",
+            r.zeta
+        );
+        // (b) 横方向は軸方位（ξ' と x 同符号・η' と y 同符号）。
+        assert!(
+            r.xi.signum() == e.x.signum(),
+            "ξ'={} should share sign with x={}",
+            r.xi,
+            e.x
+        );
+        assert!(
+            r.eta.signum() == e.y.signum(),
+            "η'={} should share sign with y={}",
+            r.eta,
+            e.y
+        );
+    }
+
+    /// オラクル(0a)（縮退幾何ガード・EXACT）: x=y=0 ⇒ ρ_axis=√(0+0)=0（影軸が地心を通る）。
+    /// 実接触では ρ_axis=ρ_g+l>0 ゆえ起きない非物理配置だが、`global_contact_ground_point` の
+    /// ガード `if rho_axis == 0.0 { Err(DegenerateGeometry) }` は保たれねばならない（ゼロ割回避）。
+    #[test]
+    fn ground_point_degenerate_when_axis_at_geocenter() {
+        // x=y=0 ⇒ ρ_axis=0（軸が地心を通る・非物理だがガードは保つ）。d,μ は任意の有限値。
+        let e = limb_elems(0.0, 0.0, 0.0, 1.0);
+        let r = global_contact_ground_point(&e, &WGS84);
+        assert!(
+            matches!(r, Err(EclipseError::DegenerateGeometry)),
+            "ρ_axis=0 (axis through geocenter) must yield Err(DegenerateGeometry), got {r:?}"
+        );
+    }
+
+    /// オラクル(3b)（南半球縁点・loose geometric）: y<0 の接触配置（ρ_axis>1）の縁点が**南半球**に
+    /// 落ちる。`ground_point_lies_on_terminator_on_axis_side` の y>0 版を符号反転した独立確認で、
+    /// `eta = elements.y·scale` の符号変異（→ −elements.y·scale）を殺す。
+    ///
+    /// なぜ y<0 ⇒ 南緯か（手導出）: scale>0 ゆえ η = y·scale < 0。`fundamental_to_geodetic` で
+    /// ζ=0 のとき pz = ζ·sind + η·cosd = η·cosd。小さい d では cosd>0 が支配的なので pz<0、
+    /// φ = atan2(pz, ρcos·(1−f)²) < 0（南緯）。
+    #[test]
+    fn ground_point_southern_hemisphere_for_negative_y() {
+        // ρ_axis = √(0.6²+(−1.4)²) = √2.32 ≈ 1.523 > 1（接触配置）。y<0。
+        let e = limb_elems(0.6, -1.4, 0.1, 1.0);
+        let p =
+            global_contact_ground_point(&e, &WGS84).expect("contact config ⇒ limb point exists");
+        // 復元緯度は南半球（φ<0）。eta 符号変異ならここで北緯に化けて落ちる。
+        assert!(
+            p.lat.degrees().0 < 0.0,
+            "y<0 must give southern latitude, got {}°",
+            p.lat.degrees().0
+        );
+        // 前方射影し直して独立に裏取り（観測者射影は逆射影とは別経路・追認回避）。
+        let phi = p.lat.radians().0;
+        let lam = p.lon.radians().0;
+        let obs = observer_geocentric(&WGS84, phi, 0.0);
+        let r = project_observer_to_fundamental(&obs, Radians::new(lam), &e);
+        // (a) 地球縁（ζ≈0・ターミネータ）。球近似/扁平で bit-exact ではないので緩く。
+        assert!(
+            r.zeta.abs() < 0.02,
+            "ζ={} must be ≈0 (point on terminator/limb)",
+            r.zeta
+        );
+        // (b) 横方向 η' は y と同符号（負）。これが eta 符号変異を殺す本体。
+        assert!(
+            r.eta.signum() == e.y.signum(),
+            "η'={} should share sign with y={} (negative)",
+            r.eta,
+            e.y
+        );
+    }
+
+    /// オラクル(4a)（集合整合・実 2017）: `solve_global_contact_set` は P1/U1/U4/P4 全 Some、
+    /// 各 time_tt が `solve_global_contacts`（同じ時刻ソルバ）と一致、P1<U1<U4<P4、
+    /// 位置は妥当な GeoPoint（lat∈[−60,60], lon∈[−180,180)）。
+    #[test]
+    fn contact_set_2017_matches_times_and_is_ordered() {
+        let dt = EspenakMeeusDeltaT;
+        let src = make_source_2017(&dt);
+        let times = solve_global_contacts(&src, config_tight())
+            .expect("2017 central eclipse should yield global contact times");
+        let set = solve_global_contact_set(&src, &WGS84, config_tight())
+            .expect("2017 central eclipse should yield a global contact set");
+
+        let p1 = set.p1.expect("P1 must be Some");
+        let u1 = set.u1.expect("U1 must be Some (central)");
+        let u4 = set.u4.expect("U4 must be Some (central)");
+        let p4 = set.p4.expect("P4 must be Some");
+
+        // time_tt は時刻ソルバと一致（同じ solve_global_contacts を消費する）。
+        assert_eq!(
+            p1.time_tt,
+            times.p1.expect("times P1").time_tt,
+            "P1 time_tt must equal solve_global_contacts"
+        );
+        assert_eq!(
+            u1.time_tt,
+            times.u1.expect("times U1").time_tt,
+            "U1 time_tt must equal solve_global_contacts"
+        );
+        assert_eq!(
+            u4.time_tt,
+            times.u4.expect("times U4").time_tt,
+            "U4 time_tt must equal solve_global_contacts"
+        );
+        assert_eq!(
+            p4.time_tt,
+            times.p4.expect("times P4").time_tt,
+            "P4 time_tt must equal solve_global_contacts"
+        );
+
+        // 順序 P1<U1<U4<P4。
+        let (p1j, u1j, u4j, p4j) = (
+            jd_of(p1.time_tt),
+            jd_of(u1.time_tt),
+            jd_of(u4.time_tt),
+            jd_of(p4.time_tt),
+        );
+        assert!(p1j < u1j && u1j < u4j && u4j < p4j, "expected P1<U1<U4<P4");
+
+        // 位置は妥当な GeoPoint。
+        for (label, c) in [("P1", p1), ("U1", u1), ("U4", u4), ("P4", p4)] {
+            let lat = c.position.lat.degrees().0;
+            let lon = c.position.lon.degrees().0;
+            assert!(
+                (-60.0..=60.0).contains(&lat),
+                "{label}: lat {lat}° out of plausible [−60,60]"
+            );
+            assert!(
+                (-180.0..180.0).contains(&lon),
+                "{label}: lon {lon}° out of [−180,180)"
+            );
+        }
+    }
+
+    /// オラクル(2)（太陽地平・PHYSICAL・独立・loose）: 実 2017 の全球接触は太陽が地平線にある所で
+    /// 始まる/終わる。集合の各接触点・時刻で検証済み `sun_horizontal`（実太陽位置・逆射影とは独立）の
+    /// 幾何高度が ≈0。許容 |alt|<2°（球近似 ρ_g＋軸赤緯≠太陽赤緯＋太陽視半径 ~0.27° を吸収する緩さ）。
+    #[test]
+    fn contact_set_2017_sun_on_horizon() {
+        let dt = EspenakMeeusDeltaT;
+        let src = make_source_2017(&dt);
+        let set = solve_global_contact_set(&src, &WGS84, config_tight())
+            .expect("2017 central eclipse should yield a global contact set");
+
+        for (label, c) in [
+            ("P1", set.p1),
+            ("U1", set.u1),
+            ("U4", set.u4),
+            ("P4", set.p4),
+        ] {
+            let c = c.unwrap_or_else(|| panic!("{label} must be Some for 2017"));
+            let h = sun_horizontal(
+                c.position.lat.radians(),
+                c.position.lon.radians(),
+                c.time_tt,
+                RefractionModel::None,
+                &dt,
+            );
+            let alt = h.altitude_geometric.0;
+            assert!(
+                alt.abs() < 2.0,
+                "{label}: Sun geometric altitude {alt}° must be ≈0 at a global contact"
+            );
+        }
+    }
+
+    /// オラクル(4b)（非中心 ⇒ U1/U4=None）: S6b-i の合成源（半影は届くが本影は届かない）で
+    /// `solve_global_contact_set` も U1/U4=None・P1/P4=Some（時刻集合と同じ分岐を踏む）。
+    #[test]
+    fn contact_set_non_central_has_no_umbral_points() {
+        let half_day = 0.15;
+        let src = synthetic_source(1.2, 50.0, 0.54, -0.01, half_day);
+        let set = solve_global_contact_set(&src, &WGS84, config_tight())
+            .expect("non-central penumbral eclipse must yield Ok (P1/P4 present)");
+        assert!(
+            set.u1.is_none() && set.u4.is_none(),
+            "non-central: U1/U4 must be None, got u1={:?} u4={:?}",
+            set.u1,
+            set.u4
+        );
+        assert!(
+            set.p1.is_some() && set.p4.is_some(),
+            "non-central: P1/P4 must be Some (penumbra touches limb)"
+        );
     }
 }
