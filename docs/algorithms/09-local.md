@@ -207,10 +207,13 @@ A は南基準（Meeus Ch.13 式 13.5）→ 北 0・東回りへ 180° オフセ
 a_app = a_geom + ΔR        （ΔR = 標準大気差量。補正前後の両方を返す, conventions §7）
 ```
 
-**(9.22)** 位置角（**天の北 0・東回り**, conventions §7）:
+**(9.22)** 位置角 PA（**天の北 0・東回り**, conventions §7。**ISSUE-043 S7a 確定**）:
 ```
-PA = （接触点の天の北からの角, 東回り）       出典: Explanatory Supplement §11 / Meeus Ch.54
+PA = atan2(σ·(x−ξ), σ·(y−η))      ［0,360) に正規化。基本面 ξ̂=天の東, η̂=天の北
+  σ = +1（外接 C1/C4・金環の内接 C2/C3）,  σ = −1（皆既の内接 C2/C3, l2<0 ＝接触点が月中心の反対側）
 ```
+- 定義の出典: **NASA/Espenak「P is the contact angle measured counter-clockwise from the north point of the Sun's disk」**（北点から反時計回り＝天の北 0・東回り, conventions §7 と一致）/ Explanatory Supplement §11 / Meeus Ch.54。
+- 見かけずれ (x−ξ, y−η) は観測者から見た月中心の太陽中心に対する (東, 北) 成分（月は観測者と太陽の間）。外接 C1/C4 では接触点＝月中心方向（σ=+1）、皆既の内接 C2/C3 では反対側（σ=−1）。物理整合: C1 は太陽西縁≈270°系・C4 は東縁≈90°系。実装は `crates/umbra-eclipse/src/position_angle.rs::contact_position_angle`。
 
 - 出典: **Explanatory Supplement §7（座標系）/ Meeus AA 2nd ed. Ch.13「Transformation of Coordinates」式 13.5/13.6**（赤道→地平）。Meeus は**方位を南基準**で定義 → **北 0・東回りへ変換**（conventions §7）。大気差は **Meeus Ch.16 式 16.3/16.4**。SOFA 参照（移植しない）: `iauHd2ae`（hour angle/dec → az/el）。**時角・恒星時は ERA(iauEra00)経由 CIO ベース・分点 GST（`iauGst06a`）禁止**（D4, ISSUE-039 供給, ISSUE-028）。
 - **既定は幾何学的高度**。大気差は `RefractionModel` で分離、補正前後を両方返す（conventions §7, accuracy §6 地平線付近は非保証）。

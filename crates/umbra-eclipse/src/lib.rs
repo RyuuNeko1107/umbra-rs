@@ -23,6 +23,7 @@ pub mod local_maximum;
 pub mod magnitude;
 pub mod path;
 pub mod polynomial;
+pub mod position_angle;
 pub mod projection;
 pub mod results;
 pub mod shadow;
