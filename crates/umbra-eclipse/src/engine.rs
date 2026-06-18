@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use umbra_core::constants::EARTH_EQUATORIAL_RADIUS_M;
 use umbra_core::deltat::{decimal_year, DeltaTModel};
-use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid};
+use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid, GeocentricObserver};
 use umbra_core::eop::EarthOrientation;
 use umbra_core::{
     EspenakMeeusDeltaT, IersEopData, JulianDate2, Observer, Radians, SolverError, TimeData,
@@ -36,6 +36,7 @@ use crate::error::EclipseError;
 use crate::global::{classify_global_kind, solve_greatest_eclipse};
 use crate::global_contacts::solve_global_contact_set;
 use crate::horizontal::{classify_visibility, sun_horizontal, RefractionModel, Visibility};
+use crate::local_contacts::{solve_local_contacts, ContactInstant};
 use crate::local_maximum::solve_local_maximum;
 use crate::magnitude::{eclipse_magnitude, eclipse_obscuration, EclipseMagnitude, Obscuration};
 use crate::path::{EclipsePath, PathOptions};
@@ -223,8 +224,9 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
     /// （ISSUE-027）→ 太陽高度方位/位置角/可視性（ISSUE-028・S7a PA）→ C1-C4 接触（ISSUE-025）→
     /// `LocalCircumstances`（接触は UTC/TT 両方, A3 LocalContactSet）。
     ///
-    /// **S7b-i 範囲**: 局地最大食・食分/食面積・最大食 `LocalContact`・可視性（最大食基準）のみ。
-    /// C1-C4 接触集合（`contacts.c1..c4`）は S7b-ii で充足する（本スライスでは `None`）。
+    /// 接触は C1-C4＋最大食（A3 LocalContactSet）。部分食地点は内接 C2/C3 が `None`、食域外は
+    /// 全接触 `None`＋`Visibility::NotVisible`。可視性は実 C1/C4 高度で 6 値判定する（ISSUE-028）。
+    /// 遠方観測者（探索窓内で局地最小をブラケット不能）は全球最大食時刻に錨を打ち NotVisible・食分0。
     pub fn local_circumstances(
         &self,
         eclipse: &SolarEclipse,
@@ -289,16 +291,58 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
                     east_longitude,
                     false,
                 );
-                // 可視性（S7b-i は C1/C4 未計算ゆえ None。in_eclipse は食分>0 で判定）。
+                // 局地接触 C1-C4（ISSUE-025）。部分食地点は内接 C2/C3 が None。各接触は
+                // `build_contact_at` で時刻＋高度方位＋PA＋可視を付与（C2/C3 は内接 ⇒ 皆既で σ=−1）。
+                let contacts =
+                    solve_local_contacts(&source, &geo_obs, east_longitude, window, root_config)?;
+                let c1 = self.contact_local(
+                    &source,
+                    &geo_obs,
+                    geodetic_latitude,
+                    east_longitude,
+                    contacts.c1,
+                    false,
+                )?;
+                let c2 = self.contact_local(
+                    &source,
+                    &geo_obs,
+                    geodetic_latitude,
+                    east_longitude,
+                    contacts.c2,
+                    true,
+                )?;
+                let c3 = self.contact_local(
+                    &source,
+                    &geo_obs,
+                    geodetic_latitude,
+                    east_longitude,
+                    contacts.c3,
+                    true,
+                )?;
+                let c4 = self.contact_local(
+                    &source,
+                    &geo_obs,
+                    geodetic_latitude,
+                    east_longitude,
+                    contacts.c4,
+                    false,
+                )?;
+
+                // 可視性（実 C1/C4 高度で精緻化）。in_eclipse は食分>0 で判定。
                 let in_eclipse = magnitude.0 > 0.0;
-                let visibility = classify_visibility(in_eclipse, None, maximum.sun_altitude, None);
+                let visibility = classify_visibility(
+                    in_eclipse,
+                    c1.map(|c| c.sun_altitude),
+                    maximum.sun_altitude,
+                    c4.map(|c| c.sun_altitude),
+                );
                 Ok(LocalCircumstances {
                     contacts: LocalContactSet {
-                        c1: None,
-                        c2: None,
+                        c1,
+                        c2,
                         maximum,
-                        c3: None,
-                        c4: None,
+                        c3,
+                        c4,
                     },
                     magnitude,
                     obscuration,
@@ -374,6 +418,38 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
             position_angle,
             visible: horizontal.altitude_geometric.0 >= 0.0,
         }
+    }
+
+    /// 接触時刻 [`ContactInstant`]（存在すれば）を rich [`LocalContact`] へ昇格する（ISSUE-043 S7b-ii）。
+    ///
+    /// `None`（その地点に当該接触なし。部分食地点の内接 C2/C3 等）はそのまま `None`。`interior` は
+    /// 内接接触（C2/C3）か外接（C1/C4）かで、内接かつ本影 `l2<0`（皆既）のときのみ PA を σ=−1
+    /// （接触点が月中心の反対側, S7a）にする。供給源 `source` で接触時刻の瞬時要素・観測者射影を取る。
+    fn contact_local<B: BesselianSource>(
+        &self,
+        source: &B,
+        geo_obs: &GeocentricObserver,
+        geodetic_latitude: Radians,
+        east_longitude: Radians,
+        contact: Option<ContactInstant>,
+        interior: bool,
+    ) -> Result<Option<LocalContact>, EclipseError> {
+        let Some(contact) = contact else {
+            return Ok(None);
+        };
+        let elements = source.at(contact.time_tt)?;
+        let of = project_observer_to_fundamental(geo_obs, east_longitude, &elements);
+        // 内接 C2/C3 かつ皆既（l2<0）のみ σ=−1（接触点が月中心の反対側）。外接・金環内接は σ=+1。
+        let umbral_interior = interior && elements.l2 < 0.0;
+        Ok(Some(self.build_local_contact(
+            &elements,
+            &of,
+            contact.time_utc,
+            contact.time_tt,
+            geodetic_latitude,
+            east_longitude,
+            umbral_interior,
+        )))
     }
 
     /// 計算メタデータ（レシピ＋生成時刻印）を組み立てる（accuracy.md §0）。暦名は `ephemeris.metadata()`、
@@ -1222,7 +1298,7 @@ mod tests {
     }
 
     // ==================================================================
-    // 9. local_circumstances(): 観測地点の局地条件（ISSUE-043 S7b-i）
+    // 9. local_circumstances(): 観測地点の局地条件（ISSUE-043 S7b-ii）
     //
     // ## オラクル戦略（追認回避・物理事実＋構造契約を主軸）
     // エンジンの内部結線コードを写経しない。取得経路は既存 `search_finds_2017_08_21_total_eclipse`
@@ -1231,22 +1307,35 @@ mod tests {
     //
     // - **中心食地点**（皆既帯中心付近 37.5°N, 西経89.2°, 標高200m。local_maximum.rs の
     //   central_observer と同緯度経度）: NASA 事実として 2017-08-21 は皆既。よって食分 > 1・
-    //   食面積 ≈ 1（>0.99）・最大食時 太陽地平上（北米昼）・visible==true。
+    //   食面積 ≈ 1（>0.99）・最大食時 太陽地平上（北米昼）・visible==true。**中心食地点ゆえ
+    //   C1/C2/C3/C4 すべて Some**（皆既帯内に内接 C2/C3 が存在する）。
     // - **部分食地点**（高緯度 60°N, 西経100°。local_maximum.rs の partial_observer 相当）:
     //   部分食（0 < magnitude < 1, obscuration < 1）。中心食地点と magnitude が明確に異なる
-    //   （observer 配線が効いている＝lat/lon 取り違え変異を撃破）。
+    //   （observer 配線が効いている＝lat/lon 取り違え変異を撃破）。**本影外ゆえ C1/C4=Some・
+    //   C2/C3=None**（内接なし）。
     // - **見えない観測者**（南半球 −40°S, 東経140°。2017 北米日食帯から十分離れ物理的に非可視）:
-    //   visibility==NotVisible・magnitude.0==0.0・obscuration.0==0.0。maximum は全球最大食時刻に
-    //   錨を打って充填（time_tt == eclipse.global.greatest.time_tt）。
+    //   visibility==NotVisible・magnitude.0==0.0・obscuration.0==0.0。C1-C4 すべて None（不変）。
     //
-    // ## S7b-i 中間契約（本スライス固有）
-    // - **C1-C4 接触集合は常に None**（contacts.c1..c4 == None。S7b-ii で充足）。
-    // - **maximum は非 Option**（局地最大食で充填）。
-    // - **可視日食でも FullyVisible にはならず PartialVisible**（C1/C4 が None のため。S7b-ii で精緻化）。
+    // ## S7b-ii 確定契約（C1-C4 充填 ＋ 可視性精緻化）
+    // - **C1-C4 接触集合を充填**: 中心食地点で c1/c2/c3/c4 すべて Some、部分食地点で c1/c4=Some・
+    //   c2/c3=None、食なし地点で c1-c4 すべて None。
+    // - **接触は時系列順**: 中心食で c1<c2<max<c3<c4（time_tt の JD）、部分食で c1<max<c4。
+    // - **可視性精緻化**: 食ありで C1/C4 とも地平上 → FullyVisible（2017 北米中緯度・高緯度地点は
+    //   日中ゆえ FullyVisible 想定）。食なし → NotVisible（不変）。
+    // - **maximum・magnitude・obscuration・metadata は S7b-i と同じ（不変）**。
     //
-    // ## red 設計（本体未実装）
-    // `local_circumstances` は現状 `unimplemented!()` で panic するため、これを呼ぶ本群は
-    // 想定どおりの理由（unimplemented! の panic）で red になる。
+    // ## 追認回避（独立オラクル）
+    // - 物理事実: 2017-08-21 は皆既（NASA）。中心食地点で 4 接触・順序・FullyVisible、
+    //   部分食地点で c2/c3=None という幾何的事実。接触順序 C1<C2<最大<C3<C4 は日食の幾何の独立事実。
+    // - PA は値域/象限のみ（厳密値は使わない）。内接 C2/C3（皆既 σ=−1）と外接 C1/C4（σ=+1）で
+    //   接触点の向きが反転する構造（PA が一定以上異なる）を縛る（式は写経しない）。
+    // - solve_local_contacts（ISSUE-025・独立検証済）を test 内で直接呼んで突合するのは同一
+    //   プリミティブの追認になりうるので避け、物理的順序・Some/None 構造・可視性で縛る。
+    //
+    // ## red 設計（S7b-i 実装に対する想定 red）
+    // 現状 S7b-i は c1-c4=None・可視日食でも PartialVisible を返すため、本群の更新後アサーション
+    // （c1-c4 Some・FullyVisible）は assertion 失敗で red になる。invisible/anchor テスト
+    // （c1-c4=None・NotVisible を縛る）は緑のまま。
     // ==================================================================
 
     /// 2017-08-21 皆既日食を search で取得し、その SolarEclipse を返すヘルパ（取得経路は
@@ -1282,12 +1371,17 @@ mod tests {
 
     /// **主要テスト（中心食地点・皆既）**: 2017-08-21 を中心食地点で見ると皆既条件になる。
     /// 食分 > 1（皆既=NASA 事実）・食面積 ≈ 1（>0.99）・最大食 太陽地平上（北米昼・alt>0）・
-    /// visible==true・visibility==PartialVisible（S7b-i 中間状態）・最大食 UTC は 18 時台
-    /// ballpark（17.5〜19.0 時）・**C1-C4 すべて None**（S7b-i）・maximum_altitude==maximum.sun_altitude。
+    /// visible==true・最大食 UTC は 18 時台 ballpark（17.5〜19.0 時）・
+    /// maximum_altitude==maximum.sun_altitude。
+    ///
+    /// **S7b-ii 確定契約**: 中心食地点ゆえ C1/C2/C3/C4 すべて Some（皆既帯内に内接 C2/C3 が存在）。
+    /// 4 接触は日中ゆえ各々 visible==true。接触の時系列順 c1<c2<max<c3<c4（time_tt の JD 単調増加）。
+    /// 食あり・全接触地平上ゆえ visibility==FullyVisible（日中の中心食）。
     ///
     /// 殺す変異: observer の lat/lon 取り違え（部分食/非可視と magnitude 差で別途撃破）、
     /// ζ 補正欠落（皆既で magnitude>1・obscuration≈1 を縛る）、maximum_altitude と sun_altitude の
-    /// 不一致、可視性の取り違え（PartialVisible を縛る）、C1-C4 を誤って Some にする。
+    /// 不一致、可視性の取り違え（FullyVisible を縛る）、C1-C4 を誤って None のまま放置する
+    /// （S7b-i の取りこぼし）、c1↔c4 / c2↔c3 の時系列取り違え。
     #[test]
     fn local_circumstances_central_site_is_total() {
         let engine = standard_engine_from_synthetic();
@@ -1323,11 +1417,11 @@ mod tests {
             "maximum_altitude == contacts.maximum.sun_altitude"
         );
 
-        // S7b-i 中間契約: 可視日食でも C1/C4 が None ゆえ PartialVisible（FullyVisible でない）。
+        // S7b-ii: 食あり・全接触地平上（日中の中心食）ゆえ FullyVisible。
         assert_eq!(
             lc.visibility,
-            Visibility::PartialVisible,
-            "S7b-i 中間: 食あり・地平上だが C1/C4=None ゆえ PartialVisible"
+            Visibility::FullyVisible,
+            "S7b-ii: 食あり・C1/C4 とも地平上（日中）ゆえ FullyVisible"
         );
 
         // 最大食 UTC は 2017-08-21 18 時台 ballpark（17.5〜19.0 時）。窓/時刻取り違えを撃破。
@@ -1339,18 +1433,42 @@ mod tests {
             "最大食 UTC は 18 時台 ballpark（17.5〜19.0h）: {hour_frac}h"
         );
 
-        // S7b-i: C1-C4 接触集合は常に None（S7b-ii で充足）。誤って Some にする変異を撃破。
-        assert!(lc.contacts.c1.is_none(), "S7b-i: c1=None");
-        assert!(lc.contacts.c2.is_none(), "S7b-i: c2=None");
-        assert!(lc.contacts.c3.is_none(), "S7b-i: c3=None");
-        assert!(lc.contacts.c4.is_none(), "S7b-i: c4=None");
+        // S7b-ii: 中心食地点（皆既帯内）ゆえ C1/C2/C3/C4 すべて Some。
+        // None のまま放置（S7b-i の取りこぼし）を撃破する。
+        let c1 = lc.contacts.c1.expect("中心食地点: C1=Some");
+        let c2 = lc.contacts.c2.expect("中心食地点: C2=Some（皆既内接あり）");
+        let c3 = lc.contacts.c3.expect("中心食地点: C3=Some（皆既内接あり）");
+        let c4 = lc.contacts.c4.expect("中心食地点: C4=Some");
+
+        // 4 接触は日中ゆえ各々 visible==true（太陽地平上）。
+        assert!(c1.visible, "C1 は日中ゆえ visible");
+        assert!(c2.visible, "C2 は日中ゆえ visible");
+        assert!(c3.visible, "C3 は日中ゆえ visible");
+        assert!(c4.visible, "C4 は日中ゆえ visible");
+
+        // 接触の時系列順 c1 < c2 < max < c3 < c4（time_tt の JD 単調増加）。
+        // 日食の幾何的事実（独立オラクル）。c1↔c4 / c2↔c3 の取り違えを撃破する。
+        let j_c1 = c1.time_tt.jd2().jd();
+        let j_c2 = c2.time_tt.jd2().jd();
+        let j_mx = mx.time_tt.jd2().jd();
+        let j_c3 = c3.time_tt.jd2().jd();
+        let j_c4 = c4.time_tt.jd2().jd();
+        assert!(
+            j_c1 < j_c2 && j_c2 < j_mx && j_mx < j_c3 && j_c3 < j_c4,
+            "接触の時系列順 c1<c2<max<c3<c4: c1={j_c1} c2={j_c2} max={j_mx} c3={j_c3} c4={j_c4}"
+        );
     }
 
     /// **部分食地点**: 高緯度 60°N/西経100° は本影外＝部分食。0 < magnitude < 1・obscuration < 1。
-    /// 中心食地点と magnitude が明確に異なる（observer 配線が効いている）。C1-C4 None。
+    /// 中心食地点と magnitude が明確に異なる（observer 配線が効いている）。
+    ///
+    /// **S7b-ii 確定契約**: 部分食地点は本影外ゆえ C1/C4=Some・**C2/C3=None**（内接なし）。
+    /// 接触の時系列順 c1<max<c4（部分食地点）。可視性は「見える種別」（食あり・地平上ゆえ
+    /// NotVisible でない。北米日中の高緯度ゆえ FullyVisible 想定）。
     ///
     /// 殺す変異: observer の lat/lon を無視して常に中心食地点の値を返す（magnitude 差で撃破）、
-    /// 部分食地点を皆既扱い（magnitude<1 を縛る）、食なし扱い（magnitude>0 を縛る）。
+    /// 部分食地点を皆既扱い（magnitude<1 を縛る）、食なし扱い（magnitude>0 を縛る）、
+    /// 部分食地点で C2/C3 を誤って Some にする（内接ありと取り違え）、C1/C4 を None のまま放置。
     #[test]
     fn local_circumstances_partial_site_is_partial() {
         let engine = standard_engine_from_synthetic();
@@ -1389,11 +1507,33 @@ mod tests {
             partial.magnitude.0
         );
 
-        // S7b-i: C1-C4 接触集合は常に None。
-        assert!(partial.contacts.c1.is_none(), "S7b-i: c1=None");
-        assert!(partial.contacts.c2.is_none(), "S7b-i: c2=None");
-        assert!(partial.contacts.c3.is_none(), "S7b-i: c3=None");
-        assert!(partial.contacts.c4.is_none(), "S7b-i: c4=None");
+        // S7b-ii: 部分食地点は外接 C1/C4=Some・内接 C2/C3=None（本影外ゆえ内接なし）。
+        let c1 = partial.contacts.c1.expect("部分食地点: C1=Some（外接）");
+        let c4 = partial.contacts.c4.expect("部分食地点: C4=Some（外接）");
+        assert!(
+            partial.contacts.c2.is_none(),
+            "部分食地点: C2=None（本影外ゆえ内接なし）"
+        );
+        assert!(
+            partial.contacts.c3.is_none(),
+            "部分食地点: C3=None（本影外ゆえ内接なし）"
+        );
+
+        // 接触の時系列順 c1 < max < c4（部分食地点・独立な幾何的事実）。
+        let j_c1 = c1.time_tt.jd2().jd();
+        let j_mx = partial.contacts.maximum.time_tt.jd2().jd();
+        let j_c4 = c4.time_tt.jd2().jd();
+        assert!(
+            j_c1 < j_mx && j_mx < j_c4,
+            "部分食の接触順 c1<max<c4: c1={j_c1} max={j_mx} c4={j_c4}"
+        );
+
+        // 可視性は「見える種別」: 食あり・地平上ゆえ NotVisible でない（緩い構造契約）。
+        assert_ne!(
+            partial.visibility,
+            Visibility::NotVisible,
+            "部分食地点（食あり・日中）は NotVisible でない"
+        );
     }
 
     /// **見えない観測者**: 2017 北米日食帯から離れた南半球（−40°S, 東経140°）は非可視。
@@ -1538,11 +1678,12 @@ mod tests {
         );
     }
 
-    /// **alt/az/PA の健全性**: 中心食地点の最大食 LocalContact について、
+    /// **alt/az/PA の健全性**: 中心食地点の最大食 ＋ C1-C4 各 LocalContact について、
     /// sun_altitude ∈ [-90,90]・sun_azimuth ∈ [0,360)・position_angle ∈ [0,360) かつすべて有限。
-    /// 厳密値は flaky ゆえ範囲のみ縛る（PA は最大食 σ=+1 で有限・範囲内）。
+    /// 厳密値は flaky ゆえ範囲のみ縛る（最大食 σ=+1・内接 C2/C3 σ=−1 でも値域は同じ）。
     ///
-    /// 殺す変異: 角度の値域違反（ラジアン/度取り違え等）、PA を非有限/未計算で素通し。
+    /// 殺す変異: 角度の値域違反（ラジアン/度取り違え等）、PA を非有限/未計算で素通し、
+    /// C1-C4 接触の角度値が値域外（接触ごとの座標計算崩れ）。
     #[test]
     fn local_circumstances_angles_in_valid_ranges() {
         let engine = standard_engine_from_synthetic();
@@ -1551,24 +1692,139 @@ mod tests {
             .local_circumstances(&eclipse, central_observer())
             .expect("中心食地点の局地条件は成功する");
 
-        let mx = lc.contacts.maximum;
-        assert!(mx.sun_altitude.0.is_finite(), "sun_altitude 有限");
-        assert!(mx.sun_azimuth.0.is_finite(), "sun_azimuth 有限");
-        assert!(mx.position_angle.0.is_finite(), "position_angle 有限");
+        // 角度値域を 1 つの LocalContact について縛るヘルパ。
+        let assert_angles = |c: &LocalContact, label: &str| {
+            assert!(c.sun_altitude.0.is_finite(), "{label}: sun_altitude 有限");
+            assert!(c.sun_azimuth.0.is_finite(), "{label}: sun_azimuth 有限");
+            assert!(
+                c.position_angle.0.is_finite(),
+                "{label}: position_angle 有限"
+            );
+            assert!(
+                (-90.0..=90.0).contains(&c.sun_altitude.0),
+                "{label}: sun_altitude ∈ [-90,90]: {}",
+                c.sun_altitude.0
+            );
+            assert!(
+                (0.0..360.0).contains(&c.sun_azimuth.0),
+                "{label}: sun_azimuth ∈ [0,360): {}",
+                c.sun_azimuth.0
+            );
+            assert!(
+                (0.0..360.0).contains(&c.position_angle.0),
+                "{label}: position_angle ∈ [0,360): {}",
+                c.position_angle.0
+            );
+        };
+
+        // 最大食。
+        assert_angles(&lc.contacts.maximum, "maximum");
+        // C1-C4（中心食地点ゆえすべて Some）。各接触の角度も値域内。
+        assert_angles(&lc.contacts.c1.expect("中心食 C1=Some"), "c1");
+        assert_angles(&lc.contacts.c2.expect("中心食 C2=Some"), "c2");
+        assert_angles(&lc.contacts.c3.expect("中心食 C3=Some"), "c3");
+        assert_angles(&lc.contacts.c4.expect("中心食 C4=Some"), "c4");
+    }
+
+    /// **中心食 PA の内接/外接差（S7b-ii 固有）**: 中心食地点（皆既）の内接 C2/C3（皆既 σ=−1・
+    /// 接触点が月中心の反対側）と外接 C1/C4（σ=+1・接触点が月中心方向）で接触点の向きが反転し、
+    /// PA が一定以上異なる。厳密値は flaky ゆえ「内接と外接の PA が十分離れている」構造で縛る
+    /// （PA の式は写経しない＝追認回避）。σ 反転（内接で −1 を掛ける）は PA を約 180° 回すため、
+    /// 内接 C2 と外接 C1 の PA 差は周期 [0,180] に畳んで 90° 超になることを期待する。
+    ///
+    /// 殺す変異: 内接 C2/C3 に外接と同じ σ=+1 を使う（umbral_interior フラグの取り違え）、
+    /// 全接触で PA を同一値にする（接触ごとの座標を使わない）。
+    #[test]
+    fn local_circumstances_central_inner_outer_pa_differ() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+        let lc = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("中心食地点の局地条件は成功する");
+
+        let c1 = lc.contacts.c1.expect("中心食 C1=Some");
+        let c2 = lc.contacts.c2.expect("中心食 C2=Some（内接）");
+
+        // PA 周期差を [0,180] に畳む（北0近傍の巻き戻り・180°反転を頑健に測る）。
+        let folded_diff = |a: f64, b: f64| -> f64 {
+            let mut d = (a - b).rem_euclid(360.0);
+            if d > 180.0 {
+                d = 360.0 - d;
+            }
+            d
+        };
+
+        // 内接 C2（皆既 σ=−1）と外接 C1（σ=+1）は接触点の向きが反転 → PA が大きく異なる。
+        // σ 反転は約 180° 回すため、畳んだ差は 90° 超を期待する（内接/外接で同 σ を使う変異を撃破）。
+        let diff_c2_c1 = folded_diff(c2.position_angle.0, c1.position_angle.0);
         assert!(
-            (-90.0..=90.0).contains(&mx.sun_altitude.0),
-            "sun_altitude ∈ [-90,90]: {}",
-            mx.sun_altitude.0
+            diff_c2_c1 > 90.0,
+            "内接 C2(σ=−1) と外接 C1(σ=+1) の PA は十分異なる（畳んだ差 {diff_c2_c1}° > 90°）: \
+             C2={} C1={}",
+            c2.position_angle.0,
+            c1.position_angle.0
+        );
+    }
+
+    /// **接触の UTC/TT 整合（C1）**: ある接触（C1）で time_utc == tt_to_utc(time_tt)。
+    /// 最大食以外の接触でも時刻系の組が整合していることを縛る。
+    ///
+    /// 殺す変異: 接触の time_utc に time_tt を入れる（または逆）、接触の UTC 変換忘れ。
+    #[test]
+    fn local_circumstances_contact_utc_tt_consistent() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+        let lc = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("中心食地点の局地条件は成功する");
+
+        let c1 = lc.contacts.c1.expect("中心食 C1=Some");
+        let expected_utc =
+            umbra_core::time::tt_to_utc(c1.time_tt).expect("C1 の TT は post-1972 で UTC 変換可能");
+        let got_jd = c1.time_utc.jd2().jd();
+        let want_jd = expected_utc.jd2().jd();
+        assert!(
+            (got_jd - want_jd).abs() < 1.0 / SECONDS_PER_DAY,
+            "C1.time_utc == tt_to_utc(C1.time_tt): got_jd={got_jd} want_jd={want_jd}"
+        );
+    }
+
+    /// **中心食 vs 部分食で内接 C2/C3 の Some/None が分かれる（観測者で接触構造が変わる）**:
+    /// 同一日食に対し中心食地点では C2/C3 が Some、部分食地点では C2/C3 が None になる。
+    /// 観測者によって接触集合の構造（内接の有無）が切り替わることを 1 テストで対比して縛る。
+    ///
+    /// 殺す変異: 観測者に依らず常に C2/C3 を Some（または常に None）にする、内接判定が
+    /// observer を見ていない。
+    #[test]
+    fn local_circumstances_inner_contacts_depend_on_observer() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+
+        let central = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("中心食地点の局地条件は成功する");
+        let partial = engine
+            .local_circumstances(&eclipse, partial_observer())
+            .expect("部分食地点の局地条件は成功する");
+
+        // 中心食地点: 内接 C2/C3 あり。
+        assert!(
+            central.contacts.c2.is_some() && central.contacts.c3.is_some(),
+            "中心食地点は内接 C2/C3=Some"
+        );
+        // 部分食地点: 内接 C2/C3 なし。
+        assert!(
+            partial.contacts.c2.is_none() && partial.contacts.c3.is_none(),
+            "部分食地点は内接 C2/C3=None"
+        );
+        // 外接 C1/C4 はどちらの地点でも存在（食ありゆえ部分食の外接は共通）。
+        assert!(
+            central.contacts.c1.is_some() && central.contacts.c4.is_some(),
+            "中心食地点も外接 C1/C4=Some"
         );
         assert!(
-            (0.0..360.0).contains(&mx.sun_azimuth.0),
-            "sun_azimuth ∈ [0,360): {}",
-            mx.sun_azimuth.0
-        );
-        assert!(
-            (0.0..360.0).contains(&mx.position_angle.0),
-            "position_angle ∈ [0,360): {}",
-            mx.position_angle.0
+            partial.contacts.c1.is_some() && partial.contacts.c4.is_some(),
+            "部分食地点も外接 C1/C4=Some"
         );
     }
 

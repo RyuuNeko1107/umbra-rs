@@ -18,6 +18,23 @@ cargo mutants --package umbra-eclipse --jobs 2 --re 'build_local_contact' -- loc
 
 生存ゼロ。`build_local_contact` のフィールド配線（alt/az/PA/visible）は局地条件テストで縛られている。
 
+## `contact_local`（新規ヘルパ・S7b-ii・ミューテーション実行済）
+
+```
+cargo mutants --package umbra-eclipse --jobs 2 --re 'contact_local' -- local_circumstances
+→ 6 mutants tested: 4 caught, 1 unviable, 1 missed
+```
+
+- **caught (4)**: None/Some 分岐・`source.at`・`build_local_contact` への配線（接触の充填構造、
+  PA の σ）。中心食/部分食地点の C1-C4 Some/None 構造・接触順序・PA 内接外接差のテストが撃破。
+- **unviable (1)**: 関数本体を `Default` 等へ置換する変異（`LocalContact`/`Option` の都合でコンパイル不能）。
+- **missed (1, 等価)**: `engine.rs:443 umbral_interior = interior && elements.l2 < 0.0` の
+  **`<` → `<=`**。`l2` がちょうど `0.0`（皆既↔金環のハイブリッド瞬間）でのみ σ が変わるが、
+  C2/C3 接触時刻で `l2` が厳密に `0.0` になるのは測度ゼロ＝到達不能。連続関数の格子点が厳密零点に
+  当たらないのと同型の**境界等価変異**（`delta_t_seconds` / `l2_changes_sign` の `< → <=` 除外と
+  同方針, `mutation-global-kind.md` / `mutation.yml`）。許容。`contact_local` は下記のとおり週次
+  ガードから除外済みのため、この等価変異は週次でも問題にならない。
+
 ## `local_circumstances` 本体はオーケストレーション
 
 `local_circumstances()` は確定済みの下位プリミティブを配線して `LocalCircumstances` を組み立てる

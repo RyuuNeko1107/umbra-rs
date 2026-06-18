@@ -13,9 +13,6 @@
 //! position_angle・可視性を伴う公開 result 型 `LocalContact`（ISSUE-043 S4e, `results` モジュール）は、
 //! 本ソルバの時刻に ISSUE-028 の太陽地平座標等を付与して EclipseEngine（S7）が組み立てる。
 
-// solve_local_contacts（pub(crate)）は ISSUE-043（EclipseEngine 結線）が消費するまで未使用。
-// 結線され次第この許容は外す（conjunction.rs / candidates.rs と同手順）。
-#![allow(dead_code)]
 // 粗走査の分割数（窓秒数 / 刻み）の整数⇔f64 変換は小さな添字のみ（天文量ではない, conjunction.rs 同様）。
 #![allow(
     clippy::cast_precision_loss,
