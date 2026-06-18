@@ -16,6 +16,7 @@ pub mod engine;
 pub mod error;
 pub mod fundamental;
 pub mod global;
+pub mod global_contacts;
 pub mod horizontal;
 pub mod local_contacts;
 pub mod local_maximum;
