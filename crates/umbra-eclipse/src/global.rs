@@ -15,7 +15,7 @@ use crate::besselian::BesselianElements;
 use crate::config::EngineConfig;
 use crate::conjunction::RootConfig;
 use crate::error::EclipseError;
-use crate::global_contacts::solve_global_contacts;
+use crate::global_contacts::{global_contact_ground_point, solve_global_contacts};
 use crate::horizontal::{sun_horizontal, RefractionModel};
 use crate::local_maximum::solve_local_maximum;
 use crate::magnitude::{eclipse_magnitude, eclipse_obscuration};
@@ -24,7 +24,7 @@ use crate::results::GreatestEclipse;
 use crate::source::BesselianSource;
 use umbra_core::deltat::DeltaTModel;
 use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid, GeocentricObserver};
-use umbra_core::{JulianDate2, Radians, TtInstant};
+use umbra_core::{JulianDate2, Radians, SolverError, TtInstant};
 
 /// 1 日 = 86400 SI 秒（root_tolerance を日へ換算）。
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -139,26 +139,46 @@ where
     // 2. 最大食時刻の瞬時ベッセル要素。
     let elements = source.at(max.time_tt)?;
 
-    // 3. 影軸の地表貫通点（中心食でなければ Err(Solver(RootNotBracketed))・S6b で部分/非中心）。
-    let position = shadow_axis_surface_point(&elements, &ellipsoid)?;
+    // 3. 最大食地点・観測者の基本面距離 m・ζ を中心食/部分食で分岐して得る。
+    //    中心食: 影軸が地表を貫く（`shadow_axis_surface_point` 成功）→ 観測者は軸上で m=0、ζ は
+    //      地表点を検証済み前方射影し直して取得（高さ補正用）。
+    //    部分/非中心: 軸が地表を外す（RootNotBracketed）→ 地球縁で軸に最も近い点（縁点・ζ=0）が
+    //      最大食地点。観測者の基本面距離 m = ρ_axis − ρ_g = gamma − 1（縁点が軸に最も近い）。
+    //      **m は max(0) でクランプ**: 非中心帯（扁平楕円体では軸が外れるが球近似 gamma<1）では
+    //      gamma−1<0 となるが、観測者-軸距離は非負・かつ中心点(m=0)が最大食分の上限。負 m を許すと
+    //      中心値を超える非物理 magnitude になるため 0 に頭打ちする（球/扁平モデル差の吸収・要確認帯）。
+    let (position, m, zeta) = match shadow_axis_surface_point(&elements, &ellipsoid) {
+        Ok(p) => {
+            let obs = observer_geocentric(&ellipsoid, p.lat.radians().0, 0.0);
+            let zeta = project_observer_to_fundamental(&obs, p.lon.radians(), &elements).zeta;
+            (p, 0.0, zeta)
+        }
+        Err(EclipseError::Solver(SolverError::RootNotBracketed)) => {
+            let p = global_contact_ground_point(&elements, &ellipsoid)?;
+            (p, (gamma - 1.0).max(0.0), 0.0)
+        }
+        Err(other) => return Err(other),
+    };
 
-    // 4. 地表点の観測者 ζ（検証済み前方射影し直して取得。中心点なので ξ=x, η=y, m=0）。
-    let phi = position.lat.radians();
-    let lambda = position.lon.radians();
-    let obs = observer_geocentric(&ellipsoid, phi.0, 0.0);
-    let zeta = project_observer_to_fundamental(&obs, lambda, &elements).zeta;
-
-    // 5. 食分・食面積（中心点 m=0・観測者 ζ で補正した半径）。
-    //    L1'=l1−ζ·tanf1（半影）, L2'=l2−ζ·tanf2（本影, 符号付き）。視半径比 ρ=(L1'−L2')/(L1'+L2')。
+    // 4. 食分・食面積（観測者 ζ で補正した半径 L1'=l1−ζ·tanf1, L2'=l2−ζ·tanf2）。
+    //    食分 magnitude = (L1'−m)/(L1'+L2')。視半径比 ρ=(L1'−L2')/(L1'+L2')、視半径平面の中心離隔
+    //    separation = (1+ρ)·m/L1'（m=0→0=同心, m=L1'→1+ρ=外接）。中心食は m=0 で従来と一致。
     let l1p = elements.l1 - zeta * elements.tan_f1;
     let l2p = elements.l2 - zeta * elements.tan_f2;
-    let magnitude = eclipse_magnitude(0.0, l1p, l2p);
+    let magnitude = eclipse_magnitude(m, l1p, l2p);
     let radius_ratio = (l1p - l2p) / (l1p + l2p);
-    let obscuration = eclipse_obscuration(0.0, 1.0, radius_ratio);
+    let separation = (1.0 + radius_ratio) * m / l1p;
+    let obscuration = eclipse_obscuration(separation, 1.0, radius_ratio);
 
-    // 6. 太陽の幾何学的高度（大気差なし, conventions §7 既定）。
-    let sun_altitude =
-        sun_horizontal(phi, lambda, max.time_tt, RefractionModel::None, delta_t).altitude_geometric;
+    // 5. 太陽の幾何学的高度（大気差なし, conventions §7 既定）。
+    let sun_altitude = sun_horizontal(
+        position.lat.radians(),
+        position.lon.radians(),
+        max.time_tt,
+        RefractionModel::None,
+        delta_t,
+    )
+    .altitude_geometric;
 
     let greatest = GreatestEclipse {
         time_utc: max.time_utc,
@@ -405,7 +425,7 @@ mod tests {
     //     `shadow_axis_surface_point` 側で RootNotBracketed が起きることを縛る（`greatest_*_axis_miss_*`）。
 
     use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid};
-    use umbra_core::{EspenakMeeusDeltaT, SolverError, TimeInterval, TtInstant};
+    use umbra_core::{EspenakMeeusDeltaT, TimeInterval, TtInstant};
 
     use crate::besselian::InstantaneousBesselianElements;
     use crate::projection::project_observer_to_fundamental;
@@ -818,93 +838,312 @@ mod tests {
     }
 
     // ====================================================================
-    // 追補B: 非中心（軸が地表を外す）→ Err(Solver(RootNotBracketed)) の結線
+    // 追補B: 非中心/部分食（軸が地表を外す）→ S6c-i で Ok（縁点・部分食最大食）になった
     // ====================================================================
     //
-    // 「中心食でない＝影軸が地表を外す」経路（`shadow_axis_surface_point` 失敗）は
-    // `solve_greatest_eclipse` レベルで未テストだった。静的 `ConstantSource` は時不変ゆえ
-    // `solve_local_maximum` がブラケットできず **別理由** で Err になる（軸ミス検証にならない）。
-    // 代わりに **時変** 合成供給源を使う: gamma=√(x²+y²)=|x| が中心で内部極小を持ち、かつ
-    // その極小値が >1（X_MIN=1.2）になるよう x=X_MIN+K·(jd−center)²（y=0）を返す。
-    // これにより `solve_local_maximum` は内部放物線最小を **成功裏に** ブラケットし、
-    // 続く `shadow_axis_surface_point` が gamma=1.2>1 で地表交点を見つけられず
-    // `Err(Solver(RootNotBracketed))` を返す ⇒ 結線（伝播）を縛る。
+    // 旧テスト `greatest_noncentral_axis_miss_propagates_root_not_bracketed`（軸ミス→
+    // `Err(Solver(RootNotBracketed))`）は、S6c-i で `solve_greatest_eclipse` が部分食/非中心も
+    // 扱う（軸ミス時は地球縁点・m=gamma−1）よう拡張されたため陳腐化し削除した。同じ「軸ミス・
+    // 内部 gamma 極小 >1」構成は `greatest_partial_synthetic_*`（SyntheticGammaSource x_min=1.2）が
+    // Ok（部分食最大食）として縛る。
 
-    /// 中心極小値 >1 を持つ時変合成供給源。`solve_local_maximum` を成功させた上で
-    /// `shadow_axis_surface_point` を軸ミスで失敗させるための、本テスト専用の最小実装。
-    struct AxisMissSource {
-        /// gamma の極小がここ（区間内部）に来る。
+    // ====================================================================
+    // 追補C: 部分/非中心（軸が地表を外す）の最大食 → Ok(GreatestEclipseSolution)
+    // ====================================================================
+    //
+    // S6c-i で `solve_greatest_eclipse` を **部分/非中心** へ拡張する。影軸が地表を外す
+    // （`shadow_axis_surface_point` が解なし）場合、従来は `Err(Solver(RootNotBracketed))`
+    // を返していた（追補B でその旧挙動を縛った）。新挙動は **Ok** を返し:
+    //   - gamma  = 地心軸距離の最小値（部分は >1）。
+    //   - greatest.position = 軸に最も近い地球リム点（sub-axis 終端点・地平線上で太陽が昇る点）。
+    //   - magnitude  = eclipse_magnitude(m, l1, l2)（m=gamma−1, リムでは ζ=0 ⇒ 半径は無補正 l1,l2）。
+    //   - obscuration = eclipse_obscuration((1+ρ)·m/l1, 1.0, ρ)（ρ=(l1−l2)/(l1+l2)）。
+    //   - sun_altitude ≈ 0°（リム点）。
+    //   - path_width = None / central_duration = None。
+    //
+    // ## オラクル戦略（追認回避）
+    // 合成幾何そのものがオラクル: 既知の gamma/l1/l2 と文書化された式から magnitude/obscuration を
+    // **手計算** して縛る。合成供給源は `SyntheticGammaSource`（x=x_min+K·(jd−center)², y=0, l1/l2 固定）。
+    //   synthetic_source(1.2, 50.0, 0.54, −0.01, 0.15) ⇒ gamma_min=1.2（部分: 1<1.2<1.54）。
+    //   m = gamma−1 = 0.2、magnitude = (0.54−0.2)/(0.54+(−0.01)) = 0.34/0.53 = 0.6415094…（0<mag<1 部分）。
+    //   ρ = (0.54−(−0.01))/(0.54+(−0.01)) = 0.55/0.53、sep = (1+ρ)·m/0.54、obscuration = obsc(sep,1,ρ)∈(0,1)。
+    // リム性は **物理的に独立** に縛る: 返った position を `observer_geocentric`＋
+    // `project_observer_to_fundamental`（ISSUE-024）へ通し |ζ|<0.02（終端点・太陽が地平線上）。
+    // 注: sun_altitude は **実太陽** から導かれ、合成供給源の d/μ は任意値ゆえ ≈0° を assert しない
+    // （代わりにリム/終端性を縛る。spec の方針どおり）。
+
+    /// gamma の中心極小値を `x_min`、曲率 `k`、本影/半影半径 `l1`/`l2`、半幅 `half_day`[day] に取る
+    /// `SyntheticGammaSource`（部分テスト用・既存の struct 直書きと同形のコンストラクタ）。
+    /// 最大食 TT-JD は 2017 中心（2457986.768）と同じ位置に置き、極小が窓内部に来る。
+    fn synthetic_source(
+        x_min: f64,
+        k: f64,
+        l1: f64,
+        l2: f64,
+        half_day: f64,
+    ) -> SyntheticGammaSource {
+        let center_jd = 2_457_986.768;
+        SyntheticGammaSource {
+            center_jd,
+            x_min,
+            k,
+            l1,
+            l2,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        }
+    }
+
+    /// 追補C-1（部分最大食・厳密ピン）: 部分食の合成供給源で `solve_greatest_eclipse` が **Ok** を返し、
+    /// gamma/magnitude/obscuration/path/duration が部分食の契約と手計算オラクルに厳密一致する。
+    ///
+    /// gamma_min=1.2（部分: 1<1.2<1.54）。手計算: m=gamma−1=0.2、
+    /// magnitude=(0.54−0.2)/(0.54+(−0.01))=0.34/0.53=0.6415094…（0<mag<1）。
+    /// ρ=(0.54−(−0.01))/(0.54+(−0.01))、sep=(1+ρ)·m/0.54、obscuration=obsc(sep,1,ρ)∈(0,1)。
+    /// 旧実装（軸ミスで Err を返す）に対しては Ok を取れず **red**（Err(Solver(RootNotBracketed))）になる。
+    #[test]
+    fn greatest_partial_synthetic_contract_and_hand_computed() {
+        let dt = EspenakMeeusDeltaT;
+        let src = synthetic_source(1.2, 50.0, 0.54, -0.01, 0.15);
+        let config = crate::config::EngineConfig::standard();
+        let sol = solve_greatest_eclipse(&src, &dt, &config)
+            .expect("partial (axis-miss) eclipse must now yield Ok(GreatestEclipseSolution)");
+
+        // gamma 独立再計算: 返った time_tt で √(x²+y²)（source.at 由来）と 1e-6 一致。
+        let g = gamma_at(&src, sol.greatest.time_tt);
+        assert!(
+            (sol.gamma - g).abs() < 1e-6,
+            "gamma={} must match independent √(x²+y²)={g} at time_tt (tol 1e-6)",
+            sol.gamma
+        );
+        // gamma は部分食バンド（>1, ballpark ≈1.2）。
+        assert!(
+            (1.0..1.5433).contains(&sol.gamma),
+            "partial gamma {} must be >1 and <penumbra limit (≈1.2)",
+            sol.gamma
+        );
+        assert!(
+            (sol.gamma - 1.2).abs() < 1e-3,
+            "partial gamma {} should be ≈1.2 (synthetic min, solver tol)",
+            sol.gamma
+        );
+
+        // --- magnitude: m=gamma−1（返った gamma 由来）で eclipse_magnitude に厳密一致 ---
+        let m = sol.gamma - 1.0;
+        let want_mag = eclipse_magnitude(m, 0.54, -0.01);
+        assert_eq!(
+            sol.greatest.magnitude, want_mag,
+            "magnitude は m=gamma−1（リムで ζ=0 ⇒ 無補正 l1,l2）由来でなければならない"
+        );
+        // 手計算 ballpark: m≈0.2 ⇒ magnitude≈0.6415094…、かつ部分食 0<mag<1。
+        let mag = sol.greatest.magnitude.0;
+        assert!(
+            (mag - 0.641_509_433_962_264).abs() < 1e-6,
+            "partial magnitude {mag} must be ≈0.6415094 (=(0.54−0.2)/0.53), hand-computed"
+        );
+        assert!(
+            (0.0..1.0).contains(&mag),
+            "partial magnitude {mag} must be in (0,1) (太陽を覆い切らない)"
+        );
+
+        // --- obscuration: sep=(1+ρ)·m/l1（ρ=(l1−l2)/(l1+l2)）で eclipse_obscuration に厳密一致 ---
+        let rho = (0.54 - (-0.01)) / (0.54 + (-0.01));
+        let sep = (1.0 + rho) * m / 0.54;
+        let want_obsc = eclipse_obscuration(sep, 1.0, rho);
+        assert!(
+            (sol.greatest.obscuration.0 - want_obsc.0).abs() < 1e-9,
+            "obscuration {} must equal eclipse_obscuration((1+ρ)·m/l1,1,ρ)={} (tol 1e-9)",
+            sol.greatest.obscuration.0,
+            want_obsc.0
+        );
+        assert!(
+            (0.0..1.0).contains(&sol.greatest.obscuration.0),
+            "partial obscuration {} must be in (0,1)",
+            sol.greatest.obscuration.0
+        );
+
+        // --- path/duration は本スライス非責務（常に None）---
+        assert!(
+            sol.greatest.path_width.is_none(),
+            "path_width must be None for partial (S6b territory)"
+        );
+        assert!(
+            sol.greatest.central_duration.is_none(),
+            "central_duration must be None for partial (S6b territory)"
+        );
+    }
+
+    /// 追補C-2（部分の地表点はリム上・物理的独立縛り）: 部分食の greatest.position を前方射影し直すと
+    /// 終端点（|ζ|<0.02）に乗る ＝ 軸に最も近い sub-axis リム点（太陽が地平線上）であること。
+    ///
+    /// 逆射影の内部式は再実装せず、`observer_geocentric`（ISSUE-010/011）＋
+    /// `project_observer_to_fundamental`（ISSUE-024）の独立経路で縛る。sun_altitude は実太陽由来で
+    /// 合成供給源の d/μ は任意ゆえ ≈0° は assert せず、終端（リム）性のみを縛る（spec 方針）。
+    #[test]
+    fn greatest_partial_position_is_on_the_limb() {
+        let dt = EspenakMeeusDeltaT;
+        let src = synthetic_source(1.2, 50.0, 0.54, -0.01, 0.15);
+        let config = crate::config::EngineConfig::standard();
+        let sol = solve_greatest_eclipse(&src, &dt, &config)
+            .expect("partial (axis-miss) eclipse must now yield Ok(GreatestEclipseSolution)");
+
+        let e = src
+            .at(sol.greatest.time_tt)
+            .expect("source.at should succeed at partial greatest-eclipse time");
+        let phi = sol.greatest.position.lat.radians().0;
+        let lam = sol.greatest.position.lon.radians().0;
+        let obs = observer_geocentric(&Ellipsoid::WGS84, phi, 0.0);
+        let r = project_observer_to_fundamental(&obs, Radians::new(lam), &e);
+        assert!(
+            r.zeta.abs() < 0.02,
+            "partial greatest position must lie on the terminator (limb): |ζ|={} < 0.02 \
+             (sub-axis limb point, sun on the horizon)",
+            r.zeta.abs()
+        );
+    }
+
+    // 追補C-3（任意・実部分食 end-to-end）は **意図的に省略**する。clean な部分専用の実日食 epoch
+    // ＋窓を解析暦/ΔT 慣習差に依らず安定に括るのは borderline（gamma>1 の余裕や greatest 時刻の
+    // ばらつきで flaky になりうる）。部分食の堅牢なピンは合成テスト追補C-1（手計算オラクル）に委ねる。
+
+    // ====================================================================
+    // 追補C-4: 非中心帯（gamma<1 だが扁平楕円体で軸が外れる）の m クランプ
+    // ====================================================================
+    //
+    // 部分分岐の `m = (gamma−1.0).max(0.0)` の `.max(0.0)` は、**軸が WGS84（扁平）地表を外すが
+    // gamma<1** という非中心帯でのみ効く。極方向（扁平で縮んだ極半径 ~0.9966）へ向く軸では
+    // gamma<1 でも軸が楕円体を外し（`shadow_axis_surface_point` が `RootNotBracketed`）部分分岐が
+    // 取られる。そこでは gamma−1<0 ゆえクランプが m=0 に頭打ちする（観測者-軸距離は非負・中心点が
+    // 食分の上限）。クランプなしなら m=gamma−1<0 となり magnitude が中心値を **超える** 非物理値に
+    // なる。既存テスト（追補C-1 は gamma=1.2>1 で m>0）はこの帯を踏まず、クランプ（および `.max(0.0)`
+    // の `remove`/`→.min` ミュータント）が gamma<1 で未検証だった。本テストがそれを縛る。
+
+    /// 極方向（x=0, y 軸上）へ向く軸を持つ時変合成供給源。gamma=|y| が center で内部極小 Y_MIN を
+    /// 取る（`y(jd)=Y_MIN+K·(jd−center)²`）。`shadow_axis_surface_point` の扁平楕円体半径
+    /// `r(ζ)=ζ²+(y/(1−f))²−1` は、Y_MIN>1−f（≈0.99665）なら全 ζ で正 ⇒ 根なし ⇒ 部分分岐を踏む
+    /// （gamma=Y_MIN<1 のまま）。Y_MIN=0.998 は (0.998/0.996647)²≈1.0027>1 を満たす。
+    struct PolarAxisSource {
         center_jd: f64,
-        /// x = X_MIN + K·(jd−center)²。X_MIN>1 ゆえ全域で gamma=|x|>1（軸は地表を外す）。
+        y_min: f64,
+        k: f64,
+        l1: f64,
+        l2: f64,
         window: TimeInterval<TtInstant>,
     }
 
-    /// 中心での x（=gamma の極小値）。1 超ゆえ軸は地表に届かない。
-    const AXIS_MISS_X_MIN: f64 = 1.2;
-    /// 放物線の曲率（小さく正で、窓内でも x>1 を保ちつつ明瞭な内部極小を作る）。
-    const AXIS_MISS_K: f64 = 50.0;
-
-    impl BesselianSource for AxisMissSource {
-        /// x=X_MIN+K·(jd−center)²（>1）, y=0, 他は有限固定値。gamma=√(x²+0)=x が center で極小。
+    impl BesselianSource for PolarAxisSource {
+        /// x=0（軸は y 軸上＝極方向）, y=Y_MIN+K·(jd−center)²（gamma=|y| が center で内部極小）, l1/l2 固定。
         fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
             let dj = t.jd2().jd() - self.center_jd;
             Ok(InstantaneousBesselianElements {
-                x: AXIS_MISS_X_MIN + AXIS_MISS_K * dj * dj,
-                y: 0.0,
+                x: 0.0,
+                y: self.y_min + self.k * dj * dj,
                 declination: Radians(0.0),
                 mu: Radians(0.0),
-                l1: 0.5,
-                l2: -0.01,
+                l1: self.l1,
+                l2: self.l2,
                 tan_f1: 0.0047,
                 tan_f2: 0.0046,
                 time_tt: t,
             })
         }
 
-        /// center_jd を内部（center ± 0.05 day）に持つ窓。gamma 極小（=X_MIN）が厳密に内部に来る。
         fn fit_interval(&self) -> TimeInterval<TtInstant> {
             self.window
         }
     }
 
-    /// 追補B（軸ミス結線）: 時変合成供給源で `solve_local_maximum` が **成功** し、その後
-    /// `shadow_axis_surface_point` が gamma>1 で失敗して `Err(Solver(RootNotBracketed))` が
-    /// `solve_greatest_eclipse` から伝播することを縛る。
+    /// 追補C-4（非中心帯の m クランプ・厳密ピン）: 極方向の軸（gamma<1 だが扁平楕円体で軸が外れる）の
+    /// 非中心皆既で `m = (gamma−1).max(0.0)` が m=0 に頭打ちされ、magnitude が中心値（m=0）に一致する。
     ///
-    /// Err の出所が `solve_local_maximum` ではなく `shadow_axis_surface_point` である根拠:
-    /// 供給源の gamma=|x|=X_MIN+K·(jd−center)² は center で **内部放物線極小** を持つので
-    /// `solve_local_maximum` はブラケットに成功する（≠ 時不変 ConstantSource の RootNotBracketed）。
-    /// その極小値（=center の gamma）は 1.2>1（下で独立確認）。よって地表交点が無く、
-    /// RootNotBracketed は影軸貫通段で発生し、上位へ透過する。
+    /// 構成: Y_MIN=0.998（>1−f≈0.99665 ⇒ 扁平軸ミス）・K=50・l1=0.54・l2=−0.01（皆既）。center で
+    /// gamma=0.998<1（非中心帯）。±0.05 day でも y=0.998+50·0.0025≈1.123 と窓内で内部極小は center に
+    /// 立つ。
+    ///
+    /// 独立にレジームを縛る（追認回避）: (a) 返った greatest 時刻で gamma=√(x²+y²)≈0.998<1（1e-6）、
+    /// (b) その時刻の `shadow_axis_surface_point(&elements, WGS84)` が `Err(Solver(RootNotBracketed))`
+    /// ＝扁平軸ミスで部分分岐を踏む。クランプのピン: magnitude が **m=0** の `eclipse_magnitude(0,l1,l2)`
+    /// ＝l1/(l1+l2)=0.54/0.53≈1.0189 に厳密一致（1e-9）。クランプなしなら m=gamma−1≈−0.002 で
+    /// `eclipse_magnitude(−0.002,l1,l2)` となり中心値を **超える**（より大）ため、m=0 値との一致は
+    /// クランプ除去 / `.max→.min` ミュータントを殺す。非中心皆既ゆえ magnitude>1・obscuration≈1。
     #[test]
-    fn greatest_noncentral_axis_miss_propagates_root_not_bracketed() {
+    fn greatest_noncentral_total_clamps_m_to_zero() {
         let dt = EspenakMeeusDeltaT;
         let center_jd = 2_457_986.768;
-        let src = AxisMissSource {
+        let half_day = 0.05;
+        let l1 = 0.54;
+        let l2 = -0.01;
+        let src = PolarAxisSource {
             center_jd,
+            y_min: 0.998,
+            k: 50.0,
+            l1,
+            l2,
             window: TimeInterval {
-                start: TtInstant::from_jd2(JulianDate2::new(center_jd - 0.05, 0.0)),
-                end: TtInstant::from_jd2(JulianDate2::new(center_jd + 0.05, 0.0)),
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
             },
         };
-
-        // center の gamma が 1.2 > 1（軸ミスの前提）であることを独立に確認する。
-        let g_center = gamma_at(&src, g_tt_jd(center_jd));
-        assert!(
-            (g_center - AXIS_MISS_X_MIN).abs() < 1e-12,
-            "center gamma {g_center} should equal X_MIN={AXIS_MISS_X_MIN}"
-        );
-        assert!(
-            g_center > 1.0,
-            "center gamma {g_center} must be > 1 (axis misses Earth)"
-        );
-
         let config = crate::config::EngineConfig::standard();
-        let r = solve_greatest_eclipse(&src, &dt, &config);
+        let sol = solve_greatest_eclipse(&src, &dt, &config)
+            .expect("non-central (oblate axis-miss, gamma<1) eclipse must yield Ok");
+
+        // (a) レジーム: gamma=√(x²+y²)≈0.998<1（非中心帯）を source.at 由来の別経路で縛る。
+        let g = gamma_at(&src, sol.greatest.time_tt);
+        assert!(
+            (sol.gamma - g).abs() < 1e-6,
+            "gamma={} must match independent √(x²+y²)={g} (tol 1e-6)",
+            sol.gamma
+        );
+        assert!(
+            (sol.gamma - 0.998).abs() < 1e-6,
+            "gamma {} must be ≈0.998 (non-central band, <1)",
+            sol.gamma
+        );
+        assert!(
+            sol.gamma < 1.0,
+            "gamma {} must be <1 (non-central band)",
+            sol.gamma
+        );
+
+        // (b) レジーム: 扁平楕円体で軸が外れる（部分分岐＝RootNotBracketed）。gamma<1 でも軸ミス。
+        let e = src
+            .at(sol.greatest.time_tt)
+            .expect("source.at should succeed at greatest-eclipse time");
+        assert!(
+            matches!(
+                shadow_axis_surface_point(&e, &Ellipsoid::WGS84),
+                Err(EclipseError::Solver(SolverError::RootNotBracketed))
+            ),
+            "oblate axis must miss the surface (RootNotBracketed) even though gamma<1"
+        );
+
+        // クランプのピン: magnitude は **m=0**（クランプ後）の eclipse_magnitude(0,l1,l2) に厳密一致。
+        // l1/(l1+l2)=0.54/0.53≈1.0189。クランプなしなら m=gamma−1≈−0.002 ⇒ eclipse_magnitude(−0.002,..)
+        // が **より大**（中心値超え）になるため、m=0 値との一致がクランプ除去 / `.max→.min` を殺す。
+        let want_mag = eclipse_magnitude(0.0, l1, l2);
         assert_eq!(
-            r,
-            Err(EclipseError::Solver(SolverError::RootNotBracketed)),
-            "axis-miss (interior gamma min >1) must propagate Solver(RootNotBracketed), got {r:?}"
+            sol.greatest.magnitude, want_mag,
+            "magnitude は m=0（.max(0.0) クランプ後）由来でなければならない"
+        );
+        assert!(
+            (sol.greatest.magnitude.0 - 0.54 / 0.53).abs() < 1e-9,
+            "clamped magnitude {} must be l1/(l1+l2)=0.54/0.53≈1.0189 (m=0)",
+            sol.greatest.magnitude.0
+        );
+        assert!(
+            sol.greatest.magnitude.0 > 1.0,
+            "non-central total magnitude {} must exceed 1",
+            sol.greatest.magnitude.0
+        );
+
+        // obscuration≈1: m=0 ⇒ separation=0、視半径比 ρ=(l1−l2)/(l1+l2)>1（皆既）ゆえ太陽が完全内包。
+        assert!(
+            (sol.greatest.obscuration.0 - 1.0).abs() < 1e-9,
+            "non-central total central obscuration {} must be 1.0 (m=0, contained)",
+            sol.greatest.obscuration.0
         );
     }
 
