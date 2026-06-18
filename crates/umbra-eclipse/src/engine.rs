@@ -17,11 +17,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use umbra_core::constants::EARTH_EQUATORIAL_RADIUS_M;
 use umbra_core::deltat::{decimal_year, DeltaTModel};
-use umbra_core::ellipsoid::Ellipsoid;
+use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid};
 use umbra_core::eop::EarthOrientation;
 use umbra_core::{
-    EspenakMeeusDeltaT, IersEopData, JulianDate2, TimeData, TimeInterval, TimeRange, TimeScales,
-    TtInstant, UtcInstant,
+    EspenakMeeusDeltaT, IersEopData, JulianDate2, Observer, Radians, SolverError, TimeData,
+    TimeInterval, TimeRange, TimeScales, TtInstant, UtcInstant,
 };
 use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
 
@@ -35,8 +35,15 @@ use crate::eclipse_filter::assess_eclipse_possibility;
 use crate::error::EclipseError;
 use crate::global::{classify_global_kind, solve_greatest_eclipse};
 use crate::global_contacts::solve_global_contact_set;
+use crate::horizontal::{classify_visibility, sun_horizontal, RefractionModel, Visibility};
+use crate::local_maximum::solve_local_maximum;
+use crate::magnitude::{eclipse_magnitude, eclipse_obscuration, EclipseMagnitude, Obscuration};
 use crate::path::{EclipsePath, PathOptions};
-use crate::results::{GlobalCircumstances, SolarEclipse};
+use crate::position_angle::contact_position_angle;
+use crate::projection::{project_observer_to_fundamental, ObserverFundamental};
+use crate::results::{
+    GlobalCircumstances, LocalCircumstances, LocalContact, LocalContactSet, SolarEclipse,
+};
 use crate::source::{BesselianSource, InstantaneousEvaluator};
 
 /// 1 日 = 86400 SI 秒。
@@ -209,6 +216,166 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
         Ok(eclipses)
     }
 
+    /// 観測地点の局地条件を計算する（ISSUE-043 S7b）。
+    ///
+    /// 既定 Standard は直接瞬時計算（`InstantaneousEvaluator`, ISSUE-037, fit 誤差ゼロ, B2）。
+    /// パイプライン: 観測者射影（ISSUE-024）→ 局地最大食（ISSUE-026, dm/dt=0）→ 食分/食面積
+    /// （ISSUE-027）→ 太陽高度方位/位置角/可視性（ISSUE-028・S7a PA）→ C1-C4 接触（ISSUE-025）→
+    /// `LocalCircumstances`（接触は UTC/TT 両方, A3 LocalContactSet）。
+    ///
+    /// **S7b-i 範囲**: 局地最大食・食分/食面積・最大食 `LocalContact`・可視性（最大食基準）のみ。
+    /// C1-C4 接触集合（`contacts.c1..c4`）は S7b-ii で充足する（本スライスでは `None`）。
+    pub fn local_circumstances(
+        &self,
+        eclipse: &SolarEclipse,
+        observer: Observer,
+    ) -> Result<LocalCircumstances, EclipseError> {
+        let root_config = RootConfig {
+            x_tolerance_days: self.config.root_tolerance_seconds / SECONDS_PER_DAY,
+            max_iterations: SEARCH_ROOT_MAX_ITER,
+        };
+        let re_km = EARTH_EQUATORIAL_RADIUS_M / 1000.0;
+        let r_sun_km = self.config.solar_radius_model.radius_km();
+        let r_moon_km = self.config.lunar_radius_model.k() * re_km;
+        let _ = self.config.earth_model;
+        let ellipsoid = Ellipsoid::WGS84;
+        let generated_at = utc_now();
+
+        // 観測者 → 地心動径成分 ρsinφ′/ρcosφ′（WGS84 扁平・標高込み, ISSUE-024）＋ 東経・測地緯度。
+        let geodetic_latitude = observer.latitude.radians();
+        let east_longitude = observer.longitude.radians();
+        let geo_obs = observer_geocentric(&ellipsoid, geodetic_latitude.0, observer.elevation.0);
+
+        // 探索窓: 全球部分食 [P1,P4]（無ければベッセル fit 区間）。局地接触/最大食はこの中。
+        let window = match (eclipse.global.partial_begin, eclipse.global.partial_end) {
+            (Some(p1), Some(p4)) => TimeInterval {
+                start: p1.time_tt,
+                end: p4.time_tt,
+            },
+            _ => eclipse.bessel.fit_interval,
+        };
+
+        // 供給源（search と同一の暦ジェネリック直接評価, ISSUE-037）。
+        let source = InstantaneousEvaluator::new(
+            &self.ephemeris,
+            &self.delta_t,
+            r_sun_km,
+            r_moon_km,
+            AstrometryOptions::standard(),
+            window,
+        );
+
+        // 局地最大食（dm/dt=0, ISSUE-026）。窓内に内部極小をブラケットできない遠方観測者は
+        // 全球最大食時刻に錨を打ち NotVisible・食分0 を返す（S7b 確定）。
+        match solve_local_maximum(&source, &geo_obs, east_longitude, window, root_config) {
+            Ok(max) => {
+                let elements = source.at(max.time_tt)?;
+                let of = project_observer_to_fundamental(&geo_obs, east_longitude, &elements);
+                // ζ 補正半径 L1'=l1−ζ·tanf1 / L2'=l2−ζ·tanf2（符号付き, global solve_greatest_eclipse と同方式）。
+                let l1p = elements.l1 - of.zeta * elements.tan_f1;
+                let l2p = elements.l2 - of.zeta * elements.tan_f2;
+                let magnitude = eclipse_magnitude(max.min_separation, l1p, l2p);
+                // 視半径比 ρ=(L1'−L2')/(L1'+L2')、視半径平面の中心離隔 separation=(1+ρ)·m/L1'。
+                let radius_ratio = (l1p - l2p) / (l1p + l2p);
+                let separation = (1.0 + radius_ratio) * max.min_separation / l1p;
+                let obscuration = eclipse_obscuration(separation, 1.0, radius_ratio);
+                // 最大食 LocalContact（最大食は接触点が月中心方向 ⇒ PA は σ=+1）。
+                let maximum = self.build_local_contact(
+                    &elements,
+                    &of,
+                    max.time_utc,
+                    max.time_tt,
+                    geodetic_latitude,
+                    east_longitude,
+                    false,
+                );
+                // 可視性（S7b-i は C1/C4 未計算ゆえ None。in_eclipse は食分>0 で判定）。
+                let in_eclipse = magnitude.0 > 0.0;
+                let visibility = classify_visibility(in_eclipse, None, maximum.sun_altitude, None);
+                Ok(LocalCircumstances {
+                    contacts: LocalContactSet {
+                        c1: None,
+                        c2: None,
+                        maximum,
+                        c3: None,
+                        c4: None,
+                    },
+                    magnitude,
+                    obscuration,
+                    maximum_altitude: maximum.sun_altitude,
+                    visibility,
+                    metadata: self.build_metadata(max.time_tt, generated_at),
+                })
+            }
+            Err(EclipseError::Solver(SolverError::RootNotBracketed)) => {
+                // 遠方観測者: 局地最小が窓内に無い → 非可視。全球最大食時刻に錨（食分0・接触なし）。
+                let time_tt = eclipse.global.greatest.time_tt;
+                let time_utc = eclipse.global.greatest.time_utc;
+                let elements = source.at(time_tt)?;
+                let of = project_observer_to_fundamental(&geo_obs, east_longitude, &elements);
+                let maximum = self.build_local_contact(
+                    &elements,
+                    &of,
+                    time_utc,
+                    time_tt,
+                    geodetic_latitude,
+                    east_longitude,
+                    false,
+                );
+                Ok(LocalCircumstances {
+                    contacts: LocalContactSet {
+                        c1: None,
+                        c2: None,
+                        maximum,
+                        c3: None,
+                        c4: None,
+                    },
+                    magnitude: EclipseMagnitude(0.0),
+                    obscuration: Obscuration(0.0),
+                    maximum_altitude: maximum.sun_altitude,
+                    visibility: Visibility::NotVisible,
+                    metadata: self.build_metadata(time_tt, generated_at),
+                })
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// 1 時点の `LocalContact` を組み立てる（時刻 ＋ 太陽高度方位 ＋ 位置角 PA ＋ 可視）。
+    ///
+    /// 太陽高度は幾何学的高度（大気差なし, conventions §7 既定）、方位は北0東回り（ISSUE-028）、
+    /// 位置角 PA は天の北0東回り（ISSUE-043 S7a, `umbral_interior` は皆既内接 C2/C3 のみ true）、
+    /// `visible` は太陽が地平上（幾何高度 ≥ 0）か。S7b-i は最大食のみ、S7b-ii で C1-C4 も使う。
+    #[allow(clippy::too_many_arguments)]
+    fn build_local_contact(
+        &self,
+        elements: &InstantaneousBesselianElements,
+        observer_fundamental: &ObserverFundamental,
+        time_utc: UtcInstant,
+        time_tt: TtInstant,
+        geodetic_latitude: Radians,
+        east_longitude: Radians,
+        umbral_interior: bool,
+    ) -> LocalContact {
+        let horizontal = sun_horizontal(
+            geodetic_latitude,
+            east_longitude,
+            time_tt,
+            RefractionModel::None,
+            &self.delta_t,
+        );
+        let position_angle =
+            contact_position_angle(elements, observer_fundamental, umbral_interior);
+        LocalContact {
+            time_utc,
+            time_tt,
+            sun_altitude: horizontal.altitude_geometric,
+            sun_azimuth: horizontal.azimuth,
+            position_angle,
+            visible: horizontal.altitude_geometric.0 >= 0.0,
+        }
+    }
+
     /// 計算メタデータ（レシピ＋生成時刻印）を組み立てる（accuracy.md §0）。暦名は `ephemeris.metadata()`、
     /// ΔT 名は `delta_t.model_name()`、ΔT 不確かさは最大食 TT の十進年で評価、月半径名は Debug
     /// （バリアント名）、地球モデルは WGS84 固定（現状単一）、ライブラリ版は crate version。
@@ -305,6 +472,7 @@ mod tests {
     use crate::config::{AccuracyProfile, EngineConfig, LunarRadiusModel, SolarRadiusModel};
     use crate::error::EclipseError;
     use crate::global::SolarEclipseKind;
+    use crate::horizontal::Visibility;
     use crate::magnitude::{EclipseMagnitude, Obscuration};
     use crate::path::PathOptions;
     use crate::results::{GlobalCircumstances, GreatestEclipse, SolarEclipse};
@@ -1050,6 +1218,400 @@ mod tests {
         assert!(
             (2024..2100).contains(&y),
             "utc_now の年が最近（2024..2100）: {y}"
+        );
+    }
+
+    // ==================================================================
+    // 9. local_circumstances(): 観測地点の局地条件（ISSUE-043 S7b-i）
+    //
+    // ## オラクル戦略（追認回避・物理事実＋構造契約を主軸）
+    // エンジンの内部結線コードを写経しない。取得経路は既存 `search_finds_2017_08_21_total_eclipse`
+    // と同一（`standard_engine_from_synthetic()` → `search(2017-08 窓)` →
+    // `event_key.starts_with("2017-08-21")` の SolarEclipse 抽出）。その実 SolarEclipse に対し:
+    //
+    // - **中心食地点**（皆既帯中心付近 37.5°N, 西経89.2°, 標高200m。local_maximum.rs の
+    //   central_observer と同緯度経度）: NASA 事実として 2017-08-21 は皆既。よって食分 > 1・
+    //   食面積 ≈ 1（>0.99）・最大食時 太陽地平上（北米昼）・visible==true。
+    // - **部分食地点**（高緯度 60°N, 西経100°。local_maximum.rs の partial_observer 相当）:
+    //   部分食（0 < magnitude < 1, obscuration < 1）。中心食地点と magnitude が明確に異なる
+    //   （observer 配線が効いている＝lat/lon 取り違え変異を撃破）。
+    // - **見えない観測者**（南半球 −40°S, 東経140°。2017 北米日食帯から十分離れ物理的に非可視）:
+    //   visibility==NotVisible・magnitude.0==0.0・obscuration.0==0.0。maximum は全球最大食時刻に
+    //   錨を打って充填（time_tt == eclipse.global.greatest.time_tt）。
+    //
+    // ## S7b-i 中間契約（本スライス固有）
+    // - **C1-C4 接触集合は常に None**（contacts.c1..c4 == None。S7b-ii で充足）。
+    // - **maximum は非 Option**（局地最大食で充填）。
+    // - **可視日食でも FullyVisible にはならず PartialVisible**（C1/C4 が None のため。S7b-ii で精緻化）。
+    //
+    // ## red 設計（本体未実装）
+    // `local_circumstances` は現状 `unimplemented!()` で panic するため、これを呼ぶ本群は
+    // 想定どおりの理由（unimplemented! の panic）で red になる。
+    // ==================================================================
+
+    /// 2017-08-21 皆既日食を search で取得し、その SolarEclipse を返すヘルパ（取得経路は
+    /// `search_finds_2017_08_21_total_eclipse` と同一・追認なしの独立取得）。
+    fn search_2017_total(engine: &StandardEngine) -> SolarEclipse {
+        let range = UtcRange {
+            start: utc(2017, 8, 1, 0, 0, 0.0),
+            end: utc(2017, 9, 1, 0, 0, 0.0),
+        };
+        let results = engine.search(range).expect("2017 年 8 月の探索は成功する");
+        results
+            .into_iter()
+            .find(|e| e.event_key.starts_with("2017-08-21"))
+            .expect("2017-08-21 の皆既日食が結果に含まれる")
+    }
+
+    /// 中心食地点の観測者（皆既帯中心付近 37.5°N, 西経89.2°, 標高200m）。
+    /// local_maximum.rs の central_observer と同緯度経度（西経は負）。
+    fn central_observer() -> Observer {
+        Observer::from_degrees(37.5, -89.2, 200.0).expect("有効な中心食地点観測者")
+    }
+
+    /// 部分食のみの観測者（高緯度 60°N, 西経100°）。local_maximum.rs の partial_observer 相当。
+    fn partial_observer() -> Observer {
+        Observer::from_degrees(60.0, -100.0, 200.0).expect("有効な部分食地点観測者")
+    }
+
+    /// 2017 北米日食帯から十分離れた南半球の観測者（−40°S, 東経140°）＝物理的に非可視。
+    /// 2017-08-21 の食域（北米・北大西洋）から地球の反対側に近く、月影は到達しない。
+    fn invisible_observer() -> Observer {
+        Observer::from_degrees(-40.0, 140.0, 0.0).expect("有効な非可視地点観測者")
+    }
+
+    /// **主要テスト（中心食地点・皆既）**: 2017-08-21 を中心食地点で見ると皆既条件になる。
+    /// 食分 > 1（皆既=NASA 事実）・食面積 ≈ 1（>0.99）・最大食 太陽地平上（北米昼・alt>0）・
+    /// visible==true・visibility==PartialVisible（S7b-i 中間状態）・最大食 UTC は 18 時台
+    /// ballpark（17.5〜19.0 時）・**C1-C4 すべて None**（S7b-i）・maximum_altitude==maximum.sun_altitude。
+    ///
+    /// 殺す変異: observer の lat/lon 取り違え（部分食/非可視と magnitude 差で別途撃破）、
+    /// ζ 補正欠落（皆既で magnitude>1・obscuration≈1 を縛る）、maximum_altitude と sun_altitude の
+    /// 不一致、可視性の取り違え（PartialVisible を縛る）、C1-C4 を誤って Some にする。
+    #[test]
+    fn local_circumstances_central_site_is_total() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+        let lc = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("中心食地点の局地条件は成功する");
+
+        // 皆既（NASA 事実）: 食分 > 1・食面積 ≈ 1。ζ 補正欠落だとここが崩れる。
+        assert!(
+            lc.magnitude.0 > 1.0,
+            "中心食地点は皆既なので食分 > 1: {}",
+            lc.magnitude.0
+        );
+        assert!(
+            lc.obscuration.0 > 0.99,
+            "皆既なので食面積 ≈ 1（>0.99）: {}",
+            lc.obscuration.0
+        );
+
+        // 最大食時 太陽は地平上（北米昼）・visible==true。
+        let mx = lc.contacts.maximum;
+        assert!(
+            mx.sun_altitude.0 > 0.0,
+            "中心食地点の最大食時 太陽は地平上: alt = {}",
+            mx.sun_altitude.0
+        );
+        assert!(mx.visible, "太陽地平上ゆえ visible==true");
+
+        // maximum_altitude は maximum.sun_altitude と一致（別フィールドからの転記漏れを撃破）。
+        assert_eq!(
+            lc.maximum_altitude, mx.sun_altitude,
+            "maximum_altitude == contacts.maximum.sun_altitude"
+        );
+
+        // S7b-i 中間契約: 可視日食でも C1/C4 が None ゆえ PartialVisible（FullyVisible でない）。
+        assert_eq!(
+            lc.visibility,
+            Visibility::PartialVisible,
+            "S7b-i 中間: 食あり・地平上だが C1/C4=None ゆえ PartialVisible"
+        );
+
+        // 最大食 UTC は 2017-08-21 18 時台 ballpark（17.5〜19.0 時）。窓/時刻取り違えを撃破。
+        let (y, mo, d, h, mi, _) = mx.time_utc.to_gregorian();
+        assert_eq!((y, mo, d), (2017, 8, 21), "最大食 UTC 日付は 2017-08-21");
+        let hour_frac = f64::from(h) + f64::from(mi) / 60.0;
+        assert!(
+            (17.5..=19.0).contains(&hour_frac),
+            "最大食 UTC は 18 時台 ballpark（17.5〜19.0h）: {hour_frac}h"
+        );
+
+        // S7b-i: C1-C4 接触集合は常に None（S7b-ii で充足）。誤って Some にする変異を撃破。
+        assert!(lc.contacts.c1.is_none(), "S7b-i: c1=None");
+        assert!(lc.contacts.c2.is_none(), "S7b-i: c2=None");
+        assert!(lc.contacts.c3.is_none(), "S7b-i: c3=None");
+        assert!(lc.contacts.c4.is_none(), "S7b-i: c4=None");
+    }
+
+    /// **部分食地点**: 高緯度 60°N/西経100° は本影外＝部分食。0 < magnitude < 1・obscuration < 1。
+    /// 中心食地点と magnitude が明確に異なる（observer 配線が効いている）。C1-C4 None。
+    ///
+    /// 殺す変異: observer の lat/lon を無視して常に中心食地点の値を返す（magnitude 差で撃破）、
+    /// 部分食地点を皆既扱い（magnitude<1 を縛る）、食なし扱い（magnitude>0 を縛る）。
+    #[test]
+    fn local_circumstances_partial_site_is_partial() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+
+        let central = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("中心食地点の局地条件は成功する");
+        let partial = engine
+            .local_circumstances(&eclipse, partial_observer())
+            .expect("部分食地点の局地条件は成功する");
+
+        // 部分食: 0 < magnitude < 1・obscuration < 1。
+        assert!(
+            partial.magnitude.0 > 0.0,
+            "部分食地点でも食はある: magnitude = {}",
+            partial.magnitude.0
+        );
+        assert!(
+            partial.magnitude.0 < 1.0,
+            "部分食地点は皆既でない: magnitude = {}",
+            partial.magnitude.0
+        );
+        assert!(
+            partial.obscuration.0 < 1.0,
+            "部分食地点の食面積 < 1: {}",
+            partial.obscuration.0
+        );
+
+        // observer 配線が効いている: 中心食地点と部分食地点で magnitude が明確に異なる
+        // （lat/lon 取り違え＝両地点を同一視する変異を撃破）。
+        assert!(
+            (central.magnitude.0 - partial.magnitude.0).abs() > 0.05,
+            "観測者で結果が変わる（中心食 {} vs 部分食 {}）",
+            central.magnitude.0,
+            partial.magnitude.0
+        );
+
+        // S7b-i: C1-C4 接触集合は常に None。
+        assert!(partial.contacts.c1.is_none(), "S7b-i: c1=None");
+        assert!(partial.contacts.c2.is_none(), "S7b-i: c2=None");
+        assert!(partial.contacts.c3.is_none(), "S7b-i: c3=None");
+        assert!(partial.contacts.c4.is_none(), "S7b-i: c4=None");
+    }
+
+    /// **見えない観測者**: 2017 北米日食帯から離れた南半球（−40°S, 東経140°）は非可視。
+    /// 観測可能な契約（内部分岐に依らず保証されるべき値）を縛る: visibility==NotVisible・
+    /// magnitude.0==0.0・obscuration.0==0.0・C1-C4 None。
+    ///
+    /// 注（分岐）: この地点は探索窓 [P1,P4] 内に局地最接近の極小を持つため `solve_local_maximum`
+    /// は成功し（`Ok` 分岐）、`min_sep ≥ L1` で食分 0＝NotVisible になる（maximum は局地最接近時刻
+    /// ＝窓内）。全球最大食時刻への錨打ちは「窓内に極小をブラケットできない」遠方観測者
+    /// （`RootNotBracketed` 分岐）専用であり、本地点はそちらを通らない。よって maximum.time_tt は
+    /// 局地最接近時刻（[P1,P4] 内）であって全球最大食 TT と一致するとは限らない。ここでは
+    /// **非可視の観測可能契約**（NotVisible・食分/食面積 0）と maximum が窓内であることを縛る。
+    ///
+    /// 殺す変異: 非可視地点で食ありを返す（magnitude/obscuration 0 を縛る）、可視性分類の取り違え
+    /// （NotVisible を縛る）、maximum を窓外の時刻にする。
+    #[test]
+    fn local_circumstances_invisible_site_is_not_visible() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+        let lc = engine
+            .local_circumstances(&eclipse, invisible_observer())
+            .expect("非可視地点でも局地条件は成功する（NotVisible を返す）");
+
+        // 食なし（観測可能契約・内部分岐に依らない）。
+        assert_eq!(
+            lc.magnitude.0, 0.0,
+            "非可視地点は食なし: magnitude = {}",
+            lc.magnitude.0
+        );
+        assert_eq!(
+            lc.obscuration.0, 0.0,
+            "非可視地点は食面積 0: {}",
+            lc.obscuration.0
+        );
+        assert_eq!(
+            lc.visibility,
+            Visibility::NotVisible,
+            "非可視地点は NotVisible"
+        );
+
+        // maximum は全球部分食窓 [P1,P4] 内（局地最接近 or 全球最大食錨。窓外時刻への取り違えを撃破）。
+        let p1_jd = eclipse
+            .global
+            .partial_begin
+            .expect("2017 は全球 P1 を持つ")
+            .time_tt
+            .jd2()
+            .jd();
+        let p4_jd = eclipse
+            .global
+            .partial_end
+            .expect("2017 は全球 P4 を持つ")
+            .time_tt
+            .jd2()
+            .jd();
+        let max_jd = lc.contacts.maximum.time_tt.jd2().jd();
+        assert!(
+            p1_jd <= max_jd && max_jd <= p4_jd,
+            "非可視地点の maximum は全球部分食窓 [P1,P4] 内: P1={p1_jd} max={max_jd} P4={p4_jd}"
+        );
+
+        // S7b-i: C1-C4 接触集合は常に None。
+        assert!(lc.contacts.c1.is_none(), "S7b-i: c1=None");
+        assert!(lc.contacts.c2.is_none(), "S7b-i: c2=None");
+        assert!(lc.contacts.c3.is_none(), "S7b-i: c3=None");
+        assert!(lc.contacts.c4.is_none(), "S7b-i: c4=None");
+    }
+
+    /// **錨分岐（窓内でブラケット不能な観測者）**: `solve_local_maximum` が `RootNotBracketed`
+    /// を返す場合、maximum を全球最大食時刻に錨打ちし NotVisible・食分0 を返す（S7b 確定）。
+    /// **退化窓 `[t,t]`（fit_interval の start==end）で本分岐を決定的に励起する**: 退化窓では
+    /// 粗走査の全サンプルが同値→最小が窓端 (min_i==0)→機構的にブラケット不成立（local_maximum.rs
+    /// の `constant_m2_flat_bottom_is_graceful_root_not_bracketed` と同経路）。partial_begin/end は
+    /// `minimal_eclipse` で None ゆえ探索窓は bessel.fit_interval へフォールバックする。
+    ///
+    /// 殺す変異: 錨時刻を greatest 以外にする（time_tt/time_utc 参照差し替え）、錨分岐の magnitude/
+    /// obscuration を 0 以外にする、visibility を NotVisible 以外にする、錨分岐そのものの削除。
+    #[test]
+    fn local_circumstances_unbracketable_window_anchors_at_global_greatest() {
+        let engine = standard_engine_from_synthetic();
+        // 退化窓 [greatest, greatest] の合成日食（partial_begin/end=None → 窓=bessel.fit_interval）。
+        let mut eclipse = minimal_eclipse();
+        let anchor_tt = eclipse.global.greatest.time_tt;
+        eclipse.bessel.fit_interval = umbra_core::TimeInterval {
+            start: anchor_tt,
+            end: anchor_tt,
+        };
+        // 前提: partial_begin/end が None（窓は bessel.fit_interval へフォールバックする）。
+        assert!(
+            eclipse.global.partial_begin.is_none() && eclipse.global.partial_end.is_none(),
+            "前提: 合成日食は全球接触 P1/P4 を持たない（窓は fit_interval）"
+        );
+
+        let lc = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("退化窓でも局地条件は成功する（NotVisible の錨を返す）");
+
+        // 錨: maximum は全球最大食時刻（TT/UTC 両方）に一致。
+        assert_eq!(
+            lc.contacts.maximum.time_tt, eclipse.global.greatest.time_tt,
+            "錨分岐: maximum.time_tt は全球最大食 TT"
+        );
+        assert_eq!(
+            lc.contacts.maximum.time_utc, eclipse.global.greatest.time_utc,
+            "錨分岐: maximum.time_utc は全球最大食 UTC"
+        );
+        // 食なし・非可視。
+        assert_eq!(lc.magnitude.0, 0.0, "錨分岐は食分 0");
+        assert_eq!(lc.obscuration.0, 0.0, "錨分岐は食面積 0");
+        assert_eq!(lc.visibility, Visibility::NotVisible, "錨分岐は NotVisible");
+        // C1-C4 None。
+        assert!(
+            lc.contacts.c1.is_none()
+                && lc.contacts.c2.is_none()
+                && lc.contacts.c3.is_none()
+                && lc.contacts.c4.is_none(),
+            "S7b-i: C1-C4 は None"
+        );
+    }
+
+    /// **UTC/TT 整合**: maximum.time_utc == tt_to_utc(maximum.time_tt)（post-1972）。
+    /// 中心食地点で確認（time_utc/time_tt の取り違えを撃破）。
+    ///
+    /// 殺す変異: time_utc に time_tt を入れる（または逆）、UTC 変換忘れ。
+    #[test]
+    fn local_circumstances_maximum_utc_tt_consistent() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+        let lc = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("中心食地点の局地条件は成功する");
+
+        let mx = lc.contacts.maximum;
+        let expected_utc = umbra_core::time::tt_to_utc(mx.time_tt)
+            .expect("最大食 TT は post-1972 で UTC 変換可能");
+        // 同一瞬時（JD 差 < 1ms 相当）。
+        let got_jd = mx.time_utc.jd2().jd();
+        let want_jd = expected_utc.jd2().jd();
+        assert!(
+            (got_jd - want_jd).abs() < 1.0 / SECONDS_PER_DAY,
+            "maximum.time_utc == tt_to_utc(maximum.time_tt): got_jd={got_jd} want_jd={want_jd}"
+        );
+    }
+
+    /// **alt/az/PA の健全性**: 中心食地点の最大食 LocalContact について、
+    /// sun_altitude ∈ [-90,90]・sun_azimuth ∈ [0,360)・position_angle ∈ [0,360) かつすべて有限。
+    /// 厳密値は flaky ゆえ範囲のみ縛る（PA は最大食 σ=+1 で有限・範囲内）。
+    ///
+    /// 殺す変異: 角度の値域違反（ラジアン/度取り違え等）、PA を非有限/未計算で素通し。
+    #[test]
+    fn local_circumstances_angles_in_valid_ranges() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+        let lc = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("中心食地点の局地条件は成功する");
+
+        let mx = lc.contacts.maximum;
+        assert!(mx.sun_altitude.0.is_finite(), "sun_altitude 有限");
+        assert!(mx.sun_azimuth.0.is_finite(), "sun_azimuth 有限");
+        assert!(mx.position_angle.0.is_finite(), "position_angle 有限");
+        assert!(
+            (-90.0..=90.0).contains(&mx.sun_altitude.0),
+            "sun_altitude ∈ [-90,90]: {}",
+            mx.sun_altitude.0
+        );
+        assert!(
+            (0.0..360.0).contains(&mx.sun_azimuth.0),
+            "sun_azimuth ∈ [0,360): {}",
+            mx.sun_azimuth.0
+        );
+        assert!(
+            (0.0..360.0).contains(&mx.position_angle.0),
+            "position_angle ∈ [0,360): {}",
+            mx.position_angle.0
+        );
+    }
+
+    /// **metadata レシピ**: local_circumstances の metadata が search と同じレシピで充填される。
+    /// 暦モデル/版は暦自身の metadata()（独立オラクル）、ΔT モデル名="Espenak-Meeus"・地球="WGS84"・
+    /// 月半径="IauMean"・精度=Standard・非空 library_version・正の ΔT 不確かさ。
+    ///
+    /// 殺す変異: metadata 転記漏れ・モデル名のハードコード誤り・ΔT 不確かさ 0 固定。
+    #[test]
+    fn local_circumstances_metadata_recipe() {
+        let engine = standard_engine_from_synthetic();
+        let eclipse = search_2017_total(&engine);
+        let lc = engine
+            .local_circumstances(&eclipse, central_observer())
+            .expect("中心食地点の局地条件は成功する");
+
+        let m = &lc.metadata;
+        assert_eq!(
+            m.ephemeris_model,
+            AnalyticalEphemeris::new().metadata().model,
+            "ephemeris_model は暦の metadata().model を転記"
+        );
+        assert_eq!(
+            m.ephemeris_version,
+            AnalyticalEphemeris::new().metadata().version,
+            "ephemeris_version は暦の metadata().version を転記"
+        );
+        assert_eq!(m.delta_t_model, "Espenak-Meeus", "ΔT モデル名");
+        assert_eq!(m.earth_model, "WGS84", "地球モデル名");
+        assert_eq!(
+            m.lunar_radius_model, "IauMean",
+            "月半径モデル名（Standard）"
+        );
+        assert_eq!(
+            m.accuracy_profile,
+            AccuracyProfile::Standard,
+            "精度プロファイルは Standard"
+        );
+        assert!(!m.library_version.is_empty(), "library_version は非空");
+        assert!(
+            m.delta_t_uncertainty_seconds > 0.0,
+            "ΔT 不確かさは正: {}",
+            m.delta_t_uncertainty_seconds
         );
     }
 }

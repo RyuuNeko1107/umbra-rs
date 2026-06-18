@@ -52,6 +52,12 @@ jobs:
         #     非現実的なため `--skip` でスキップし、それにより撃破できなくなる search の可殺変異
         #     （月半径配線・fit 区間 match arm）も含め search の全変異を除外。実回帰ガードは通常 CI の
         #     `cargo test -p umbra-eclipse`（統合テスト込み）が担う。（docs/reviews/mutation-search.md）
+        #   - EclipseEngine::local_circumstances / build_local_contact: 局地条件のオーケストレーション。
+        #     局地条件テスト群（6 件）は内部で search を実走し各々 ≈300s のため `--skip local_circumstances`
+        #     でスキップ。それにより撃破できなくなる両者の変異を除外（下位プリミティブと ζ 補正式は
+        #     独立検証済み・統合テストが配線を縛る。build_local_contact は単体ミューテーション 0 missed）。
+        #     実回帰ガードは通常 CI の `cargo test -p umbra-eclipse`（統合テスト込み）が担う。
+        #     （docs/reviews/mutation-local-circumstances.md）
         run: >-
           docker compose -p umbra-rs run --rm rust
-          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --package xtask --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds' --exclude-re 'with <= in.*BesselianPolynomial>::at' --exclude-re 'with >= in.*BesselianPolynomial>::at' --exclude-re 'in solve_zero_in_window' --exclude-re 'with <= in.*assess_eclipse_possibility' --exclude-re 'in scan_point_count' --exclude-re 'descending_sign_change_bracket' --exclude-re 'with >= in.*l2_changes_sign' --exclude-re 'with <= in.*l2_changes_sign' --exclude-re 'eop.rs.* read_source' --exclude-re 'eop.rs.* verify_against_disk' --exclude-re 'eop.rs.*with == in unpack_records' --exclude-re 'eop.rs.*with >= in unpack_records' --exclude-re 'EclipseEngine<.*>::search' -- --skip search_finds_2017_08_21_total_eclipse"
+          bash -c "cargo install cargo-mutants --locked && cargo mutants --package umbra-core --package umbra-ephemeris --package umbra-eclipse --package xtask --exclude '**/solver.rs' --exclude-re 'with <= in.*delta_t_seconds' --exclude-re 'with <= in.*BesselianPolynomial>::at' --exclude-re 'with >= in.*BesselianPolynomial>::at' --exclude-re 'in solve_zero_in_window' --exclude-re 'with <= in.*assess_eclipse_possibility' --exclude-re 'in scan_point_count' --exclude-re 'descending_sign_change_bracket' --exclude-re 'with >= in.*l2_changes_sign' --exclude-re 'with <= in.*l2_changes_sign' --exclude-re 'eop.rs.* read_source' --exclude-re 'eop.rs.* verify_against_disk' --exclude-re 'eop.rs.*with == in unpack_records' --exclude-re 'eop.rs.*with >= in unpack_records' --exclude-re 'EclipseEngine<.*>::search' --exclude-re 'EclipseEngine<.*>::local_circumstances' --exclude-re 'EclipseEngine<.*>::build_local_contact' -- --skip search_finds_2017_08_21_total_eclipse --skip local_circumstances"
