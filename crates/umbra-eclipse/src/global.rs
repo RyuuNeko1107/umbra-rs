@@ -15,6 +15,7 @@ use crate::besselian::BesselianElements;
 use crate::config::EngineConfig;
 use crate::conjunction::RootConfig;
 use crate::error::EclipseError;
+use crate::global_contacts::solve_global_contacts;
 use crate::horizontal::{sun_horizontal, RefractionModel};
 use crate::local_maximum::solve_local_maximum;
 use crate::magnitude::{eclipse_magnitude, eclipse_obscuration};
@@ -23,7 +24,7 @@ use crate::results::GreatestEclipse;
 use crate::source::BesselianSource;
 use umbra_core::deltat::DeltaTModel;
 use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid, GeocentricObserver};
-use umbra_core::Radians;
+use umbra_core::{JulianDate2, Radians, TtInstant};
 
 /// 1 日 = 86400 SI 秒（root_tolerance を日へ換算）。
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -170,6 +171,90 @@ where
         sun_altitude,
     };
     Ok(GreatestEclipseSolution { greatest, gamma })
+}
+
+/// 全球の日食種別（Total/Annular/Hybrid/Partial/NonCentral）を時系列込みで判定する（ISSUE-043 S6b-iii）。
+///
+/// 瞬時 [`classify`] が gamma＋最大食時 l2 符号で基本種別（Total/Annular/Partial/NonCentral 系）を返すが、
+/// **Hybrid（中心線上で金環⇄皆既が切替わる）は単一時刻では判定不能**。本関数は最大食
+/// （地心観測者 ρ=0 の [`solve_local_maximum`]）で基本種別を取り、中心食（Total/Annular）なら全球
+/// 中心食区間 [U1,U4]（[`solve_global_contacts`]）で l2 の符号反転を走査して Hybrid を上書きする。
+/// `None` は探索窓に日食なし。
+#[allow(dead_code)] // S6c（classify_global / search 結線）が消費するまで未使用。
+pub(crate) fn classify_global_kind<B: BesselianSource>(
+    source: &B,
+    config: RootConfig,
+) -> Result<Option<SolarEclipseKind>, EclipseError> {
+    // 1. 最大食（gamma 最小）時刻: 地心観測者 ρ=0 の局地最大食（投影 ξ=η=0 ⇒ m²=x²+y²=gamma²）。
+    let geocenter = GeocentricObserver {
+        rho_sin_phi_prime: 0.0,
+        rho_cos_phi_prime: 0.0,
+    };
+    let max = solve_local_maximum(
+        source,
+        &geocenter,
+        Radians::new(0.0),
+        source.fit_interval(),
+        config,
+    )?;
+
+    // 2. 最大食時の瞬時要素から基本種別（classify は瞬時 gamma＋l2 符号）。日食なしは None。
+    let e = source.at(max.time_tt)?;
+    let base = classify(&BesselianElements {
+        x: e.x,
+        y: e.y,
+        declination: e.declination,
+        l1: e.l1,
+        l2: e.l2,
+        tan_f1: e.tan_f1,
+        tan_f2: e.tan_f2,
+    });
+    let Some(base) = base else { return Ok(None) };
+
+    // 3. Hybrid 上書き: 中心食（Total/Annular）で全球中心食区間 [U1,U4] の l2 が符号反転なら Hybrid。
+    //    部分食・非中心は中心食区間が無く Hybrid 対象外（base をそのまま返す）。
+    if matches!(base, SolarEclipseKind::Total | SolarEclipseKind::Annular) {
+        let contacts = solve_global_contacts(source, config)?;
+        if let (Some(u1), Some(u4)) = (contacts.u1, contacts.u4) {
+            if l2_changes_sign(source, u1.time_tt, u4.time_tt)? {
+                return Ok(Some(SolarEclipseKind::Hybrid));
+            }
+        }
+    }
+    Ok(Some(base))
+}
+
+/// 区間 `[start_tt, end_tt]` で本影半径 l2 が符号反転する（正と負の両方を取る）かを粗走査で判定する。
+///
+/// Hybrid（中心線上で金環⇄皆既が切替わる）の検出に用いる。**サンプル数は load-bearing**: 細かさが
+/// 足りないと、両端が同符号で中央だけ反対符号（金環-皆既-金環など）の短い切替帯を取りこぼし偽陰性に
+/// なる（`scan_point_count` 系の純解像度＝等価とは異なる）。ハイブリッドの中心線皆既/金環区間（数分〜
+/// オーダー）を確実に捉えるため十分大きく取る。符号判定 `l2>0`/`l2<0` も load-bearing。
+#[allow(dead_code)]
+#[allow(clippy::cast_precision_loss)]
+fn l2_changes_sign<B: BesselianSource>(
+    source: &B,
+    start_tt: TtInstant,
+    end_tt: TtInstant,
+) -> Result<bool, EclipseError> {
+    /// 中心食区間の l2 符号走査の分割数。5 時間級の [U1,U4] でも刻み ~1 分で短い切替帯を捉える。
+    const SAMPLES: usize = 256;
+    let t0 = start_tt.jd2().jd();
+    let t1 = end_tt.jd2().jd();
+    let mut saw_positive = false;
+    let mut saw_negative = false;
+    for i in 0..=SAMPLES {
+        let frac = i as f64 / SAMPLES as f64;
+        let jd = t0 + (t1 - t0) * frac;
+        let l2 = source.at(TtInstant::from_jd2(JulianDate2::from_jd(jd)))?.l2;
+        if l2 > 0.0 {
+            saw_positive = true;
+        }
+        if l2 < 0.0 {
+            saw_negative = true;
+        }
+    }
+    Ok(saw_positive && saw_negative)
 }
 
 #[cfg(test)]
@@ -821,5 +906,540 @@ mod tests {
             Err(EclipseError::Solver(SolverError::RootNotBracketed)),
             "axis-miss (interior gamma min >1) must propagate Solver(RootNotBracketed), got {r:?}"
         );
+    }
+
+    // ====================================================================
+    // classify_global_kind（ISSUE-043 S6b-iii・全球の日食種別判定）
+    // ====================================================================
+    //
+    // ## オラクル戦略（追認回避）
+    // - 実日食（2017/2023）の種別は **NASA 公表事実**（既知）をオラクルにする。実装内部の
+    //   `classify` 出力と照合しない（追認回避）。同時に独立に l2 符号を `source.at(t).l2` で
+    //   標本化し、純皆既なら全域で l2<0・純金環なら全域で l2>0 を確認して幾何を裏取りする。
+    // - Hybrid 機構は **合成供給源** で証明する: gamma が中心内部極小（gamma_min<0.9972）を持ち、
+    //   かつ l2 が中心食区間で 0 を跨ぐ（中心 −δ と +δ で逆符号）ことを **独立に標本化** して
+    //   「真にハイブリッドな幾何」であることを縛る。単一時刻の classify は中心（l2≈0）では Hybrid を
+    //   返せない（時系列 [U1,U4] 走査が必須）こともコメントで明示する。
+
+    /// classify_global_kind 用の Brent 設定（接触/最大食 solver 共通・±2s 目標の 1/10 以下）。
+    fn classify_config() -> RootConfig {
+        RootConfig {
+            x_tolerance_days: 1e-9,
+            max_iterations: 200,
+        }
+    }
+
+    /// 種別1（実 Total・2017-08-21）: 探索窓 [2457986,2457988] ⇒ Some(Total)（NASA 事実）。
+    /// 独立裏取り: 最大食付近で l2<0 が **終始** 保たれる（符号反転なし＝純皆既で Hybrid ではない）。
+    #[test]
+    fn classify_global_total_real_2017() {
+        let dt = EspenakMeeusDeltaT;
+        let src = DirectBesselianSource::new(G_R_SUN, G_R_MOON, &dt, solve_window_2017());
+
+        // 独立裏取り: 最大食 TT-JD≈2457986.768 の前後で l2<0（皆既・符号反転なし）。
+        let center_jd = 2_457_986.768;
+        for &off in &[-0.02_f64, -0.005, 0.0, 0.005, 0.02] {
+            let e = src
+                .at(g_tt_jd(center_jd + off))
+                .expect("source.at should succeed near 2017 eclipse");
+            assert!(
+                e.l2 < 0.0,
+                "2017 is a pure total: l2 must stay negative, got l2={} at off={off}",
+                e.l2
+            );
+        }
+
+        let kind =
+            classify_global_kind(&src, classify_config()).expect("2017 eclipse should classify");
+        assert_eq!(kind, Some(Total), "2017-08-21 is a total eclipse (NASA)");
+    }
+
+    /// 種別2（実 Annular・2023-10-14）: 探索窓 [2460231.5,2460233.0] ⇒ Some(Annular)（NASA 事実）。
+    /// 独立裏取り: 最大食付近で l2>0 が **終始** 保たれる（金環・符号反転なし）。
+    #[test]
+    fn classify_global_annular_real_2023() {
+        let dt = EspenakMeeusDeltaT;
+        let src = DirectBesselianSource::new(G_R_SUN, G_R_MOON, &dt, solve_window_2023());
+
+        // 独立裏取り: 最大食 TT-JD≈2460232.25 の前後で l2>0（金環・符号反転なし）。
+        let center_jd = 2_460_232.25;
+        for &off in &[-0.02_f64, -0.005, 0.0, 0.005, 0.02] {
+            let e = src
+                .at(g_tt_jd(center_jd + off))
+                .expect("source.at should succeed near 2023 eclipse");
+            assert!(
+                e.l2 > 0.0,
+                "2023 is a pure annular: l2 must stay positive, got l2={} at off={off}",
+                e.l2
+            );
+        }
+
+        let kind =
+            classify_global_kind(&src, classify_config()).expect("2023 eclipse should classify");
+        assert_eq!(
+            kind,
+            Some(Annular),
+            "2023-10-14 is an annular eclipse (NASA)"
+        );
+    }
+
+    /// Hybrid 機構を証明する時変合成供給源（global_contacts の `SyntheticGammaSource` と同形だが
+    /// **l2 を時間の関数**にする）。
+    ///   x(jd) = X_MIN + K·(jd−center)²（X_MIN=0.3<0.9972 ⇒ 中心食, K=50, y=0）。
+    ///   l2(jd) = L2_SLOPE·(jd−center)（center で 0 を跨ぐ ⇒ 中心食区間で金環⇄皆既が切替わる）。
+    /// gamma=√(x²+0)=x が center で内部極小。中心食区間 [U1,U4] で l2 が符号反転 ⇒ Hybrid。
+    struct HybridSource {
+        center_jd: f64,
+        window: TimeInterval<TtInstant>,
+    }
+
+    /// gamma の中心極小値（=X_MIN）。0.9972 未満ゆえ中心食（Total/Annular）。
+    const HYBRID_X_MIN: f64 = 0.3;
+    /// 放物線曲率（小さく正・中心内部極小を作りつつ窓端で gamma を半影限界超へ持ち上げる）。
+    const HYBRID_K: f64 = 50.0;
+    /// l2 の時間勾配。l2=L2_SLOPE·(jd−center)。±0.02 day で |l2|≈0.01 に達する。
+    const HYBRID_L2_SLOPE: f64 = 0.5;
+
+    impl BesselianSource for HybridSource {
+        /// x=X_MIN+K·(jd−center)²（中心極小 0.3）, y=0, l2=L2_SLOPE·(jd−center)（center で符号反転）。
+        fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
+            let dj = t.jd2().jd() - self.center_jd;
+            Ok(InstantaneousBesselianElements {
+                x: HYBRID_X_MIN + HYBRID_K * dj * dj,
+                y: 0.0,
+                declination: Radians(0.0),
+                mu: Radians(0.0),
+                l1: 0.54,
+                l2: HYBRID_L2_SLOPE * dj,
+                tan_f1: 0.0047,
+                tan_f2: 0.0046,
+                time_tt: t,
+            })
+        }
+
+        fn fit_interval(&self) -> TimeInterval<TtInstant> {
+            self.window
+        }
+    }
+
+    /// 種別3（合成 Hybrid・厳密ピン）: gamma が中心内部極小（gamma_min=0.3<0.9972 ⇒ 中心食）を持ち、
+    /// l2 が中心食区間で 0 を跨ぐ供給源 ⇒ `Some(Hybrid)`。
+    ///
+    /// 独立裏取り（呼出前）: (a) gamma_min=X_MIN=0.3<0.9972（中心食であること）、
+    /// (b) center−δ と center+δ で l2 が逆符号（中心食区間で金環⇄皆既が切替わる＝真のハイブリッド幾何）。
+    /// 注: center 単一時刻では l2≈0 で classify は Hybrid を返せない。時系列 [U1,U4] の符号走査が必須。
+    #[test]
+    fn classify_global_hybrid_synthetic() {
+        let center_jd = 2_457_986.768;
+        // 窓: center ± 0.2 day。端で x=0.3+50·0.04=2.3>半影限界 ⇒ P1/P4・U1/U4 が窓内に括られる。
+        let half_day = 0.2;
+        let src = HybridSource {
+            center_jd,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        };
+
+        // (a) 中心食であること: gamma_min=X_MIN=0.3 < 0.9972（CENTRAL_LIMIT）。
+        let g_center = gamma_at(&src, g_tt_jd(center_jd));
+        assert!(
+            (g_center - HYBRID_X_MIN).abs() < 1e-12,
+            "center gamma {g_center} should equal X_MIN={HYBRID_X_MIN}"
+        );
+        assert!(
+            g_center < 0.9972,
+            "center gamma {g_center} must be < 0.9972 (central ⇒ Total/Annular base kind)"
+        );
+
+        // (b) 中心食区間で l2 が両符号を取る（真のハイブリッド幾何）。
+        let delta = 0.02; // 中心食区間 |dj|<0.118 day の内側。
+        let l2_minus = src
+            .at(g_tt_jd(center_jd - delta))
+            .expect("source.at should succeed")
+            .l2;
+        let l2_plus = src
+            .at(g_tt_jd(center_jd + delta))
+            .expect("source.at should succeed")
+            .l2;
+        assert!(
+            l2_minus < 0.0,
+            "l2 at center−δ must be negative (total side), got {l2_minus}"
+        );
+        assert!(
+            l2_plus > 0.0,
+            "l2 at center+δ must be positive (annular side), got {l2_plus}"
+        );
+        // 中心（l2≈0）の単一時刻 classify は Hybrid を返せない。時系列 [U1,U4] 走査が必須。
+        let e_center = src.at(g_tt_jd(center_jd)).expect("source.at");
+        assert!(
+            e_center.l2.abs() < 1e-9,
+            "at center l2≈0 (single-instant classify cannot yield Hybrid), got {}",
+            e_center.l2
+        );
+
+        let kind = classify_global_kind(&src, classify_config())
+            .expect("hybrid synthetic source should classify");
+        assert_eq!(
+            kind,
+            Some(SolarEclipseKind::Hybrid),
+            "central + l2 sign change across [U1,U4] must be Hybrid"
+        );
+    }
+
+    /// Hybrid 機構を **区間内部の符号反転** で証明する時変合成供給源（`HybridSource` と同形だが
+    /// l2 を時間の**放物線**にする）。`classify_global_hybrid_synthetic` の線形 l2 は両端で逆符号
+    /// なので端点 2 点だけでも検出でき、走査密度（SAMPLES）が load-bearing にならない。本源は
+    ///   x(jd) = X_MIN + K·(jd−center)²（X_MIN=0.3<0.9972 ⇒ 中心食, K=50, y=0）。
+    ///   l2(jd) = L2_A·((jd−center)²/HALF²) − L2_B（中心で −L2_B<0＝皆既, 端で正＝金環）。
+    /// HALF を本影接触距離に取る（gamma=1+|l2|=1.004 となる dj）。これにより [U1,U4] の **両端**で
+    /// l2>0（金環）・**中央**で l2<0（皆既）の「金環-皆既-金環」帯になり、端点だけ標本化すると両端
+    /// 正で Annular に誤判定する。Hybrid 検出には区間内部の標本（SAMPLES）が必須＝SAMPLES が
+    /// load-bearing になる（端点削減ミュータントを殺す）。
+    struct HybridInteriorSource {
+        center_jd: f64,
+        window: TimeInterval<TtInstant>,
+    }
+
+    /// l2 放物線の中心値（−L2_B）。中心で l2<0（皆既）。
+    const HYBRID_I_L2_B: f64 = 0.008;
+    /// l2 放物線の振幅係数。l2(HALF)=L2_A−L2_B=+0.004（端で金環）。
+    const HYBRID_I_L2_A: f64 = 0.012;
+    /// 本影接触距離 HALF[day]: gamma(HALF)=X_MIN+K·HALF²=1+|l2(HALF)|=1.004 を満たす自己無撞着な値。
+    /// HALF² = (1.004−X_MIN)/K。l2(HALF)=+0.004 ⇒ |l2|=0.004 ⇒ gamma=1.004 が閉じる。
+    fn hybrid_i_half() -> f64 {
+        ((1.0 + HYBRID_I_L2_A - HYBRID_I_L2_B - HYBRID_X_MIN) / HYBRID_K).sqrt()
+    }
+
+    /// HybridInteriorSource の l2(dj)（dj=jd−center）。放物線 L2_A·(dj²/HALF²)−L2_B。
+    fn hybrid_i_l2(dj: f64) -> f64 {
+        let half = hybrid_i_half();
+        HYBRID_I_L2_A * (dj * dj / (half * half)) - HYBRID_I_L2_B
+    }
+
+    impl BesselianSource for HybridInteriorSource {
+        /// x=X_MIN+K·(jd−center)²（中心極小 0.3）, y=0, l2 は中心負・端正の放物線（区間内部で符号反転）。
+        fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
+            let dj = t.jd2().jd() - self.center_jd;
+            Ok(InstantaneousBesselianElements {
+                x: HYBRID_X_MIN + HYBRID_K * dj * dj,
+                y: 0.0,
+                declination: Radians(0.0),
+                mu: Radians(0.0),
+                l1: 0.54,
+                l2: hybrid_i_l2(dj),
+                tan_f1: 0.0047,
+                tan_f2: 0.0046,
+                time_tt: t,
+            })
+        }
+
+        fn fit_interval(&self) -> TimeInterval<TtInstant> {
+            self.window
+        }
+    }
+
+    /// 種別3b（合成 Hybrid・**区間内部**符号反転）: l2 が中央でのみ負・[U1,U4] の両端で正となる
+    /// 放物線供給源 ⇒ `Some(Hybrid)`。`classify_global_hybrid_synthetic`（線形 l2・端点で逆符号）と
+    /// 違い、**端点だけ標本化すると両端 l2>0 で Annular に誤判定**する。Hybrid を出すには区間内部の
+    /// 標本（`l2_changes_sign` の SAMPLES）が必須 ⇒ 走査密度が load-bearing（SAMPLES 削減ミュータント
+    /// を殺す）。
+    ///
+    /// 独立裏取り（呼出前・`src.at` 由来）: (a) gamma_min=X_MIN=0.3<0.9972（中心食 ⇒ base=Total/Annular）、
+    /// (b) l2(center)<0（中央は皆既）、(c) l2 が **本影接触距離 ±HALF**（U1/U4 が立つ dj）で >0（端は金環）。
+    /// すなわち符号反転は **区間内部**で起き、端点は同符号（両方正）。端点のみ標本化する実装はこれを
+    /// 取りこぼし Annular に化けるため、SAMPLES の密度がここで load-bearing になる。
+    #[test]
+    fn classify_global_hybrid_interior_crossing() {
+        let center_jd = 2_457_986.768;
+        // 窓: center ± 0.2 day。端で x=0.3+50·0.04=2.3>1+l1=1.54 ⇒ P1/P4・U1/U4 が窓内に括られる。
+        let half_day = 0.2;
+        let src = HybridInteriorSource {
+            center_jd,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        };
+
+        // (a) 中心食であること: gamma_min=X_MIN=0.3 < 0.9972（CENTRAL_LIMIT）⇒ base=Total/Annular。
+        let g_center = gamma_at(&src, g_tt_jd(center_jd));
+        assert!(
+            (g_center - HYBRID_X_MIN).abs() < 1e-12,
+            "center gamma {g_center} should equal X_MIN={HYBRID_X_MIN}"
+        );
+        assert!(
+            g_center < 0.9972,
+            "center gamma {g_center} must be < 0.9972 (central ⇒ Total/Annular base kind)"
+        );
+
+        // (b) 中央は皆既: l2(center) < 0。本影接触距離 HALF。
+        let half = hybrid_i_half();
+        let l2_center = src.at(g_tt_jd(center_jd)).expect("source.at").l2;
+        // (c) 本影接触距離 ±HALF（U1/U4 が立つ dj）では l2 > 0（金環）。符号反転は区間内部。
+        let l2_u1 = src.at(g_tt_jd(center_jd - half)).expect("source.at").l2;
+        let l2_u4 = src.at(g_tt_jd(center_jd + half)).expect("source.at").l2;
+        assert!(
+            l2_center < 0.0,
+            "l2 at center must be negative (total in the middle), got {l2_center}"
+        );
+        assert!(
+            l2_u1 > 0.0 && l2_u4 > 0.0,
+            "l2 at the umbral-contact distance ±HALF must be positive (annular at the ends), \
+             got u1={l2_u1}, u4={l2_u4}"
+        );
+        // 端点が同符号（両方正）ゆえ、[U1,U4] を **端点だけ** 標本化する実装は符号反転を取りこぼし
+        // Annular に誤判定する。区間内部の標本（l2_changes_sign の SAMPLES）が必須＝SAMPLES が
+        // load-bearing。下の確認で l2(center)<0 と l2(±HALF)>0 の符号反転が区間内部にあることを縛る。
+        // HALF が本影接触距離（gamma=1+|l2|）であることの独立裏取り: gamma(HALF)≈1+|l2(HALF)|。
+        let gamma_half = {
+            let e = src.at(g_tt_jd(center_jd + half)).expect("source.at");
+            (e.x * e.x + e.y * e.y).sqrt()
+        };
+        assert!(
+            (gamma_half - (1.0 + l2_u4.abs())).abs() < 1e-7,
+            "HALF must be the umbral-contact distance: gamma(HALF)={gamma_half} ≈ 1+|l2|={}",
+            1.0 + l2_u4.abs()
+        );
+
+        let kind = classify_global_kind(&src, classify_config())
+            .expect("interior-crossing hybrid synthetic source should classify");
+        assert_eq!(
+            kind,
+            Some(SolarEclipseKind::Hybrid),
+            "central with INTERIOR l2 sign change (endpoints both annular) must be Hybrid; \
+             endpoint-only sampling would misclassify as Annular (SAMPLES is load-bearing)"
+        );
+    }
+
+    /// 純皆既（pure total）を証明する時変合成供給源（`HybridSource` と同形だが l2 を**緩い線形**に
+    /// し、[U1,U4] 内では終始 l2<0、零交差を [U1,U4] の **外**・1 日以内に置く）。
+    ///   x(jd) = X_MIN + K·(jd−center)²（X_MIN=0.3<0.9972 ⇒ 中心食, K=50, y=0）。
+    ///   l2(jd) = L2_C0 + L2_SLOPE·(jd−center)（中心 −0.008<0＝皆既）。
+    /// [U1,U4]≈center±0.119 day（gamma=1+|l2|≈1.004）で l2∈[−0.0116,−0.0044]＝全域負（純皆既）。
+    /// 零交差は center+L2_C0/|L2_SLOPE|=center+0.267 day で [U1,U4] の外。だが `l2_changes_sign` の
+    /// 走査区間式 `(t1−t0)` を `(t1/t0)`（≈1.0 day）に取り違えるミュータントは ≈[U1,U1+1day] を走査し、
+    /// そこ（dj≈0.119+1.0）で l2≈+0.026>0 に達して符号反転を検出 ⇒ Hybrid に誤判定する。
+    struct PureTotalLinearSource {
+        center_jd: f64,
+        window: TimeInterval<TtInstant>,
+    }
+
+    /// l2 の中心値（−0.008<0＝皆既）。
+    const PURE_TOTAL_L2_C0: f64 = -0.008;
+    /// l2 の時間勾配。零交差は center+0.008/0.03≈center+0.267 day（[U1,U4] の外・1 日以内）。
+    const PURE_TOTAL_L2_SLOPE: f64 = 0.03;
+
+    /// PureTotalLinearSource の l2(dj)（dj=jd−center）。線形 L2_C0+L2_SLOPE·dj。
+    fn pure_total_l2(dj: f64) -> f64 {
+        PURE_TOTAL_L2_C0 + PURE_TOTAL_L2_SLOPE * dj
+    }
+
+    impl BesselianSource for PureTotalLinearSource {
+        /// x=X_MIN+K·(jd−center)²（中心極小 0.3）, y=0, l2=L2_C0+L2_SLOPE·dj（中心負・緩い線形）。
+        fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
+            let dj = t.jd2().jd() - self.center_jd;
+            Ok(InstantaneousBesselianElements {
+                x: HYBRID_X_MIN + HYBRID_K * dj * dj,
+                y: 0.0,
+                declination: Radians(0.0),
+                mu: Radians(0.0),
+                l1: 0.54,
+                l2: pure_total_l2(dj),
+                tan_f1: 0.0047,
+                tan_f2: 0.0046,
+                time_tt: t,
+            })
+        }
+
+        fn fit_interval(&self) -> TimeInterval<TtInstant> {
+            self.window
+        }
+    }
+
+    /// 種別3c（合成 純皆既・走査区間ピン）: [U1,U4] 内で l2<0 が終始保たれる純皆既供給源 ⇒
+    /// `Some(Total)`（Hybrid に化けない）。`l2_changes_sign` の走査区間式 `t0+(t1−t0)·frac` を
+    /// `t0+(t1/t0)·frac`（t1/t0≈1.0 ⇒ 走査が ≈[U1,U1+1day]）に取り違えるミュータントを殺す。
+    ///
+    /// なぜ殺せるか: 正しい [U1,U4]≈center±0.119 day では l2 が全域負ゆえ符号反転なし ⇒ Total。だが
+    /// 零交差を center+0.267 day（[U1,U4] の外・1 日以内）に置いてあるので、ミュータントの広い
+    /// ≈[U1,U1+1day] 区間は l2>0 の領域まで走査して両符号を検出 ⇒ Hybrid に誤判定する。よって
+    /// `Some(Total)` を assert する本テストはミュータントを撃破する（純皆既が Hybrid に化けない縛り）。
+    ///
+    /// 独立裏取り（呼出前・`src.at` 由来）: (a) gamma_min=X_MIN=0.3<0.9972（中心食 ⇒ base=Total）、
+    /// (b) l2(center)<0、(c) [U1,U4]≈center±0.119 day の **両端**で l2<0（純皆既が中心食区間で完結）。
+    #[test]
+    fn classify_global_total_not_hybrid_when_l2_negative_in_central_interval() {
+        let center_jd = 2_457_986.768;
+        // 窓: center ± 0.2 day。端で x=0.3+50·0.04=2.3>1.5433+l2 ⇒ P1/P4・U1/U4 が窓内に括られる。
+        // かつ center+0.2 の l2=−0.008+0.03·0.2=−0.002<0 ゆえ fit 窓内には零交差(+0.267)を含めない
+        // （greatest=center で l2<0 ⇒ base=Total、真の [U1,U4] も全域負を保つ）。
+        let half_day = 0.2;
+        let src = PureTotalLinearSource {
+            center_jd,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        };
+
+        // (a) 中心食であること: gamma_min=X_MIN=0.3 < 0.9972（CENTRAL_LIMIT）⇒ base=Total。
+        let g_center = gamma_at(&src, g_tt_jd(center_jd));
+        assert!(
+            (g_center - HYBRID_X_MIN).abs() < 1e-12,
+            "center gamma {g_center} should equal X_MIN={HYBRID_X_MIN}"
+        );
+        assert!(
+            g_center < 0.9972,
+            "center gamma {g_center} must be < 0.9972 (central ⇒ Total base kind)"
+        );
+
+        // (b)(c) 純皆既: l2(center)<0 かつ [U1,U4]≈center±0.119 day の両端でも l2<0（符号反転なし）。
+        // U1/U4 は本影接触距離（gamma=1+|l2|≈1.004）で dj≈±0.119 day。
+        let u_dj = 0.119;
+        let l2_center = src.at(g_tt_jd(center_jd)).expect("source.at").l2;
+        let l2_u1 = src.at(g_tt_jd(center_jd - u_dj)).expect("source.at").l2;
+        let l2_u4 = src.at(g_tt_jd(center_jd + u_dj)).expect("source.at").l2;
+        assert!(
+            l2_center < 0.0,
+            "l2 at center must be negative (total), got {l2_center}"
+        );
+        assert!(
+            l2_u1 < 0.0 && l2_u4 < 0.0,
+            "l2 at the umbral-contact distance ±0.119 day (≈U1/U4) must BOTH be negative \
+             (pure total across [U1,U4]), got u1={l2_u1}, u4={l2_u4}"
+        );
+        // 純皆既ゆえ正しい [U1,U4] には符号反転がなく Total。だがミュータント `(t1−t0)→(t1/t0)` は
+        // ≈[U1,U1+1day] を走査し、そこ（dj≈0.119+1.0）で l2 が正に転じて両符号を検出 ⇒ Hybrid に化ける。
+        // よって正しい [U1,U4] 区間でのみ Total となり、走査区間をピン留めする。零交差が [U1,U4] の外・
+        // 1 日以内にあることを独立に確認する。
+        let l2_cross = src
+            .at(g_tt_jd(
+                center_jd + PURE_TOTAL_L2_C0.abs() / PURE_TOTAL_L2_SLOPE,
+            ))
+            .expect("source.at")
+            .l2;
+        assert!(
+            l2_cross.abs() < 1e-9,
+            "l2 zero crossing must sit at center+|C0|/SLOPE≈+0.267 day (outside [U1,U4]), got {l2_cross}"
+        );
+        let l2_mutant = src
+            .at(g_tt_jd(center_jd + u_dj + 1.0))
+            .expect("source.at")
+            .l2;
+        assert!(
+            l2_mutant > 0.0,
+            "within the mutant's wider ≈[U1,U1+1day] scan, l2 turns positive (would force Hybrid), \
+             got {l2_mutant}"
+        );
+
+        let kind = classify_global_kind(&src, classify_config())
+            .expect("pure total synthetic source should classify");
+        assert_eq!(
+            kind,
+            Some(Total),
+            "pure total (l2<0 across [U1,U4]) must be Total, not Hybrid; the scan interval must be \
+             [U1,U4], not ≈[U1,U1+1day] (kills `(t1-t0)→(t1/t0)` mutant)"
+        );
+    }
+
+    /// 種別4（合成 Partial）: gamma_min を中心限界と半影限界の **間** に置く合成供給源
+    /// （X_MIN=1.2 ⇒ 0.9972<1.2<1.5433+l2）。l2 固定（−0.01）。⇒ `Some(Partial)`。
+    /// 独立裏取り: gamma_min=1.2 は部分食バンド（中心食でない ⇒ U1/U4 は None・Hybrid 上書きなし）。
+    #[test]
+    fn classify_global_partial_synthetic() {
+        let center_jd = 2_457_986.768;
+        // global_contacts の非中心テストと同形: x_min=1.2, k=50, l1=0.54, l2=−0.01, 半幅 0.15。
+        let half_day = 0.15;
+        let src = SyntheticGammaSource {
+            center_jd,
+            x_min: 1.2,
+            k: 50.0,
+            l1: 0.54,
+            l2: -0.01,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        };
+
+        // 独立裏取り: gamma_min=1.2 が部分食バンド（0.9972 ≤ g < 1.5433+l2）にある。上限は符号付き
+        // l2（−0.01）込みで 1.5433+(−0.01)=1.5323（PENUMBRA_LIMIT+l2, |l2| や +0.01 ではない）。
+        let g_center = gamma_at(&src, g_tt_jd(center_jd));
+        assert!(
+            (0.9972..(1.5433 + (-0.01))).contains(&g_center),
+            "gamma_min {g_center} must be in partial band (0.9972,1.5433+l2=1.5323)"
+        );
+
+        let kind = classify_global_kind(&src, classify_config())
+            .expect("partial synthetic source should classify");
+        assert_eq!(kind, Some(Partial), "gamma in partial band ⇒ Partial");
+    }
+
+    /// 種別5（合成 No eclipse）: gamma が全域で半影限界を超える供給源（X_MIN=2.0>1.5433）⇒ `Ok(None)`。
+    /// 独立裏取り: gamma_min=2.0 は半影限界外（日食なし）。
+    #[test]
+    fn classify_global_no_eclipse_synthetic() {
+        let center_jd = 2_457_986.768;
+        let half_day = 0.05;
+        let src = SyntheticGammaSource {
+            center_jd,
+            x_min: 2.0,
+            k: 50.0,
+            l1: 0.54,
+            l2: -0.01,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        };
+
+        // 独立裏取り: gamma_min=2.0 > 1.5433（半影限界）⇒ 日食なし。
+        let g_center = gamma_at(&src, g_tt_jd(center_jd));
+        assert!(
+            g_center > 1.5433,
+            "gamma_min {g_center} must exceed penumbra limit (no eclipse)"
+        );
+
+        let kind = classify_global_kind(&src, classify_config())
+            .expect("no-eclipse window must be Ok(None), not Err");
+        assert_eq!(kind, None, "gamma beyond penumbra limit ⇒ Ok(None)");
+    }
+
+    // 種別6（任意・実 Hybrid 2023-04-20）は **意図的に省略**する。2023-04-20 は実ハイブリッド食だが、
+    // 解析暦が中心線上の l2 符号反転を再現するかは k/ΔT 慣習差に敏感で borderline になりうる。
+    // flaky な実値を assert すると偽陽性/偽陰性を生むため、Hybrid の堅牢なピンは合成テスト
+    // `classify_global_hybrid_synthetic`（種別3）に委ねる（spec の方針どおり）。
+
+    /// 種別5 用の時変合成供給源（global_contacts の `SyntheticGammaSource` と同形・本モジュール内に複製）。
+    /// gamma=|x| が center で内部極小を持つ。x=x_min+k·(jd−center)², y=0, l1/l2 固定。
+    struct SyntheticGammaSource {
+        center_jd: f64,
+        x_min: f64,
+        k: f64,
+        l1: f64,
+        l2: f64,
+        window: TimeInterval<TtInstant>,
+    }
+
+    impl BesselianSource for SyntheticGammaSource {
+        fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
+            let dj = t.jd2().jd() - self.center_jd;
+            Ok(InstantaneousBesselianElements {
+                x: self.x_min + self.k * dj * dj,
+                y: 0.0,
+                declination: Radians(0.0),
+                mu: Radians(0.0),
+                l1: self.l1,
+                l2: self.l2,
+                tan_f1: 0.0047,
+                tan_f2: 0.0046,
+                time_tt: t,
+            })
+        }
+
+        fn fit_interval(&self) -> TimeInterval<TtInstant> {
+            self.window
+        }
     }
 }
