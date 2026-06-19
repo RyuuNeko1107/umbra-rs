@@ -44,8 +44,11 @@ use crate::position_angle::contact_position_angle;
 use crate::projection::{project_observer_to_fundamental, ObserverFundamental};
 use crate::results::{
     GlobalCircumstances, LocalCircumstances, LocalContact, LocalContactSet, SolarEclipse,
+    VisibleSolarEclipse,
 };
 use crate::source::{BesselianSource, InstantaneousEvaluator};
+
+use std::collections::HashSet;
 
 /// 1 日 = 86400 SI 秒。
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -57,6 +60,12 @@ const BESSEL_FIT_START_DEGREE: usize = 3;
 const BESSEL_FIT_TOLERANCE: f64 = 1.0e-4;
 /// UNIX エポックの UTC ユリウス日（generated_at の壁時計変換に使用）。
 const UNIX_EPOCH_JD: f64 = 2_440_587.5;
+/// `next_visible_eclipse` の探索窓幅（日）。≈半年＝日食季間隔オーダー。窓ごとに `search`（重い全球解）
+/// を回し最初の可視で打ち切るため、1 窓に含む日食を ~1 件に抑えて遅延評価する（無駄な全球解を減らす）。
+const NEXT_VISIBLE_WINDOW_DAYS: f64 = 183.0;
+/// `next_visible_eclipse` の探索 horizon（日, ≈11 年）。これを超えて可視日食が無ければ `Ok(None)`。
+/// 任意地点は通常数年内に部分食を見られるため実地点では到達しない安全弁（accuracy/可視性の §7）。
+const NEXT_VISIBLE_MAX_HORIZON_DAYS: f64 = 4000.0;
 
 /// 探索範囲（UTC）。
 pub type UtcRange = TimeRange<UtcInstant>;
@@ -471,6 +480,50 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
         }
     }
 
+    /// `after` 以降で観測者が最初に「見える」日食を返す（ISSUE-043 S8）。
+    ///
+    /// `after` 以降を窓刻みで [`search`](Self::search) 走査し、各日食の
+    /// [`local_circumstances`](Self::local_circumstances) を評価して、可視性が「見える」種別
+    /// （[`next_visible_is_observable`]）になる最初を `Some(VisibleSolarEclipse)` で返す。探索 horizon
+    /// 内に見える日食が無ければ `Ok(None)`（「該当なし」はエラーにしない, api-draft §0）。
+    ///
+    /// 注（性能）: `search`/`local_circumstances` は直接瞬時計算（ISSUE-037）で日食 1 件あたり重い。
+    /// 窓刻みで遅延評価し最初の可視で打ち切るが、可視日食が遠い/無い場合は horizon まで走査する。
+    pub fn next_visible_eclipse(
+        &self,
+        after: UtcInstant,
+        observer: Observer,
+    ) -> Result<Option<VisibleSolarEclipse>, EclipseError> {
+        let after_jd = after.jd2().jd();
+        let horizon_end_jd = after_jd + NEXT_VISIBLE_MAX_HORIZON_DAYS;
+        // event_key 重複排除（窓境界・候補オーバーハングで同一日食が隣接窓に現れるのを 1 回に）。
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut start_jd = after_jd;
+        while start_jd < horizon_end_jd {
+            let end_jd = (start_jd + NEXT_VISIBLE_WINDOW_DAYS).min(horizon_end_jd);
+            let range = UtcRange {
+                start: UtcInstant::from_jd2(JulianDate2::from_jd(start_jd)),
+                end: UtcInstant::from_jd2(JulianDate2::from_jd(end_jd)),
+            };
+            // search は新月候補昇順ゆえ日食も昇順。最初に「見える」ものが時系列最初の可視日食。
+            for eclipse in self.search(range)? {
+                // `after` より前（first 窓の取りこぼし）・既評価（境界重複）はスキップ。
+                if eclipse.global.greatest.time_utc.jd2().jd() < after_jd {
+                    continue;
+                }
+                if !seen.insert(eclipse.event_key.clone()) {
+                    continue;
+                }
+                let local = self.local_circumstances(&eclipse, observer)?;
+                if next_visible_is_observable(local.visibility) {
+                    return Ok(Some(VisibleSolarEclipse { eclipse, local }));
+                }
+            }
+            start_jd = end_jd;
+        }
+        Ok(None)
+    }
+
     /// v0.1 未実装（経路は umbra-geo・M9）。panic でなく `Err(NotImplemented)`（PATH/045）。
     pub fn path(
         &self,
@@ -479,6 +532,23 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
     ) -> Result<EclipsePath, EclipseError> {
         Err(EclipseError::NotImplemented)
     }
+}
+
+/// 可視性が「見える」種別か（`next_visible_eclipse` の採否判定, ISSUE-043 S8）。
+///
+/// 地平上で日食を観測できる `FullyVisible`/`PartialVisible`/`SunriseEclipse`/`SunsetEclipse` を
+/// `true`、観測不能な `NotVisible`（食域外）/`BelowHorizon`（最大食も地平下）を `false` とする。
+///
+/// 注: `Visibility` は `#[non_exhaustive]`。将来バリアントが追加されると `matches!` の暗黙の既定で
+/// `false`（不可視＝安全側）になる。新たに「見える」種別を足す場合は本関数のアーム追加が必要。
+fn next_visible_is_observable(visibility: Visibility) -> bool {
+    matches!(
+        visibility,
+        Visibility::FullyVisible
+            | Visibility::PartialVisible
+            | Visibility::SunriseEclipse
+            | Visibility::SunsetEclipse
+    )
 }
 
 /// 現在の壁時計 UTC を `UtcInstant` で返す（`generated_at` 用）。std 時計 → UNIX 秒 → UTC-JD。
@@ -1870,4 +1940,239 @@ mod tests {
             m.delta_t_uncertainty_seconds
         );
     }
+
+    // ==================================================================
+    // 8. next_visible_eclipse / next_visible_is_observable（ISSUE-043 S8）
+    //
+    // ## オラクル戦略（実装方針に立ち入らず、確定仕様の公開 IF だけを縛る）
+    // - **純ヘルパ `next_visible_is_observable`（主力・FAST）**: 「地平上で日食を観測できる
+    //   高度状態か」の定義そのものを 6 値で直接表化する独立オラクル。FullyVisible/PartialVisible/
+    //   SunriseEclipse/SunsetEclipse は太陽が（一部でも）地平上で食が観測できる → true、
+    //   NotVisible（食域外）/BelowHorizon（最大食も地平下）は観測不能 → false。
+    //   実装の `matches!` を写経せず、各バリアントの意味（地平上で観測可能か）から true/false を決める。
+    // - **統合 happy-path（SLOW・1件）**: 物理事実（2017-08-21 は北米中緯度=central_observer で
+    //   皆既可視, NASA）と構造（Option/event_key/可視種別/local 整合）で縛る。`after` を日食の直前
+    //   （2017-08-01）に置き、central_observer で皆既可視日食が最初の探索窓で見つかるようにして
+    //   解く日食を 1 件に抑える（コスト最小化）。
+    // - **統合 skip（SLOW・1件）**: invisible_observer（−40°S,140°E。2017-08-21 は NotVisible=
+    //   既存 local_circumstances_invisible_site_is_not_visible で確認済）で呼ぶと 2017-08-21 を
+    //   **スキップ**して後続の可視日食を返す。これは「可視性を見ずに最初の日食を返す」バグの
+    //   唯一のガード。skip 先の具体日付は geography 依存で flaky ゆえハードコードせず、
+    //   「2017-08-21 でない可視日食」という構造で縛る。
+    // - **None（horizon 内に可視日食なし）はテストしない**: 全 horizon 走査が極めて遅いため。
+    //
+    // ## red 設計（本体未実装）
+    // `next_visible_eclipse` / `next_visible_is_observable` は現状 `unimplemented!` ゆえ panic で
+    // red になる。純ヘルパテストは `super::next_visible_is_observable(...)` 呼び出しで即 panic。
+    // 統合テストも `next_visible_eclipse` の入口（unimplemented!）で即 panic するため、search の
+    // 実走（数百秒）は **red 段階では発生しない**（unimplemented で即落ちる）。
+    // ==================================================================
+
+    // ------------------------------------------------------------------
+    // 8a. next_visible_is_observable（純関数・FAST・search を呼ばない・主力）
+    // ------------------------------------------------------------------
+
+    /// **見える種別 → true（FullyVisible）**: 全経過が地平上 → 観測可能。
+    /// 殺す変異: FullyVisible アームを false にする・反転する。
+    #[test]
+    fn next_visible_is_observable_fully_visible_is_true() {
+        assert!(
+            super::next_visible_is_observable(Visibility::FullyVisible),
+            "FullyVisible は地平上で全経過観測可能 → true"
+        );
+    }
+
+    /// **見える種別 → true（PartialVisible）**: 一部の接触のみ地平上でも食は観測可能。
+    /// 殺す変異: PartialVisible アームを false にする・反転する。
+    #[test]
+    fn next_visible_is_observable_partial_visible_is_true() {
+        assert!(
+            super::next_visible_is_observable(Visibility::PartialVisible),
+            "PartialVisible は一部地平上で観測可能 → true"
+        );
+    }
+
+    /// **見える種別 → true（SunriseEclipse）**: 日の出中に食が進行＝地平上で観測可能。
+    /// 殺す変異: SunriseEclipse アームを false にする・反転する。
+    #[test]
+    fn next_visible_is_observable_sunrise_eclipse_is_true() {
+        assert!(
+            super::next_visible_is_observable(Visibility::SunriseEclipse),
+            "SunriseEclipse は日の出中に食を観測可能 → true"
+        );
+    }
+
+    /// **見える種別 → true（SunsetEclipse）**: 日没中に食が終了＝地平上で観測可能。
+    /// 殺す変異: SunsetEclipse アームを false にする・反転する。
+    #[test]
+    fn next_visible_is_observable_sunset_eclipse_is_true() {
+        assert!(
+            super::next_visible_is_observable(Visibility::SunsetEclipse),
+            "SunsetEclipse は日没中に食を観測可能 → true"
+        );
+    }
+
+    /// **見えない種別 → false（NotVisible）**: 食域外＝そもそも食がない → 観測不能。
+    /// 殺す変異: NotVisible アームを true にする・反転する（最重要・skip ロジックの根拠）。
+    #[test]
+    fn next_visible_is_observable_not_visible_is_false() {
+        assert!(
+            !super::next_visible_is_observable(Visibility::NotVisible),
+            "NotVisible は食域外 → 観測不能 → false"
+        );
+    }
+
+    /// **見えない種別 → false（BelowHorizon）**: 最大食も含め全接触が地平下 → 観測不能。
+    /// 殺す変異: BelowHorizon アームを true にする・反転する。
+    #[test]
+    fn next_visible_is_observable_below_horizon_is_false() {
+        assert!(
+            !super::next_visible_is_observable(Visibility::BelowHorizon),
+            "BelowHorizon は最大食も地平下 → 観測不能 → false"
+        );
+    }
+
+    /// **網羅メタ確認（全 6 値の table 一括）**: 6 バリアントを 1 つの真理値表で一括検証する。
+    /// 「観測可能な高度状態か」の定義を 6 値で直接表化した独立オラクル（実装の matches! を写経せず
+    /// 意味＝地平上で観測できるか から true/false を決める）。個別テストの取りこぼし防止と、
+    /// 「全部 true / 全部 false に潰す」変異の撃破を兼ねる。
+    /// 殺す変異: いずれかのアームの true/false 取り違え・反転、定数 true/定数 false への退化。
+    #[test]
+    fn next_visible_is_observable_truth_table_is_exhaustive() {
+        // (variant, 地平上で日食を観測できるか) を意味から直接列挙（実装非参照の独立表）。
+        let cases = [
+            (Visibility::FullyVisible, true),
+            (Visibility::PartialVisible, true),
+            (Visibility::SunriseEclipse, true),
+            (Visibility::SunsetEclipse, true),
+            (Visibility::NotVisible, false),
+            (Visibility::BelowHorizon, false),
+        ];
+        for (v, expected) in cases {
+            assert_eq!(
+                super::next_visible_is_observable(v),
+                expected,
+                "{v:?} の観測可能判定は {expected} であるべき"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 8b. next_visible_eclipse 統合 happy-path（SLOW・1件・central_observer）
+    //
+    // コスト: search（日食 1 件の全球解 ≈ 300s）を 1 回想定（after を日食直前に置き
+    //   最初の探索窓で皆既可視日食が見つかる）。red 段階では unimplemented! で即 panic ゆえ
+    //   実走しない。将来 green で過度に遅い/不安定なら #[ignore] 付与を検討する。
+    // ------------------------------------------------------------------
+
+    /// **happy-path（central_observer・2017-08-21 皆既可視）**: `after = 2017-08-01`、中心食地点
+    /// （37.5°N,−89.2°E）で呼ぶと 2017-08-21 の皆既日食を `Some(VisibleSolarEclipse)` で返す。
+    /// - `Ok(Some(vse))`（可視日食が見つかる）。
+    /// - `vse.eclipse.event_key` が `"2017-08-21"` で始まる（最初の可視日食＝2017 北米皆既, NASA 事実）。
+    /// - `vse.local.visibility` は「見える種別」（`next_visible_is_observable == true`）。
+    /// - `vse.local.magnitude.0 > 1.0`（中心食地点の皆既＝食分>1, NASA 事実）。
+    /// - `vse.local` は `local_circumstances(&vse.eclipse, central_observer())` と整合
+    ///   （同じ可視性・食分。再計算は追加で遅いので visibility と magnitude の一致のみで縛る）。
+    ///
+    /// 殺す変異: 可視性を見ずに最初の日食をそのまま返す（happy では event_key 一致で漏れるが
+    /// 8c の skip で撃破）、`None` を返す（Some を要求）、`local` を別観測者/別日食で計算する
+    /// （visibility/magnitude 整合で撃破）、返す local.visibility が「見える種別」でない。
+    #[test]
+    fn next_visible_eclipse_central_site_returns_2017_total() {
+        let engine = standard_engine_from_synthetic();
+        let after = utc(2017, 8, 1, 0, 0, 0.0);
+        let vse = engine
+            .next_visible_eclipse(after, central_observer())
+            .expect("next_visible_eclipse はエラーにならない")
+            .expect("中心食地点では 2017-08-21 皆既が可視日食として見つかる");
+
+        // 最初の可視日食は 2017-08-21（北米皆既・NASA 事実）。
+        assert!(
+            vse.eclipse.event_key.starts_with("2017-08-21"),
+            "最初の可視日食は 2017-08-21: event_key = {}",
+            vse.eclipse.event_key
+        );
+
+        // 返る local.visibility は「見える種別」（採否判定と整合）。
+        assert!(
+            super::next_visible_is_observable(vse.local.visibility),
+            "返る日食の可視性は見える種別: {:?}",
+            vse.local.visibility
+        );
+
+        // 中心食地点ゆえ皆既（食分 > 1, NASA 事実）。
+        assert!(
+            vse.local.magnitude.0 > 1.0,
+            "中心食地点は皆既なので食分 > 1: {}",
+            vse.local.magnitude.0
+        );
+
+        // local は local_circumstances(&eclipse, central_observer()) と整合（同一観測者・日食の局地条件）。
+        let recomputed = engine
+            .local_circumstances(&vse.eclipse, central_observer())
+            .expect("同一日食・同一観測者の局地条件は成功する");
+        assert_eq!(
+            vse.local.visibility, recomputed.visibility,
+            "vse.local は local_circumstances と同じ可視性"
+        );
+        assert_eq!(
+            vse.local.magnitude, recomputed.magnitude,
+            "vse.local は local_circumstances と同じ食分"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 8c. next_visible_eclipse 統合 skip（SLOW・1件・invisible_observer）
+    //
+    // コスト警告: invisible_observer（−40°S,140°E）の次の可視日食まで複数件の全球解を要する
+    //   可能性があり非常に遅い（数百〜千秒超）。red 段階では unimplemented! で即 panic ゆえ
+    //   実走しない。将来 green で過度に遅い/不安定なら #[ignore] 付与を検討する（要コメント）。
+    //   ただし skip ロジックの唯一のガードゆえ設計としては入れておく。
+    // ------------------------------------------------------------------
+
+    /// **skip（invisible_observer・2017-08-21 は不可視ゆえスキップ）**: `after = 2017-08-01`、
+    /// 非可視地点（−40°S,140°E。2017-08-21 は NotVisible=既存テストで確認済）で呼ぶと、
+    /// 2017-08-21 を**スキップ**して後続の可視日食を返す。
+    /// - `Ok(Some(vse))`（後続のどこかに可視日食がある）。
+    /// - `vse.eclipse.event_key` が `"2017-08-21"` で**始まらない**（不可視日食をスキップした証拠）。
+    /// - `vse.local.visibility` は「見える種別」（`next_visible_is_observable == true`）。
+    ///
+    /// skip 先の具体日付は geography 依存で flaky ゆえハードコードしない（「2017-08-21 でない可視
+    /// 日食」という構造で縛る）。
+    ///
+    /// 殺す変異（このテスト固有の主目的）: 可視性を評価せず単に最初の日食（2017-08-21）を返す
+    /// （event_key が 2017-08-21 で始まらない＝スキップを縛ることで撃破）、不可視日食を返す
+    /// （見える種別を縛ることで撃破）。
+    #[test]
+    fn next_visible_eclipse_skips_invisible_eclipse() {
+        let engine = standard_engine_from_synthetic();
+        let after = utc(2017, 8, 1, 0, 0, 0.0);
+        let vse = engine
+            .next_visible_eclipse(after, invisible_observer())
+            .expect("next_visible_eclipse はエラーにならない")
+            .expect("非可視地点でも後続に可視日食が存在する");
+
+        // 2017-08-21 はこの観測者では不可視ゆえスキップされる（最初の日食をそのまま返さない）。
+        assert!(
+            !vse.eclipse.event_key.starts_with("2017-08-21"),
+            "不可視の 2017-08-21 はスキップされる: event_key = {}",
+            vse.eclipse.event_key
+        );
+
+        // 返る日食はこの観測者で「見える種別」。
+        assert!(
+            super::next_visible_is_observable(vse.local.visibility),
+            "スキップ後に返る日食は見える種別: {:?}",
+            vse.local.visibility
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 8d. None ケースは意図的にテストしない
+    //
+    // horizon 内に可視日食が無いケースは全 horizon 走査が必要で極めて遅いため（数百秒×多数件）、
+    // ここではテストしない。`Ok(None)`（該当なしはエラーにしない）の契約は型シグネチャ
+    // （`Result<Option<..>, ..>`）と docstring で表現し、happy/skip の `Some` 経路で
+    // 「見つかれば Some」を縛るに留める。
+    // ------------------------------------------------------------------
 }
