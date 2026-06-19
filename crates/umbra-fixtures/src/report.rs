@@ -8,12 +8,29 @@
 //! 設計規律（conventions §11 / accuracy.md §4）: 統計は**誤差を隠さない**。pass 判定が通っても
 //! 数値（max/mean/p95）は必ず保持する。許容を pass のために拡大しない。
 
-use umbra_eclipse::SolarEclipse;
+use umbra_core::{TtInstant, UtcInstant};
+use umbra_eclipse::{LocalCircumstances, SolarEclipse};
 
-use crate::types::GoldenEclipse;
+use crate::types::{GoldenEclipse, GoldenLocation};
 
 /// 1 日の秒数（JD 差 → 秒の換算）。
 const SECONDS_PER_DAY: f64 = 86_400.0;
+
+/// 接触 1 点の時刻誤差（秒, computed − golden）。golden が TT(=TD) を持てば **TT 差**
+/// （純幾何・ΔT 非依存, accuracy.md §0(a)）、無ければ UTC 差で代替する（§0(b)）。
+/// 差分は [`umbra_core::JulianDate2::days_since`] で 2 要素を保ち、単一 f64 の jd() 同士の減算で
+/// 生じる JD≈2.45e6 の桁落ち（~4.6e-5 s）を回避する（julian §2要素表現の理由）。
+fn contact_time_error_seconds(
+    computed_utc: UtcInstant,
+    computed_tt: TtInstant,
+    golden_utc: UtcInstant,
+    golden_tt: Option<TtInstant>,
+) -> f64 {
+    match golden_tt {
+        Some(g_tt) => computed_tt.jd2().days_since(g_tt.jd2()) * SECONDS_PER_DAY,
+        None => computed_utc.jd2().days_since(golden_utc.jd2()) * SECONDS_PER_DAY,
+    }
+}
 
 /// 1 項目の誤差記述統計（**絶対誤差**ベース, accuracy.md §3.4）。
 ///
@@ -166,18 +183,12 @@ pub struct GlobalErrors {
 /// 持たなければ UTC 差で代替する（その場合は ΔT 律速の注記対象, §0(b)）。いずれも秒。
 pub fn compare_global(computed: &SolarEclipse, golden: &GoldenEclipse) -> GlobalErrors {
     let greatest = &computed.global.greatest;
-    // 差分は JulianDate2 の 2 要素を保った days_since で取る（単一 f64 の jd() 同士を引くと
-    // JD≈2.45e6 でエポック減算の桁落ち（~4.6e-5 s）が出るため。julian §2要素表現の理由）。
-    let greatest_seconds = match golden.greatest_time_tt {
-        Some(golden_tt) => greatest.time_tt.jd2().days_since(golden_tt.jd2()) * SECONDS_PER_DAY,
-        None => {
-            greatest
-                .time_utc
-                .jd2()
-                .days_since(golden.greatest_time_utc.jd2())
-                * SECONDS_PER_DAY
-        }
-    };
+    let greatest_seconds = contact_time_error_seconds(
+        greatest.time_utc,
+        greatest.time_tt,
+        golden.greatest_time_utc,
+        golden.greatest_time_tt,
+    );
     GlobalErrors {
         greatest_seconds,
         gamma: computed.global.gamma - golden.gamma,
@@ -219,6 +230,144 @@ pub fn aggregate_global(errors: &[GlobalErrors], profile: &ToleranceProfile) -> 
         greatest,
         gamma,
         magnitude,
+        pass,
+    }
+}
+
+/// 1 地点の局地条件の誤差（**符号付き = computed − golden**, accuracy.md §3.4）。
+///
+/// 時刻は秒（TT 基準・golden が TT を持てば TT 差）。接触 C1〜C4 は両方存在するもののみ
+/// `contact_seconds`（時系列順）へ集め、Some/None が食い違う接触は `contact_presence_mismatches`
+/// で数える（時刻誤差には混ぜない）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalErrors {
+    /// 最大食接触の時刻誤差 \[s\]（computed − golden）。
+    pub maximum_seconds: f64,
+    /// c1,c2,c3,c4 のうち**両方 Some**の接触の時刻誤差 \[s\]（時系列順）。
+    pub contact_seconds: Vec<f64>,
+    /// c1..c4 で computed/golden の Some/None が食い違った数（0..=4）。
+    pub contact_presence_mismatches: usize,
+    /// 食分誤差（無次元, computed − golden）。
+    pub magnitude: f64,
+    /// 食面積誤差（無次元, computed − golden）。
+    pub obscuration: f64,
+    /// 最大食での太陽高度誤差 \[deg\]（computed − golden）。
+    pub max_altitude_deg: f64,
+    /// 可視性が一致するか（`computed.visibility == golden.visibility_expected`）。
+    pub visibility_matches: bool,
+}
+
+/// computed の局地条件を golden 地点と比較し、符号付き誤差（computed − golden）を返す（純粋）。
+///
+/// 各接触時刻は [`contact_time_error_seconds`]（TT 優先・days_since・2 要素保持）。最大食は常に存在。
+/// C1〜C4 は両方 Some のみ時刻誤差化し、Some/None 食い違いは `contact_presence_mismatches` に計上。
+pub fn compare_local(computed: &LocalCircumstances, golden: &GoldenLocation) -> LocalErrors {
+    let contacts = &computed.contacts;
+    let maximum_seconds = contact_time_error_seconds(
+        contacts.maximum.time_utc,
+        contacts.maximum.time_tt,
+        golden.maximum.time_utc,
+        golden.maximum.time_tt,
+    );
+    let mut contact_seconds = Vec::new();
+    let mut contact_presence_mismatches = 0usize;
+    // 時系列順 c1,c2,c3,c4 で computed(Option<LocalContact>) と golden(Option<GoldenContact>) を対にする。
+    let pairs = [
+        (contacts.c1.as_ref(), golden.c1.as_ref()),
+        (contacts.c2.as_ref(), golden.c2.as_ref()),
+        (contacts.c3.as_ref(), golden.c3.as_ref()),
+        (contacts.c4.as_ref(), golden.c4.as_ref()),
+    ];
+    for (computed_contact, golden_contact) in pairs {
+        match (computed_contact, golden_contact) {
+            (Some(local), Some(gold)) => contact_seconds.push(contact_time_error_seconds(
+                local.time_utc,
+                local.time_tt,
+                gold.time_utc,
+                gold.time_tt,
+            )),
+            (Some(_), None) | (None, Some(_)) => contact_presence_mismatches += 1,
+            (None, None) => {}
+        }
+    }
+    LocalErrors {
+        maximum_seconds,
+        contact_seconds,
+        contact_presence_mismatches,
+        magnitude: computed.magnitude.0 - golden.magnitude,
+        obscuration: computed.obscuration.0 - golden.obscuration,
+        max_altitude_deg: computed.maximum_altitude.0 - golden.max_altitude_deg,
+        visibility_matches: computed.visibility == golden.visibility_expected,
+    }
+}
+
+/// 地点別比較の metric 別統計＋合否（accuracy.md §3.4: pass でも統計を必ず出す）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalReport {
+    /// 最大食接触時刻誤差の統計（単位 `"s"`）。
+    pub maximum: ErrorStats,
+    /// C1〜C4 接触時刻誤差の統計（全地点・全接触をフラット集計, 単位 `"s"`）。
+    pub contacts: ErrorStats,
+    /// 食分誤差の統計（無次元・単位 `""`）。
+    pub magnitude: ErrorStats,
+    /// 食面積誤差の統計（無次元・単位 `""`）。
+    pub obscuration: ErrorStats,
+    /// 最大食高度誤差の統計（単位 `"deg"`）。
+    pub max_altitude: ErrorStats,
+    /// 可視性が不一致だった地点数（全地点合計）。
+    pub visibility_mismatches: usize,
+    /// 接触の Some/None 食い違い数（全地点合計）。
+    pub contact_presence_mismatches: usize,
+    /// 合否（全 metric が許容以内、かつ可視性不一致・接触食い違いがいずれも 0）。
+    pub pass: bool,
+}
+
+/// 複数地点の [`LocalErrors`] を metric 別に集計し、[`ToleranceProfile`] で合否判定する。
+///
+/// 接触は全地点・全接触をフラット化して 1 つの [`ErrorStats`] にする。合否は最大食/接触/食分/食面積/
+/// 高度の許容内、かつ可視性不一致 0・接触食い違い 0。空入力は全空統計・mismatch 0・`pass = true`（vacuous）。
+pub fn aggregate_local(errors: &[LocalErrors], profile: &ToleranceProfile) -> LocalReport {
+    let maximum = ErrorStats::from_errors(
+        &errors.iter().map(|e| e.maximum_seconds).collect::<Vec<_>>(),
+        "s",
+    );
+    let contacts = ErrorStats::from_errors(
+        &errors
+            .iter()
+            .flat_map(|e| e.contact_seconds.iter().copied())
+            .collect::<Vec<_>>(),
+        "s",
+    );
+    let magnitude =
+        ErrorStats::from_errors(&errors.iter().map(|e| e.magnitude).collect::<Vec<_>>(), "");
+    let obscuration = ErrorStats::from_errors(
+        &errors.iter().map(|e| e.obscuration).collect::<Vec<_>>(),
+        "",
+    );
+    let max_altitude = ErrorStats::from_errors(
+        &errors
+            .iter()
+            .map(|e| e.max_altitude_deg)
+            .collect::<Vec<_>>(),
+        "deg",
+    );
+    let visibility_mismatches = errors.iter().filter(|e| !e.visibility_matches).count();
+    let contact_presence_mismatches = errors.iter().map(|e| e.contact_presence_mismatches).sum();
+    let pass = maximum.within(profile.maximum_seconds)
+        && contacts.within(profile.contact_seconds)
+        && magnitude.within(profile.magnitude)
+        && obscuration.within(profile.obscuration)
+        && max_altitude.within(profile.altitude_degrees)
+        && visibility_mismatches == 0
+        && contact_presence_mismatches == 0;
+    LocalReport {
+        maximum,
+        contacts,
+        magnitude,
+        obscuration,
+        max_altitude,
+        visibility_mismatches,
+        contact_presence_mismatches,
         pass,
     }
 }

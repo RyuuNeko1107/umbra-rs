@@ -5,6 +5,9 @@
 
 - **S30a**: 35 mutants → 32 caught / 3 unviable / 0 missed（境界単体テスト追加後）。
 - **S30b**（compare_global / aggregate_global 追加後の全体）: **46 mutants: 41 caught / 5 unviable / 0 missed**。
+- **S30c**（compare_local / aggregate_local / contact_time_error_seconds 追加後の全体）:
+  **69 mutants: 62 caught / 7 unviable / 0 missed**。可視性カウント検査は match/mismatch 取り違えを
+  確実に撃破するため非対称（false 3 / true 1）に強化。
 
 対象（純粋・検証基盤）:
 - `ErrorStats::from_errors`（絶対誤差の記述統計 max|e| / mean|e| / p95）。
@@ -13,6 +16,9 @@
 - `ToleranceProfile::standard()` / `reference()`（accuracy.md §2 の許容定数）。
 - `compare_global`（全球条件の符号付き誤差 computed−golden。時刻は days_since×86400）。
 - `aggregate_global`（metric 別 ErrorStats 集計＋ greatest/magnitude ゲートの pass。γ 非ゲート）。
+- `contact_time_error_seconds`（TT 優先・days_since・2要素保持の共有時刻誤差ヘルパ）。
+- `compare_local`（地点別。接触 C1–C4 の Some/None 対・presence 不一致計上・可視性一致）。
+- `aggregate_local`（接触フラット集計＋ 7 ゲート pass・可視性/presence 不一致カウント）。
 
 ## caught（統計・契約のコア）
 
