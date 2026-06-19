@@ -77,6 +77,11 @@ pub enum EphemerisError {
     /// 暦データが利用不可。
     #[error("ephemeris data unavailable")]
     DataUnavailable,
+    /// SPK カーネル（JPL DE）の形式が不正・未対応（ISSUE-036・feature `jpl`）。
+    /// IO 失敗もメッセージ化して本変種に畳む（`EphemerisError` は `Clone`/`Eq` 派生のため
+    /// `std::io::Error` を直接保持しない）。
+    #[error("malformed or unsupported SPK kernel: {0}")]
+    MalformedSpk(String),
 }
 
 /// 天体暦バックエンド。

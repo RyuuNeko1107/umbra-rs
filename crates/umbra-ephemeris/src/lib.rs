@@ -11,6 +11,8 @@ pub mod cio;
 pub mod eop;
 pub mod ephemeris;
 pub mod frames;
+#[cfg(feature = "jpl")]
+pub mod jpl;
 pub mod mock;
 pub mod moon;
 pub mod nutation;

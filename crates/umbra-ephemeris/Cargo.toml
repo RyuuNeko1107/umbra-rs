@@ -16,6 +16,9 @@ workspace = true
 # off 時は `bundled_eop()` がシンボルごと消え、外部供給（from_path 相当）が必須となる。
 default = ["bundled-data"]
 bundled-data = []
+# JPL DE（DE440s SPK）バックエンド＝Reference オラクル（ISSUE-036）。既定 off（巨大データ非同梱・
+# 標準ビルドに DE 依存を引かない）。利用者が `.bsp` を任意取得し `JplEphemeris::from_spk_path` で読む。
+jpl = []
 
 [dependencies]
 umbra-core = { path = "../umbra-core" }
