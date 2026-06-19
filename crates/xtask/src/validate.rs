@@ -167,11 +167,34 @@ impl GoldenComputer for EngineGoldenComputer {
         let t0 = std::time::Instant::now();
         eprintln!("[validate]   local {} ...", location.name);
         let result = self.engine.local_circumstances(eclipse, observer);
-        eprintln!(
-            "[validate]   local {} done in {:.1}s",
-            location.name,
-            t0.elapsed().as_secs_f64()
-        );
+        // per-location 診断: 最大食時刻誤差(engine − golden UTC, 秒)と可視性一致。
+        if let Ok(local) = result.as_ref() {
+            let max_err = (local.contacts.maximum.time_utc.jd2().jd()
+                - location.maximum.time_utc.jd2().jd())
+                * 86_400.0;
+            let vis_ok = local.visibility == location.visibility_expected;
+            eprintln!(
+                "[validate]   local {} done in {:.1}s max_err={:.1}s vis={}{}",
+                location.name,
+                t0.elapsed().as_secs_f64(),
+                max_err,
+                if vis_ok { "OK" } else { "MISMATCH" },
+                if vis_ok {
+                    String::new()
+                } else {
+                    format!(
+                        " (eng={:?} golden={:?})",
+                        local.visibility, location.visibility_expected
+                    )
+                },
+            );
+        } else {
+            eprintln!(
+                "[validate]   local {} done in {:.1}s (err)",
+                location.name,
+                t0.elapsed().as_secs_f64()
+            );
+        }
         result
     }
 }
