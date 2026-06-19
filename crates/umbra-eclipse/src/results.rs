@@ -78,7 +78,8 @@ pub struct GlobalCircumstances {
     pub central_end: Option<GlobalContact>,
     /// 部分食終了 P4（外接）。
     pub partial_end: Option<GlobalContact>,
-    /// 影軸の地心最小距離 gamma（Re）。
+    /// 影軸の地心最小距離 gamma（Re, **符号付き**＝NASA/Espenak 慣習: 軸が地心の北を通れば
+    /// 正・南なら負）。`|gamma|` が地心最小距離。
     pub gamma: f64,
 }
 

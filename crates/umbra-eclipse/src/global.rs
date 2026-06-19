@@ -92,7 +92,8 @@ pub fn classify(elements: &BesselianElements) -> Option<SolarEclipseKind> {
 pub(crate) struct GreatestEclipseSolution {
     /// 最大食の地表点・食分・食面積・太陽高度・時刻（path/duration は None）。
     pub greatest: GreatestEclipse,
-    /// 影軸の地心最小距離 gamma（Re, 符号なし）。
+    /// 影軸の地心最小距離 gamma（Re, **符号付き**＝NASA/Espenak 慣習: 軸が地心の北を通れば
+    /// 正・南なら負）。`|gamma|` = √(x²+y²)。種別判定（[`classify`]）は `|gamma|` を使う。
     pub gamma: f64,
 }
 
@@ -136,10 +137,19 @@ where
         source.fit_interval(),
         root_config,
     )?;
-    let gamma = max.min_separation; // = √(x²+y²) at t_max
+    let gamma_magnitude = max.min_separation; // |γ| = √(x²+y²) at t_max（符号は y で後付け）
 
     // 2. 最大食時刻の瞬時ベッセル要素。
     let elements = source.at(max.time_tt)?;
+
+    // γ の符号（NASA/Espenak 慣習）: 影軸が地心の北＝基本面 y軸（天の北・ISSUE-020）の正側を通れば
+    // 正、南なら負。最大食（軸が地心に最接近）の瞬間の y 成分で決める。y==0 は非負（+|γ|）。
+    // 内部幾何（下の m 計算）は距離なので gamma_magnitude を使い、出力 gamma のみ符号付き。
+    let gamma = if elements.y < 0.0 {
+        -gamma_magnitude
+    } else {
+        gamma_magnitude
+    };
 
     // 3. 最大食地点・観測者の基本面距離 m・ζ を中心食/部分食で分岐して得る。
     //    中心食: 影軸が地表を貫く（`shadow_axis_surface_point` 成功）→ 観測者は軸上で m=0、ζ は
@@ -157,7 +167,7 @@ where
         }
         Err(EclipseError::Solver(SolverError::RootNotBracketed)) => {
             let p = global_contact_ground_point(&elements, &ellipsoid)?;
-            (p, (gamma - 1.0).max(0.0), 0.0)
+            (p, (gamma_magnitude - 1.0).max(0.0), 0.0)
         }
         Err(other) => return Err(other),
     };
@@ -1664,6 +1674,353 @@ mod tests {
     }
 
     impl BesselianSource for SyntheticGammaSource {
+        fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
+            let dj = t.jd2().jd() - self.center_jd;
+            Ok(InstantaneousBesselianElements {
+                x: self.x_min + self.k * dj * dj,
+                y: 0.0,
+                declination: Radians(0.0),
+                mu: Radians(0.0),
+                l1: self.l1,
+                l2: self.l2,
+                tan_f1: 0.0047,
+                tan_f2: 0.0046,
+                time_tt: t,
+            })
+        }
+
+        fn fit_interval(&self) -> TimeInterval<TtInstant> {
+            self.window
+        }
+    }
+}
+
+// ====================================================================
+// 符号付き gamma（NASA/Espenak 慣習・ISSUE-XXX）
+// ====================================================================
+//
+// 全球「最大食 gamma」は NASA/Espenak 慣習で **符号付き**でなければならない:
+//   gamma > 0 ⇒ 影軸が地心の **北** を通る、gamma < 0 ⇒ **南**を通る。
+// 符号は **最大食時刻の影軸の天の北成分** ＝ 基本面 y 座標（ŷ は天の北, ISSUE-020）で与える。
+// y==0 ちょうどは非負（+|gamma|）。**大きさ** |gamma| は従来どおり √(x²+y²)（不変）。
+// 分類（classify / classify_global_kind）は |gamma| を閾値（0.9972, 1.5433）と比較し、
+// 軸オフセットの **符号反転では結果が変わらない**（南の中心食は鏡映した北と同分類）。
+//
+// 現状は gamma = √(x²+y²) ≥ 0（大きさのみ）。南の食（実例: 2002-12-04 γ=−0.302,
+// 2023-04-20 γ=−0.395）で +0.302 / +0.395 を返してしまう。
+//
+// ## オラクル戦略（追認回避）
+// 主オラクルは **独立再計算**: 返った time_tt で `source.at` から (x,y) を取り直し、
+// 符号付き期待値を「y<0 なら −√(x²+y²)、y≥0 なら +√(x²+y²)」として別経路に組んで縛る。
+// 大きさ・分類の不変性は北/南の鏡映ペアで縛る。合成供給源（FAST・実暦不使用）を用い、
+// `solve_local_maximum`（地心）が x²+y² の内部極小を確実にブラケットできるよう設計する。
+#[cfg(test)]
+mod signed_gamma_tests {
+    use super::*;
+
+    use umbra_core::{EspenakMeeusDeltaT, JulianDate2, Radians, TimeInterval, TtInstant};
+
+    use crate::besselian::InstantaneousBesselianElements;
+    use crate::source::BesselianSource;
+
+    /// 単一 TT-JD から TtInstant。
+    fn g_tt_jd(jd: f64) -> TtInstant {
+        TtInstant::from_jd2(JulianDate2::from_jd(jd))
+    }
+
+    /// 返った time_tt で `source.at` から √(x²+y²) を別経路に再計算する（大きさのみ）。
+    fn abs_gamma_at<B: BesselianSource>(src: &B, t: TtInstant) -> f64 {
+        let e = src
+            .at(t)
+            .expect("source.at should succeed at greatest-eclipse time");
+        (e.x * e.x + e.y * e.y).sqrt()
+    }
+
+    /// 返った time_tt で `source.at` から **符号付き** gamma を別経路に組む独立オラクル:
+    /// 影軸の天の北成分 y<0 なら −√(x²+y²)、y≥0 なら +√(x²+y²)（y==0 は非負）。
+    fn signed_gamma_oracle_at<B: BesselianSource>(src: &B, t: TtInstant) -> f64 {
+        let e = src
+            .at(t)
+            .expect("source.at should succeed at greatest-eclipse time");
+        let mag = (e.x * e.x + e.y * e.y).sqrt();
+        if e.y < 0.0 {
+            -mag
+        } else {
+            mag
+        }
+    }
+
+    /// 影軸が **南北**（y 軸上）に動く合成供給源。x=0、y(jd) = sign·(Y_MIN + K·(jd−center)²)。
+    /// gamma=|y| が center で内部極小 Y_MIN を取り、`solve_local_maximum`（地心 m²=x²+y²）が
+    /// center を確実にブラケットできる（窓内部に唯一の谷）。`sign` で北（+）/南（−）を選ぶ。
+    /// Y_MIN は中心食域（<0.9972）に取り `shadow_axis_surface_point` が成功する設計。
+    struct NorthSouthAxisSource {
+        center_jd: f64,
+        /// 最接近時の |y|（gamma の中心極小値）。
+        y_min: f64,
+        /// y の符号（+1.0=北 / −1.0=南）。
+        sign: f64,
+        /// 放物線曲率（窓内に内部極小を作る・正）。
+        k: f64,
+        l1: f64,
+        l2: f64,
+        window: TimeInterval<TtInstant>,
+    }
+
+    impl BesselianSource for NorthSouthAxisSource {
+        /// x=0, y=sign·(Y_MIN+K·(jd−center)²)（gamma=|y| が center で内部極小）, l1/l2 固定。
+        fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
+            let dj = t.jd2().jd() - self.center_jd;
+            let mag = self.y_min + self.k * dj * dj;
+            Ok(InstantaneousBesselianElements {
+                x: 0.0,
+                y: self.sign * mag,
+                declination: Radians(0.0),
+                mu: Radians(0.0),
+                l1: self.l1,
+                l2: self.l2,
+                tan_f1: 0.0047,
+                tan_f2: 0.0046,
+                time_tt: t,
+            })
+        }
+
+        fn fit_interval(&self) -> TimeInterval<TtInstant> {
+            self.window
+        }
+    }
+
+    /// 北 / 南 の鏡映ペアを同一の |gamma| 極小（Y_MIN）・同一 l1/l2 で作る。
+    /// center は 2017 中心（2457986.768）と同じ位置、半幅 0.05 day で内部極小を窓内に括る。
+    fn north_south_pair(y_min: f64, l2: f64) -> (NorthSouthAxisSource, NorthSouthAxisSource) {
+        let center_jd = 2_457_986.768;
+        let half_day = 0.05;
+        let window = TimeInterval {
+            start: g_tt_jd(center_jd - half_day),
+            end: g_tt_jd(center_jd + half_day),
+        };
+        let make = |sign: f64| NorthSouthAxisSource {
+            center_jd,
+            y_min,
+            sign,
+            k: 50.0,
+            l1: 0.54,
+            l2,
+            window,
+        };
+        (make(1.0), make(-1.0))
+    }
+
+    /// 主 red テスト（南の食 ⇒ gamma<0）: 影軸が最接近時に **南**（y<0）を通る合成供給源で、
+    /// `solve_greatest_eclipse` の返す gamma が **負**であり、返った time_tt の **−√(x²+y²)** に
+    /// 厳密一致する（独立再計算・tol 1e-6 Re）。
+    ///
+    /// 現状（gamma=√(x²+y²)≥0）はここで **red**: +0.30 を返し negative assertion が落ちる。
+    /// 構成: Y_MIN=0.30（中心食域 <0.9972 ⇒ shadow_axis_surface_point 成功・実例 2002-12-04 γ=−0.302 相当）。
+    #[test]
+    fn southern_axis_yields_negative_signed_gamma() {
+        let dt = EspenakMeeusDeltaT;
+        let (_north, south) = north_south_pair(0.30, -0.01);
+        let config = crate::config::EngineConfig::standard();
+        let sol = solve_greatest_eclipse(&south, &dt, &config)
+            .expect("southern central eclipse should yield a greatest-eclipse solution");
+
+        // レジーム独立裏取り: 返った time_tt で y<0（影軸は南）。
+        let e = south
+            .at(sol.greatest.time_tt)
+            .expect("source.at should succeed at greatest-eclipse time");
+        assert!(
+            e.y < 0.0,
+            "precondition: shadow axis must be SOUTH (y<0) at greatest eclipse, got y={}",
+            e.y
+        );
+
+        // 符号: gamma は負でなければならない（現状の +√ 実装はここで落ちる＝主 red）。
+        assert!(
+            sol.gamma < 0.0,
+            "southern eclipse gamma must be NEGATIVE (NASA/Espenak sign), got {}",
+            sol.gamma
+        );
+
+        // 値: gamma == −√(x²+y²) at time_tt（別経路の独立オラクルに tight 一致）。
+        let want = signed_gamma_oracle_at(&south, sol.greatest.time_tt);
+        assert!(
+            want < 0.0,
+            "oracle sanity: signed gamma must be negative for southern axis, got {want}"
+        );
+        assert!(
+            (sol.gamma - want).abs() < 1e-6,
+            "gamma={} must equal signed oracle −√(x²+y²)={want} at time_tt (tol 1e-6 Re)",
+            sol.gamma
+        );
+    }
+
+    /// 北の食は正のまま（gamma>0 = +√(x²+y²)）: 北（y>0）の鏡映で `solve_greatest_eclipse` の
+    /// gamma が正であり、返った time_tt の +√(x²+y²) に厳密一致する（不変性・現状でも通る）。
+    #[test]
+    fn northern_axis_keeps_positive_signed_gamma() {
+        let dt = EspenakMeeusDeltaT;
+        let (north, _south) = north_south_pair(0.30, -0.01);
+        let config = crate::config::EngineConfig::standard();
+        let sol = solve_greatest_eclipse(&north, &dt, &config)
+            .expect("northern central eclipse should yield a greatest-eclipse solution");
+
+        let e = north
+            .at(sol.greatest.time_tt)
+            .expect("source.at should succeed at greatest-eclipse time");
+        assert!(
+            e.y > 0.0,
+            "precondition: shadow axis must be NORTH (y>0) at greatest eclipse, got y={}",
+            e.y
+        );
+        assert!(
+            sol.gamma > 0.0,
+            "northern eclipse gamma must be POSITIVE, got {}",
+            sol.gamma
+        );
+        let want = signed_gamma_oracle_at(&north, sol.greatest.time_tt);
+        assert!(
+            (sol.gamma - want).abs() < 1e-6,
+            "gamma={} must equal signed oracle +√(x²+y²)={want} at time_tt (tol 1e-6 Re)",
+            sol.gamma
+        );
+    }
+
+    /// 大きさ不変（|gamma| は符号に依らず √(x²+y²)）: 北/南の鏡映ペアで |gamma| が等しく、
+    /// どちらも返った time_tt の √(x²+y²) に 1e-6 一致する。符号導入が大きさを壊さないことを縛る。
+    #[test]
+    fn magnitude_of_signed_gamma_is_unchanged_for_both_signs() {
+        let dt = EspenakMeeusDeltaT;
+        let (north, south) = north_south_pair(0.30, -0.01);
+        let config = crate::config::EngineConfig::standard();
+        let sol_n = solve_greatest_eclipse(&north, &dt, &config).expect("north solves");
+        let sol_s = solve_greatest_eclipse(&south, &dt, &config).expect("south solves");
+
+        // |gamma| == √(x²+y²) at time_tt（各々, 別経路）。
+        let mag_n = abs_gamma_at(&north, sol_n.greatest.time_tt);
+        let mag_s = abs_gamma_at(&south, sol_s.greatest.time_tt);
+        assert!(
+            (sol_n.gamma.abs() - mag_n).abs() < 1e-6,
+            "north |gamma|={} must equal √(x²+y²)={mag_n}",
+            sol_n.gamma.abs()
+        );
+        assert!(
+            (sol_s.gamma.abs() - mag_s).abs() < 1e-6,
+            "south |gamma|={} must equal √(x²+y²)={mag_s}",
+            sol_s.gamma.abs()
+        );
+        // 鏡映ペアゆえ大きさは等しい（符号だけが反転）。
+        assert!(
+            (sol_n.gamma.abs() - sol_s.gamma.abs()).abs() < 1e-6,
+            "mirrored north/south must share |gamma|: north={}, south={}",
+            sol_n.gamma.abs(),
+            sol_s.gamma.abs()
+        );
+    }
+
+    /// 分類不変（軸オフセットの符号反転で classify が変わらない）: 北/南で同一 |gamma|・同一 l2 の
+    /// 瞬時要素は同じ `classify` 結果を返す（南の中心食は鏡映した北と同分類）。
+    /// 中心食（|g|=0.30<0.9972, l2<0 ⇒ Total）・非中心皆既（|g|=1.0, l2<0 ⇒ NonCentralTotal）・
+    /// 部分（|g|=1.2 ⇒ Partial）で、y の符号を反転しても結果が一致することを縛る。
+    #[test]
+    fn classify_is_invariant_under_axis_offset_sign_flip() {
+        // gamma 大きさ g・本影 l2 で、北(y=+g) と 南(y=−g) の瞬時要素を作る（x=0）。
+        let elem_at_y = |g: f64, l2: f64, sign: f64| BesselianElements {
+            x: 0.0,
+            y: sign * g,
+            declination: Radians(0.0),
+            l1: 0.54,
+            l2,
+            tan_f1: 0.0047,
+            tan_f2: 0.0046,
+        };
+        // (大きさ, l2) の代表点: 中心皆既 / 非中心皆既 / 部分。
+        for &(g, l2) in &[(0.30_f64, -0.01_f64), (1.0, -0.01), (1.2, -0.01)] {
+            let north = classify(&elem_at_y(g, l2, 1.0));
+            let south = classify(&elem_at_y(g, l2, -1.0));
+            assert_eq!(
+                north, south,
+                "classify must be invariant under axis-offset sign flip: |g|={g}, l2={l2}, \
+                 north={north:?}, south={south:?}"
+            );
+            // 北の中心皆既は Total（鏡映した南も同じであることを上で縛っている）。
+            assert!(north.is_some(), "|g|={g} should classify to Some(kind)");
+        }
+        // 大きさが |gamma| 経由で評価されること（符号付き gamma を classify に渡しても
+        // 大きさで分類する）の保険: 中心皆既は両符号とも Total。
+        assert_eq!(
+            classify(&elem_at_y(0.30, -0.01, 1.0)),
+            Some(SolarEclipseKind::Total)
+        );
+        assert_eq!(
+            classify(&elem_at_y(0.30, -0.01, -1.0)),
+            Some(SolarEclipseKind::Total)
+        );
+    }
+
+    /// エッジケース（y==0 ちょうどは非負 ⇒ +|gamma|）: 影軸が天の赤道面（y=0, x>0）を通る合成
+    /// 供給源で gamma ≥ 0 となる（+√(x²+y²)）。x_min を中心極小に置き内部極小を窓内に括る。
+    ///
+    /// y は厳密に 0（`SyntheticGammaSource` 同形の x のみ時変）なので、符号規則「y==0 は +|gamma|」を
+    /// 直接踏む。返った time_tt で y==0 を独立確認してから gamma≥0 を縛る。
+    #[test]
+    fn zero_y_axis_yields_nonnegative_gamma() {
+        let dt = EspenakMeeusDeltaT;
+        let center_jd = 2_457_986.768;
+        let half_day = 0.05;
+        // x=X_MIN+K·(jd−center)²（gamma=|x| が center で内部極小, 中心食域 0.30）, y≡0。
+        // y==0 かつ x が内部極小を持つ構成で符号規則の境界（y==0 ⇒ +|gamma|）を踏む。
+        let src = ZeroYSource {
+            center_jd,
+            x_min: 0.30,
+            k: 50.0,
+            l1: 0.54,
+            l2: -0.01,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        };
+        let config = crate::config::EngineConfig::standard();
+        let sol = solve_greatest_eclipse(&src, &dt, &config)
+            .expect("y==0 central eclipse should yield a greatest-eclipse solution");
+
+        // 返った time_tt で y==0（赤道面・符号規則の境界）。
+        let e = src
+            .at(sol.greatest.time_tt)
+            .expect("source.at should succeed at greatest-eclipse time");
+        assert_eq!(
+            e.y, 0.0,
+            "precondition: axis must lie on the equator (y==0)"
+        );
+
+        // y==0 ⇒ gamma は非負（+|gamma|）。
+        assert!(
+            sol.gamma >= 0.0,
+            "y==0 must give non-negative gamma (+|gamma|), got {}",
+            sol.gamma
+        );
+        // 大きさは √(x²+y²) のまま。
+        let mag = abs_gamma_at(&src, sol.greatest.time_tt);
+        assert!(
+            (sol.gamma - mag).abs() < 1e-6,
+            "gamma={} must equal +√(x²+y²)={mag} at time_tt (y==0, tol 1e-6)",
+            sol.gamma
+        );
+    }
+
+    /// y==0 用の合成供給源: x=X_MIN+K·(jd−center)²（gamma=|x| が center で内部極小）, y≡0。
+    /// `SyntheticGammaSource` と同形だが y を厳密 0 に固定して符号規則の境界（y==0 ⇒ +|gamma|）を踏む。
+    struct ZeroYSource {
+        center_jd: f64,
+        x_min: f64,
+        k: f64,
+        l1: f64,
+        l2: f64,
+        window: TimeInterval<TtInstant>,
+    }
+
+    impl BesselianSource for ZeroYSource {
         fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
             let dj = t.jd2().jd() - self.center_jd;
             Ok(InstantaneousBesselianElements {
