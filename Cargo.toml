@@ -22,3 +22,14 @@ cast_precision_loss = "warn"
 
 [profile.release]
 debug = true
+
+# テスト/開発ビルドの数値計算を最適化（ELP/MPP02+VSOP87D は数百項のホットループで、
+# 非最適化 debug では release の数倍遅い）。依存 crate（テスト対象から見た umbra-ephemeris/
+# umbra-core 等）を opt-level=3、テスト対象自身（umbra-eclipse のソルバ）を opt-level=2 にする。
+# debug-assertions は既定 ON のまま（オーバーフロー検査を維持・精度クリティカル）。コンパイルは
+# やや遅くなるが、日食テスト（各 search が数百項を多数回評価）の実行が大幅に速くなる純益。
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 2
