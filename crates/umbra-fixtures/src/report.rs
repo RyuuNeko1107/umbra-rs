@@ -40,7 +40,7 @@ fn contact_time_error_seconds(
 /// percentile は **R-7（線形補間, NumPy 既定）** に固定する（ISSUE-030 §65 の「規約を 1 つに固定」）:
 /// 昇順絶対誤差 `a` と分位 `p` に対し `h = (n-1)·p`、`lo = ⌊h⌋`、
 /// `a[lo] + (h-lo)·(a[lo+1]-a[lo])`（端は `a[n-1]`）。`n==1` は単一値、`n==0` は 0.0。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct ErrorStats {
     /// 標本数（誤差列の長さ）。
     pub n: usize,
@@ -197,7 +197,7 @@ pub fn compare_global(computed: &SolarEclipse, golden: &GoldenEclipse) -> Global
 }
 
 /// 全球比較の metric 別統計＋合否（accuracy.md §3.4: pass でも統計を必ず出す）。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct GlobalReport {
     /// 最大食時刻誤差の統計（単位 `"s"`）。
     pub greatest: ErrorStats,
@@ -302,7 +302,7 @@ pub fn compare_local(computed: &LocalCircumstances, golden: &GoldenLocation) -> 
 }
 
 /// 地点別比較の metric 別統計＋合否（accuracy.md §3.4: pass でも統計を必ず出す）。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct LocalReport {
     /// 最大食接触時刻誤差の統計（単位 `"s"`）。
     pub maximum: ErrorStats,
@@ -389,7 +389,7 @@ pub trait GoldenComputer {
 }
 
 /// ゴールデン照合の総合レポート（全球＋地点別の集計と被覆カウント）。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct GoldenReport {
     /// 全球条件の集計レポート。
     pub global: GlobalReport,
@@ -437,6 +437,53 @@ pub fn report_against_golden<C: GoldenComputer>(
         eclipses_missing,
         locations_compared,
     })
+}
+
+/// 1 metric の [`ErrorStats`] を 1 行に整形する（`render_text` 用）。`n / max / mean / p95`＋単位。
+fn stats_line(label: &str, stats: &ErrorStats) -> String {
+    format!(
+        "  {label}: n={n} max={max:.4}{u} mean={mean:.4}{u} p95={p95:.4}{u}\n",
+        n = stats.n,
+        max = stats.max_abs,
+        mean = stats.mean_abs,
+        p95 = stats.p95,
+        u = stats.units,
+    )
+}
+
+/// [`GoldenReport`] を人間可読サマリ（複数行テキスト）に整形する（ISSUE-030 §82・誤差を隠さない）。
+///
+/// 被覆カウント（発見/取りこぼし/比較地点）、全球・地点別の各 metric 統計（n/max/mean/p95＋単位）、
+/// 可視性/接触 presence 不一致、global/local の合否を出す。pass でも統計を必ず表示する。
+pub fn render_text(report: &GoldenReport) -> String {
+    let mut out = String::new();
+    out.push_str("=== Golden comparison report ===\n");
+    out.push_str(&format!(
+        "eclipses: {} found, {} missing | locations compared: {}\n",
+        report.eclipses_found, report.eclipses_missing, report.locations_compared,
+    ));
+    out.push_str(&format!("GLOBAL  pass: {}\n", report.global.pass));
+    out.push_str(&stats_line("greatest", &report.global.greatest));
+    out.push_str(&stats_line("gamma", &report.global.gamma));
+    out.push_str(&stats_line("magnitude", &report.global.magnitude));
+    out.push_str(&format!("LOCAL   pass: {}\n", report.local.pass));
+    out.push_str(&stats_line("maximum", &report.local.maximum));
+    out.push_str(&stats_line("contacts", &report.local.contacts));
+    out.push_str(&stats_line("magnitude", &report.local.magnitude));
+    out.push_str(&stats_line("obscuration", &report.local.obscuration));
+    out.push_str(&stats_line("max_altitude", &report.local.max_altitude));
+    out.push_str(&format!(
+        "  visibility mismatches: {}  contact presence mismatches: {}\n",
+        report.local.visibility_mismatches, report.local.contact_presence_mismatches,
+    ));
+    out
+}
+
+/// [`GoldenReport`] を機械可読 JSON（pretty・末尾改行）に整形する（ISSUE-030 §82・CI/履歴比較用）。
+pub fn render_json(report: &GoldenReport) -> Result<String, serde_json::Error> {
+    let mut out = serde_json::to_string_pretty(report)?;
+    out.push('\n');
+    Ok(out)
 }
 
 #[cfg(test)]
