@@ -17,3 +17,6 @@ Thumbs.db
 
 # Cargo.lock はワークスペースにバイナリ(cli)を含むため追跡する
 /tmp/
+
+# JPL DE SPK kernels: 非同梱・利用者DL（data-sources §2.3）。バイナリは git 管理外。
+/data/spk/*.bsp
