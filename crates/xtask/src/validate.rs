@@ -139,11 +139,16 @@ impl GoldenComputer for EngineGoldenComputer {
             .search(UtcRange { start, end })?
             .into_iter()
             .next();
+        // 全球最大食時刻の誤差（engine − golden, 秒）を per-eclipse 出力（異常食の特定用）。
+        let greatest_err_s = found.as_ref().map(|e| {
+            (e.global.greatest.time_utc.jd2().jd() - golden.greatest_time_utc.jd2().jd()) * 86_400.0
+        });
         eprintln!(
-            "[validate] search {} done in {:.1}s (found={})",
+            "[validate] search {} done in {:.1}s (found={}) greatest_err={:?}s",
             golden.event_key,
             t0.elapsed().as_secs_f64(),
-            found.is_some()
+            found.is_some(),
+            greatest_err_s.map(|s| (s * 10.0).round() / 10.0)
         );
         Ok(found)
     }
