@@ -22,7 +22,9 @@ mod types;
 
 pub use checksum::{fixtures_checksum, FIXTURES_CHECKSUM};
 pub use loader::golden_eclipses;
-pub use report::{ErrorStats, ToleranceProfile};
+pub use report::{
+    aggregate_global, compare_global, ErrorStats, GlobalErrors, GlobalReport, ToleranceProfile,
+};
 pub use types::{GoldenContact, GoldenEclipse, GoldenLocation, LocationClass, OracleSource};
 
 /// 同梱フィクスチャ（生 TOML）の埋め込み。`include_str!` でビルド時に取り込み、ローダとチェックサムが

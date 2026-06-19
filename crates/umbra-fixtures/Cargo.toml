@@ -17,3 +17,8 @@ umbra-eclipse = { path = "../umbra-eclipse" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 sha2 = "0.10"
+
+[dev-dependencies]
+# 全球比較テスト（ISSUE-030 S30b）で computed SolarEclipse を struct リテラル構築する際、
+# GreatestEclipse/GlobalContact 内の GeoPoint を直接組むため。
+umbra-geo = { path = "../umbra-geo" }

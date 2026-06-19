@@ -8,6 +8,13 @@
 //! 設計規律（conventions §11 / accuracy.md §4）: 統計は**誤差を隠さない**。pass 判定が通っても
 //! 数値（max/mean/p95）は必ず保持する。許容を pass のために拡大しない。
 
+use umbra_eclipse::SolarEclipse;
+
+use crate::types::GoldenEclipse;
+
+/// 1 日の秒数（JD 差 → 秒の換算）。
+const SECONDS_PER_DAY: f64 = 86_400.0;
+
 /// 1 項目の誤差記述統計（**絶対誤差**ベース, accuracy.md §3.4）。
 ///
 /// 各 metric（接触秒・最大食秒・食分・食面積・高度…）の誤差列から、最大絶対誤差・平均絶対誤差・
@@ -136,6 +143,83 @@ impl ToleranceProfile {
             altitude_degrees: 0.05,
             note_utc_is_delta_t_limited: true,
         }
+    }
+}
+
+/// 1 日食の全球条件の誤差（**符号付き = computed − golden**, accuracy.md §3.4）。
+///
+/// 最大食時刻は **TT 基準の幾何誤差**（golden が TT を持てば TT 差、無ければ UTC 差で代替）の秒。
+/// γ は Re、食分は無次元。符号は computed が後/大なら正。集計時に [`ErrorStats`] が絶対値化する。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlobalErrors {
+    /// 最大食時刻誤差 \[s\]（computed − golden）。
+    pub greatest_seconds: f64,
+    /// γ 誤差 \[Re\]（computed − golden）。
+    pub gamma: f64,
+    /// 食分誤差（無次元, computed − golden）。
+    pub magnitude: f64,
+}
+
+/// computed の全球条件を golden と比較し、符号付き誤差（computed − golden）を返す（純粋）。
+///
+/// 最大食時刻は golden が TT(=TD) を持てば **TT 差**（純幾何・ΔT 非依存, accuracy.md §0(a)）、
+/// 持たなければ UTC 差で代替する（その場合は ΔT 律速の注記対象, §0(b)）。いずれも秒。
+pub fn compare_global(computed: &SolarEclipse, golden: &GoldenEclipse) -> GlobalErrors {
+    let greatest = &computed.global.greatest;
+    // 差分は JulianDate2 の 2 要素を保った days_since で取る（単一 f64 の jd() 同士を引くと
+    // JD≈2.45e6 でエポック減算の桁落ち（~4.6e-5 s）が出るため。julian §2要素表現の理由）。
+    let greatest_seconds = match golden.greatest_time_tt {
+        Some(golden_tt) => greatest.time_tt.jd2().days_since(golden_tt.jd2()) * SECONDS_PER_DAY,
+        None => {
+            greatest
+                .time_utc
+                .jd2()
+                .days_since(golden.greatest_time_utc.jd2())
+                * SECONDS_PER_DAY
+        }
+    };
+    GlobalErrors {
+        greatest_seconds,
+        gamma: computed.global.gamma - golden.gamma,
+        magnitude: greatest.magnitude.0 - golden.magnitude,
+    }
+}
+
+/// 全球比較の metric 別統計＋合否（accuracy.md §3.4: pass でも統計を必ず出す）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalReport {
+    /// 最大食時刻誤差の統計（単位 `"s"`）。
+    pub greatest: ErrorStats,
+    /// γ 誤差の統計（単位 `"Re"`）。許容未設定のため合否ゲートには使わない（統計のみ）。
+    pub gamma: ErrorStats,
+    /// 食分誤差の統計（無次元・単位 `""`）。
+    pub magnitude: ErrorStats,
+    /// 合否（`greatest` が `maximum_seconds` 以内 **かつ** `magnitude` が許容以内）。γ は非ゲート。
+    pub pass: bool,
+}
+
+/// 複数日食の [`GlobalErrors`] を metric 別に集計し、[`ToleranceProfile`] で合否判定する。
+///
+/// 各 metric を [`ErrorStats::from_errors`]（絶対値化）で統計化する。合否は **最大食時刻**
+/// （`maximum_seconds`）と **食分**（`magnitude`）のみゲート（γ は許容未設定＝統計のみ・非ゲート）。
+/// 空入力は全 metric が空統計（n=0・全 0.0）で `pass = true`（vacuous, accuracy.md §3.4）。
+pub fn aggregate_global(errors: &[GlobalErrors], profile: &ToleranceProfile) -> GlobalReport {
+    let greatest = ErrorStats::from_errors(
+        &errors
+            .iter()
+            .map(|e| e.greatest_seconds)
+            .collect::<Vec<_>>(),
+        "s",
+    );
+    let gamma = ErrorStats::from_errors(&errors.iter().map(|e| e.gamma).collect::<Vec<_>>(), "Re");
+    let magnitude =
+        ErrorStats::from_errors(&errors.iter().map(|e| e.magnitude).collect::<Vec<_>>(), "");
+    let pass = greatest.within(profile.maximum_seconds) && magnitude.within(profile.magnitude);
+    GlobalReport {
+        greatest,
+        gamma,
+        magnitude,
+        pass,
     }
 }
 

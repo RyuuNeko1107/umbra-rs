@@ -425,6 +425,7 @@ dependencies = [
  "toml",
  "umbra-core",
  "umbra-eclipse",
+ "umbra-geo",
 ]
 
 [[package]]

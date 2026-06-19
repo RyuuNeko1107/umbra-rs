@@ -1,13 +1,18 @@
-# ミューテーション生存変異の許容判断 — `umbra-fixtures::report`（ISSUE-030 S30a）
+# ミューテーション生存変異の許容判断 — `umbra-fixtures::report`（ISSUE-030 S30a/S30b）
 
 `cargo mutants --package umbra-fixtures --file report.rs`
-（cargo-mutants 27.1.0, Docker 内）。**35 mutants: 32 caught / 3 unviable / 0 missed**。
+（cargo-mutants 27.1.0, Docker 内）。
+
+- **S30a**: 35 mutants → 32 caught / 3 unviable / 0 missed（境界単体テスト追加後）。
+- **S30b**（compare_global / aggregate_global 追加後の全体）: **46 mutants: 41 caught / 5 unviable / 0 missed**。
 
 対象（純粋・検証基盤）:
 - `ErrorStats::from_errors`（絶対誤差の記述統計 max|e| / mean|e| / p95）。
 - `ErrorStats::within`（`max_abs <= tolerance` の合否境界）。
 - 非公開 `percentile_r7_sorted`（R-7 線形補間パーセンタイル）。
 - `ToleranceProfile::standard()` / `reference()`（accuracy.md §2 の許容定数）。
+- `compare_global`（全球条件の符号付き誤差 computed−golden。時刻は days_since×86400）。
+- `aggregate_global`（metric 別 ErrorStats 集計＋ greatest/magnitude ゲートの pass。γ 非ゲート）。
 
 ## caught（統計・契約のコア）
 
