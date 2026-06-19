@@ -9,7 +9,7 @@
 
 use umbra_core::{EspenakMeeusDeltaT, JulianDate2, Observer, UtcInstant};
 use umbra_eclipse::{
-    standard_engine, EclipseEngine, EclipseError, EngineConfig, LocalCircumstances, SolarEclipse,
+    EclipseEngine, EclipseError, EngineConfig, LocalCircumstances, LunarRadiusModel, SolarEclipse,
     StandardEngine, UtcRange,
 };
 use umbra_ephemeris::{bundled_time_data, AnalyticalEphemeris};
@@ -93,19 +93,35 @@ impl EngineGoldenComputer {
     /// 精度プロファイルで同梱データ（[`bundled_time_data`]）からエンジンを構築する。
     pub fn new(accuracy: AccuracyArg) -> Self {
         let time = bundled_time_data();
-        let engine = match accuracy {
-            AccuracyArg::Standard => standard_engine(time),
-            AccuracyArg::Reference => {
-                let earth_orientation = time.eop().clone();
-                EclipseEngine::new(
-                    AnalyticalEphemeris::new(),
-                    EspenakMeeusDeltaT,
-                    earth_orientation,
-                    time,
-                    EngineConfig::reference(),
-                )
-            }
+        let mut config = match accuracy {
+            AccuracyArg::Standard => EngineConfig::standard(),
+            AccuracyArg::Reference => EngineConfig::reference(),
         };
+        // 月半径 k 慣習の切替（オラクル整合の裏取り用）。NASA/USNO は Espenak 2値 k を採用、
+        // エンジン既定は IauMean。`UMBRA_VALIDATE_K=espenak-umbral|espenak-penumbral|iau-mean`。
+        if let Ok(k) = std::env::var("UMBRA_VALIDATE_K") {
+            config.lunar_radius_model = match k.as_str() {
+                "espenak-umbral" => LunarRadiusModel::EspenakUmbral,
+                "espenak-penumbral" => LunarRadiusModel::EspenakPenumbral,
+                "iau-mean" => LunarRadiusModel::IauMean,
+                other => {
+                    eprintln!("[validate] unknown UMBRA_VALIDATE_K={other}; keeping default");
+                    config.lunar_radius_model
+                }
+            };
+            eprintln!(
+                "[validate] lunar_radius_model = {}",
+                config.lunar_radius_model.name()
+            );
+        }
+        let earth_orientation = time.eop().clone();
+        let engine = EclipseEngine::new(
+            AnalyticalEphemeris::new(),
+            EspenakMeeusDeltaT,
+            earth_orientation,
+            time,
+            config,
+        );
         Self { engine }
     }
 }
@@ -116,11 +132,20 @@ impl GoldenComputer for EngineGoldenComputer {
         let center_jd = golden.greatest_time_utc.jd2().jd();
         let start = UtcInstant::from_jd2(JulianDate2::from_jd(center_jd - 0.5));
         let end = UtcInstant::from_jd2(JulianDate2::from_jd(center_jd + 0.5));
-        Ok(self
+        let t0 = std::time::Instant::now();
+        eprintln!("[validate] search {} ...", golden.event_key);
+        let found = self
             .engine
             .search(UtcRange { start, end })?
             .into_iter()
-            .next())
+            .next();
+        eprintln!(
+            "[validate] search {} done in {:.1}s (found={})",
+            golden.event_key,
+            t0.elapsed().as_secs_f64(),
+            found.is_some()
+        );
+        Ok(found)
     }
 
     fn local_at(
@@ -134,7 +159,15 @@ impl GoldenComputer for EngineGoldenComputer {
             location.east_longitude_deg,
             location.elevation_m,
         )?;
-        self.engine.local_circumstances(eclipse, observer)
+        let t0 = std::time::Instant::now();
+        eprintln!("[validate]   local {} ...", location.name);
+        let result = self.engine.local_circumstances(eclipse, observer);
+        eprintln!(
+            "[validate]   local {} done in {:.1}s",
+            location.name,
+            t0.elapsed().as_secs_f64()
+        );
+        result
     }
 }
 
@@ -160,7 +193,22 @@ pub fn run_validate(args: &[String]) -> Result<(), XtaskError> {
     let format = parse_format(args)?;
     let profile = tolerance_profile(accuracy);
     let computer = EngineGoldenComputer::new(accuracy);
-    let golden = golden_eclipses();
+    let mut golden = golden_eclipses();
+    // 開発時の部分実行: UMBRA_VALIDATE_ONLY=key1,key2 で event_key 部分一致のみ照合（実エンジンが
+    // 重く全20件は ~2h かかるため、代表食での素早い精度確認に使う。未設定なら全件）。
+    if let Ok(filter) = std::env::var("UMBRA_VALIDATE_ONLY") {
+        let keys: Vec<&str> = filter
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        golden.retain(|g| keys.iter().any(|k| g.event_key.contains(k)));
+        eprintln!(
+            "[validate] filtered to {} eclipse(s): {:?}",
+            golden.len(),
+            keys
+        );
+    }
     let output = validate_report(&computer, &golden, &profile, format)?;
     print!("{output}");
     Ok(())
