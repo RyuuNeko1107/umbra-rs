@@ -9,7 +9,7 @@
 //! 数値（max/mean/p95）は必ず保持する。許容を pass のために拡大しない。
 
 use umbra_core::{TtInstant, UtcInstant};
-use umbra_eclipse::{EclipseError, LocalCircumstances, SolarEclipse};
+use umbra_eclipse::{EclipseError, LocalCircumstances, SolarEclipse, SolarEclipseKind};
 
 use crate::types::{GoldenEclipse, GoldenLocation};
 
@@ -192,7 +192,24 @@ pub fn compare_global(computed: &SolarEclipse, golden: &GoldenEclipse) -> Global
     GlobalErrors {
         greatest_seconds,
         gamma: computed.global.gamma - golden.gamma,
-        magnitude: greatest.magnitude.0 - golden.magnitude,
+        magnitude: greatest.magnitude.0 - golden_magnitude_engine_convention(golden),
+    }
+}
+
+/// golden（NASA 5MCSE）の全球食分をエンジン規約（太陽直径の隠蔽率）へ換算する。
+///
+/// NASA「Eclipse Magnitude」は**月/太陽の見かけ直径比**（glossary: "strictly a ratio of diameters"）。
+/// 一方エンジンの `greatest.magnitude` は標準の隠蔽率 `(l1'−m)/(l1'+l2')` で、**中心食の最大食点
+/// （m=0）では `l1'/(l1'+l2') = (1+直径比)/2`**（l1'∝rs+rm, l2'∝rs−rm）。よって中心食
+/// （Total/Annular/Hybrid）では直径比を `(1+ratio)/2` へ換算して apples-to-apples 比較する。
+/// 部分食（および非中心・将来種別）はエンジンの最大食点が縁端（m>0）で NASA も隠蔽率を報告する
+/// ため換算しない（同義）。残差は ΔT/暦由来の真の精度誤差のみとなる（accuracy.md §3.1）。
+fn golden_magnitude_engine_convention(golden: &GoldenEclipse) -> f64 {
+    match golden.kind_expected {
+        SolarEclipseKind::Total | SolarEclipseKind::Annular | SolarEclipseKind::Hybrid => {
+            (1.0 + golden.magnitude) / 2.0
+        }
+        _ => golden.magnitude,
     }
 }
 

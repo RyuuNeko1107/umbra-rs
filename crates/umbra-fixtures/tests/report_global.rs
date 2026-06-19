@@ -276,12 +276,14 @@ fn compare_global_gamma_signed() {
 /// 受け入れ「magnitude: computed.magnitude.0 − golden.magnitude の符号付き差」。
 /// computed 1.0306, golden 1.0300 → +0.0006。負ケース computed 1.0290, golden 1.0300 → −0.0010。
 /// 殺す変異: 符号反転, gamma など別フィールド読み取り, EclipseMagnitude(.0) の取り違え。
+/// 注: **部分食**で固定し直接差を縛る（中心食の直径比→隠蔽率換算は別テスト群が担保）。
 #[test]
 fn compare_global_magnitude_signed() {
     let base = tt(2_451_545.0, 0.0);
     let g_utc = utc(2024, 4, 8, 18, 0, 0.0);
 
-    let golden = golden_eclipse(g_utc, Some(base), 0.40, 1.0300);
+    let mut golden = golden_eclipse(g_utc, Some(base), 0.40, 1.0300);
+    golden.kind_expected = SolarEclipseKind::Partial; // 換算なし＝直接差を検証
     let computed_pos = computed_eclipse(base, g_utc, 0.40, 1.0306);
     let e_pos = compare_global(&computed_pos, &golden);
     assert!(
@@ -302,11 +304,13 @@ fn compare_global_magnitude_signed() {
 /// 受け入れ「フィールド独立: 3 誤差が互いに異なる非ゼロ値で各フィールドに正しく配線される」。
 /// time(+1.5 s) / gamma(+0.03) / magnitude(+0.0006) を **同時に異値**で与え、3 フィールドを独立検証。
 /// 殺す変異: フィールド間の取り違え（time→gamma, gamma→magnitude 等のミスルーティング）。
+/// 注: **部分食**で固定し magnitude は直接差（中心食の換算は別テスト群が担保）。
 #[test]
 fn compare_global_fields_are_independent() {
     let base = tt(2_451_545.0, 0.0);
     let g_utc = utc(2024, 4, 8, 18, 0, 0.0);
-    let golden = golden_eclipse(g_utc, Some(base), 0.40, 1.0300);
+    let mut golden = golden_eclipse(g_utc, Some(base), 0.40, 1.0300);
+    golden.kind_expected = SolarEclipseKind::Partial; // 換算なし＝直接差・独立性を検証
 
     let computed = computed_eclipse(
         tt(2_451_545.0, 1.5 / 86400.0),
@@ -520,4 +524,182 @@ fn aggregate_global_empty_is_vacuous_pass_zero_stats() {
     zero(&report.greatest, "greatest");
     zero(&report.gamma, "gamma");
     zero(&report.magnitude, "magnitude");
+}
+
+// ============================================================
+// compare_global — magnitude 規約変換（NASA 直径比 ↔ エンジン「太陽直径に対する欠け割合」）
+// ============================================================
+//
+// NASA 5MCSE「Eclipse Magnitude」は **月/太陽の見かけ直径比**（glossary: "strictly a ratio of
+// diameters"）。中心食（Total/Annular/Hybrid）では golden.magnitude はこの直径比そのもの
+// （例 2017 皆既 = 1.0306, 金環 < 1）。一方エンジンの greatest.magnitude は USNO と同じ
+// 「太陽直径に対する欠け割合」規約 `(l1'−m)/(l1'+l2')` で、中心極大（m=0）では `(1+比)/2`。
+// よって中心食の期待値は **`expected = (1 + golden.magnitude)/2`** へ変換せねばならず、
+// 部分食（および非中心/その他）は既に同規約なので **`expected = golden.magnitude`**（変換なし）。
+// 誤差は常に `computed.global.greatest.magnitude − expected`（符号 = computed − expected）。
+//
+// 現状の compare_global は中心食でも変換せず `computed − golden.magnitude` を返すため、
+// 中心食ケースは ~−0.0153（皆既）/ ~−0.025（金環）の誤差を返して以下のテストは RED になる。
+
+/// 指定 kind・magnitude の golden を組む（`golden_eclipse` を流用し kind_expected を上書き）。
+/// TT/UTC/gamma は magnitude 規約の検証に無関係なので固定。
+fn golden_with_kind(kind: SolarEclipseKind, magnitude: f64) -> GoldenEclipse {
+    let g_utc = utc(2024, 4, 8, 18, 0, 0.0);
+    let base = tt(2_451_545.0, 0.0);
+    let mut g = golden_eclipse(g_utc, Some(base), 0.40, magnitude);
+    g.kind_expected = kind;
+    g
+}
+
+/// 指定 magnitude を greatest.magnitude に持つ computed を組む（TT/UTC/gamma は golden と一致）。
+fn computed_with_magnitude(magnitude: f64) -> SolarEclipse {
+    let g_utc = utc(2024, 4, 8, 18, 0, 0.0);
+    let base = tt(2_451_545.0, 0.0);
+    computed_eclipse(base, g_utc, 0.40, magnitude)
+}
+
+/// 受け入れ「中心食(Total): expected=(1+golden)/2 へ変換。一致なら magnitude 誤差 ≈ 0」。
+/// golden.magnitude=1.0306（NASA 直径比）、computed greatest.magnitude=(1+1.0306)/2=1.0153
+/// → magnitude 誤差 ≈ 0（|err| < 1e-9）。
+/// 現状コード（変換なし `computed − golden`）は 1.0153 − 1.0306 = −0.0153 を返して FAIL する。
+/// 殺す変異: 変換 `(1+g)/2` の欠落（直接 golden 比較）, 係数 1/2 や +1 の改変, kind 分岐の取り違え。
+#[test]
+fn compare_global_magnitude_total_converts_ratio_to_fraction() {
+    let golden = golden_with_kind(SolarEclipseKind::Total, 1.0306);
+    let computed = computed_with_magnitude((1.0 + 1.0306) / 2.0);
+    let e = compare_global(&computed, &golden);
+    assert!(
+        e.magnitude.abs() < 1e-9,
+        "Total: expected=(1+1.0306)/2=1.0153, computed=1.0153 → magnitude 誤差 ≈ 0, got {}",
+        e.magnitude
+    );
+}
+
+/// 受け入れ「中心食(Annular): 同変換 expected=(1+golden)/2。一致なら誤差 ≈ 0」。
+/// golden.magnitude=0.95（金環は直径比 < 1）、computed=(1+0.95)/2=0.975 → 誤差 ≈ 0。
+/// 現状コード（変換なし）は 0.975 − 0.95 = +0.025 を返して FAIL する。
+/// 殺す変異: 変換欠落, 金環で変換しない（Total だけ変換する）分岐バグ。
+#[test]
+fn compare_global_magnitude_annular_converts_ratio_to_fraction() {
+    let golden = golden_with_kind(SolarEclipseKind::Annular, 0.95);
+    let computed = computed_with_magnitude((1.0 + 0.95) / 2.0);
+    let e = compare_global(&computed, &golden);
+    assert!(
+        e.magnitude.abs() < 1e-9,
+        "Annular: expected=(1+0.95)/2=0.975, computed=0.975 → magnitude 誤差 ≈ 0, got {}",
+        e.magnitude
+    );
+}
+
+/// 受け入れ「中心食(Hybrid): 同変換 expected=(1+golden)/2。一致なら誤差 ≈ 0」。
+/// golden.magnitude=1.013、computed=(1+1.013)/2=1.0065 → 誤差 ≈ 0。
+/// 現状コード（変換なし）は 1.0065 − 1.013 = −0.0065 を返して FAIL する。
+/// 殺す変異: Hybrid を中心食として扱わない（変換しない）分岐バグ。
+#[test]
+fn compare_global_magnitude_hybrid_converts_ratio_to_fraction() {
+    let golden = golden_with_kind(SolarEclipseKind::Hybrid, 1.013);
+    let computed = computed_with_magnitude((1.0 + 1.013) / 2.0);
+    let e = compare_global(&computed, &golden);
+    assert!(
+        e.magnitude.abs() < 1e-9,
+        "Hybrid: expected=(1+1.013)/2=1.0065, computed=1.0065 → magnitude 誤差 ≈ 0, got {}",
+        e.magnitude
+    );
+}
+
+/// 受け入れ「部分食(Partial): 変換しない expected=golden。一致なら誤差 ≈ 0」。
+/// NASA 部分食 magnitude は既にエンジンと同規約（欠け割合）。golden=0.80, computed=0.80 → 誤差 ≈ 0。
+/// この単独テストは現状コードでも PASS する（Partial は元々変換不要）。
+/// 殺す変異: 全 kind に一律変換をかける（部分食まで `(1+g)/2` する）バグ。
+#[test]
+fn compare_global_magnitude_partial_no_conversion() {
+    let golden = golden_with_kind(SolarEclipseKind::Partial, 0.80);
+    let computed = computed_with_magnitude(0.80);
+    let e = compare_global(&computed, &golden);
+    assert!(
+        e.magnitude.abs() < 1e-9,
+        "Partial: expected=golden=0.80, computed=0.80 → magnitude 誤差 ≈ 0（変換しない）, got {}",
+        e.magnitude
+    );
+}
+
+/// 受け入れ「部分食では変換を**適用しない**ことの陽性証明」。
+/// もし誤って `(1+0.80)/2=0.90` を expected に使うと、computed=0.80 では誤差が −0.10 になる。
+/// 正しい実装（部分食は変換なし・expected=0.80）なら computed=0.80 で誤差 ≈ 0。
+/// すなわち「computed=0.90 を与えたとき誤差は ≈ +0.10（≠ 0）」を縛り、部分食への誤変換を撃破する。
+/// 殺す変異: 部分食にも `(1+g)/2` 変換を適用する（このとき computed=0.90 が誤差 0 になってしまう）。
+#[test]
+fn compare_global_magnitude_partial_conversion_not_applied() {
+    let golden = golden_with_kind(SolarEclipseKind::Partial, 0.80);
+    // 部分食に変換が適用されていれば expected=0.90 となり、computed=0.90 で誤差 0 になるはず。
+    // 正しい実装（変換なし・expected=0.80）なら computed=0.90 は誤差 ≈ +0.10。
+    let computed = computed_with_magnitude(0.90);
+    let e = compare_global(&computed, &golden);
+    assert!(
+        (e.magnitude - 0.10).abs() < 1e-9,
+        "Partial: expected=0.80（変換なし）, computed=0.90 → 誤差 ≈ +0.10（変換が適用されていない証明）, got {}",
+        e.magnitude
+    );
+}
+
+/// 受け入れ「符号保存: 中心食でも誤差 = computed − expected（被減数/減数の入替を撃破）」。
+/// Total, golden=1.0306 → expected=1.0153。computed=1.0153+0.0002=1.0155 → 誤差 ≈ +0.0002（正）。
+/// computed=1.0153−0.0002=1.0151 → 誤差 ≈ −0.0002（負）。
+/// 殺す変異: 符号反転（expected − computed）, 変換後の符号取り違え。
+#[test]
+fn compare_global_magnitude_central_sign_preserved() {
+    let golden = golden_with_kind(SolarEclipseKind::Total, 1.0306);
+    let expected = (1.0 + 1.0306) / 2.0; // 1.0153
+
+    let computed_above = computed_with_magnitude(expected + 0.0002);
+    let e_above = compare_global(&computed_above, &golden);
+    assert!(
+        (e_above.magnitude - 0.0002).abs() < 1e-9,
+        "computed が expected より +0.0002 大 → 誤差 ≈ +0.0002（computed − expected）, got {}",
+        e_above.magnitude
+    );
+
+    let computed_below = computed_with_magnitude(expected - 0.0002);
+    let e_below = compare_global(&computed_below, &golden);
+    assert!(
+        (e_below.magnitude + 0.0002).abs() < 1e-9,
+        "computed が expected より −0.0002 小 → 誤差 ≈ −0.0002（符号: computed − expected）, got {}",
+        e_below.magnitude
+    );
+}
+
+/// 受け入れ「magnitude 規約変換は greatest_seconds / gamma に影響しない」。
+/// Total・magnitude を変換させつつ、time(+1.5 s) と gamma(+0.03) を独立に与え、両誤差が
+/// 従来どおり（変換の影響なし）であることを確認する。
+/// 殺す変異: magnitude 変換のついでに time/gamma の式を壊す, kind 分岐が他フィールドへ波及。
+#[test]
+fn compare_global_conversion_does_not_affect_seconds_or_gamma() {
+    let g_utc = utc(2024, 4, 8, 18, 0, 0.0);
+    let base = tt(2_451_545.0, 0.0);
+    let mut golden = golden_eclipse(g_utc, Some(base), 0.40, 1.0306);
+    golden.kind_expected = SolarEclipseKind::Total;
+
+    // time +1.5 s, gamma +0.03, magnitude は変換一致（誤差 0 のはず）。
+    let computed = computed_eclipse(
+        tt(2_451_545.0, 1.5 / 86400.0),
+        utc(2000, 1, 1, 0, 0, 0.0),
+        0.43,
+        (1.0 + 1.0306) / 2.0,
+    );
+    let e = compare_global(&computed, &golden);
+    assert!(
+        (e.greatest_seconds - 1.5).abs() < SEC_EPS,
+        "greatest_seconds は変換の影響を受けず +1.5, got {}",
+        e.greatest_seconds
+    );
+    assert!(
+        (e.gamma - 0.03).abs() < EPS,
+        "gamma は変換の影響を受けず +0.03, got {}",
+        e.gamma
+    );
+    assert!(
+        e.magnitude.abs() < 1e-9,
+        "magnitude は変換一致で ≈ 0, got {}",
+        e.magnitude
+    );
 }
