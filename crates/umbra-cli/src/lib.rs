@@ -1,16 +1,20 @@
-//! `umbra` CLI ライブラリ（ISSUE-031 `umbra search`）。
+//! `umbra` CLI ライブラリ（ISSUE-031 `umbra search` / ISSUE-032 `umbra local`）。
 //!
-//! 薄い CLI ラッパ: 引数解釈（clap）・日付パース・`EclipseEngine::search` 呼び出し・整形出力。
+//! 薄い CLI ラッパ: 引数解釈（clap）・日付パース・`EclipseEngine` 呼び出し・整形出力。
 //! 計算は umbra-eclipse が担保。本クレートは境界（引数・パース・出力・エラー/終了コード）が責務。
 //!
-//! 範囲: `umbra search`（`--format <text|json>`）。S31a で text、S31b で json（serde 横断配線・
-//! `SolarEclipse` 推移閉包に Serialize を通し `serde_json` で整形）を実装。
+//! - `umbra search`（`--format <text|json>`）: S31a text、S31b json（serde 横断配線・
+//!   `SolarEclipse` 推移閉包に Serialize を通し `serde_json` で整形）。
+//! - `umbra local`（S32a・text）: 指定日・指定地点の局地条件（`EclipseEngine::local_circumstances`）。
+//!   西経入力吸収（`Observer::from_degrees`）・UTC オフセット表示・可視性 6 値。`--format json` は S32b。
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use umbra_core::{jd2_to_gregorian, EspenakMeeusDeltaT, UtcInstant};
+use umbra_core::{
+    jd2_to_gregorian, DomainError, EspenakMeeusDeltaT, JulianDate2, Observer, UtcInstant,
+};
 use umbra_eclipse::{
-    standard_engine, EclipseEngine, EclipseError, EngineConfig, SolarEclipse, SolarEclipseKind,
-    UtcRange,
+    standard_engine, EclipseEngine, EclipseError, EngineConfig, LocalCircumstances, LocalContact,
+    RefractionModel, SolarEclipse, SolarEclipseKind, UtcRange,
 };
 use umbra_ephemeris::{bundled_time_data, AnalyticalEphemeris};
 
@@ -23,11 +27,13 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// サブコマンド（S31a は `search` のみ。local/path 等は後続 issue）。
+/// サブコマンド（`search`／`local`。path 等は後続 issue）。
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// 期間内の太陽食を列挙する（`EclipseEngine::search`）。
     Search(SearchArgs),
+    /// 指定日・指定地点の局地条件を表示する（`EclipseEngine::local_circumstances`）。
+    Local(LocalArgs),
 }
 
 /// `umbra search` の引数。
@@ -57,6 +63,50 @@ pub enum FormatArg {
     Text,
     /// JSON（`SolarEclipse` の serde・配列。機械可読・列挙は `{type:..}` タグ付き）。
     Json,
+}
+
+/// `umbra local` の引数（S32a。`--format` は S32b で追加・本スライスは text のみ）。
+#[derive(Debug, Args)]
+pub struct LocalArgs {
+    /// 対象日（`YYYY-MM-DD`, UTC）。当日に起こる日食の局地条件を求める。
+    #[arg(long)]
+    pub date: String,
+    /// 測地緯度（度, [-90, 90]）。負＝南緯（`allow_hyphen_values` で受理）。
+    #[arg(long, allow_hyphen_values = true)]
+    pub lat: f64,
+    /// 経度（度・東経正。**負＝西経**も受理し東経へ正規化吸収, conventions §3）。
+    #[arg(long, allow_hyphen_values = true)]
+    pub lon: f64,
+    /// 楕円体高（m, 既定 0）。
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+    pub elevation: f64,
+    /// ローカル時刻表示用の UTC オフセット（例 `+09:00` / `-0500` / `Z`）。内部計算は UTC/TT 不変。
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// 精度プロファイル（既定 standard）。
+    #[arg(long, value_enum, default_value_t = AccuracyArg::Standard)]
+    pub accuracy: AccuracyArg,
+    /// 大気差モデル（既定 standard・conventions §7 / EngineConfig 既定と一致）。
+    #[arg(long, value_enum, default_value_t = RefractionArg::Standard)]
+    pub refraction: RefractionArg,
+}
+
+/// 大気差モデル引数（S32a）。`umbra_eclipse::RefractionModel` に対応。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RefractionArg {
+    /// 大気差なし（幾何学的高度のみ）。
+    None,
+    /// 標準大気差（既定・Saemundsson）。
+    Standard,
+}
+
+impl From<RefractionArg> for RefractionModel {
+    fn from(arg: RefractionArg) -> Self {
+        match arg {
+            RefractionArg::None => RefractionModel::None,
+            RefractionArg::Standard => RefractionModel::Standard,
+        }
+    }
 }
 
 /// 精度プロファイル引数（公開 2 層, api-draft §3.1）。
@@ -103,6 +153,12 @@ pub enum CliError {
     /// JSON 整形失敗（`--format json`・serde_json 由来, 透過）。
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// `--timezone` パース失敗（UTC オフセット形式以外）。
+    #[error("invalid timezone '{0}' (expected UTC offset like +09:00, -0500, or Z)")]
+    InvalidTimezone(String),
+    /// 入力の定義域違反（緯度/経度範囲外など, 透過）。
+    #[error(transparent)]
+    Domain(#[from] DomainError),
 }
 
 /// `YYYY-MM-DD`（UTC 0:00:00）を [`UtcInstant`] にパースする。
@@ -236,6 +292,157 @@ pub fn run_search(args: &SearchArgs) -> Result<String, CliError> {
         FormatArg::Text => Ok(format_search_text(&filtered)),
         FormatArg::Json => format_search_json(&filtered),
     }
+}
+
+/// UTC オフセット文字列を **符号付き分**へパースする（`umbra local --timezone`・S32a）。
+///
+/// 受理: `"Z"`（=0）, `"+HH:MM"` / `"-HH:MM"` / `"+HHMM"` / `"-HHMM"`（HH∈[00,23], MM∈[00,59]）。
+/// それ以外は [`CliError::InvalidTimezone`]（入力文字列を保持）。表示専用で内部 UTC/TT は不変。
+pub fn parse_utc_offset(text: &str) -> Result<i32, CliError> {
+    let invalid = || CliError::InvalidTimezone(text.to_string());
+    if text == "Z" {
+        return Ok(0);
+    }
+    let (sign, rest) = if let Some(r) = text.strip_prefix('+') {
+        (1, r)
+    } else if let Some(r) = text.strip_prefix('-') {
+        (-1, r)
+    } else {
+        return Err(invalid());
+    };
+    // "HH:MM"（コロンあり）または "HHMM"（コロンなし 4 桁）。
+    let (hh, mm) = if let Some((h, m)) = rest.split_once(':') {
+        (h, m)
+    } else if rest.len() == 4 {
+        rest.split_at(2)
+    } else {
+        return Err(invalid());
+    };
+    if hh.len() != 2 || mm.len() != 2 {
+        return Err(invalid());
+    }
+    let hours: i32 = hh.parse().map_err(|_| invalid())?;
+    let minutes: i32 = mm.parse().map_err(|_| invalid())?;
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+        return Err(invalid());
+    }
+    Ok(sign * (hours * 60 + minutes))
+}
+
+/// 局地接触 1 点を整形する（`time_utc` UTC ＋ `time_tt` TT ＋任意でローカル時刻・高度方位）。
+/// `None`（部分食地点の C2/C3 など）は em ダッシュ `—` で描き、架空時刻を捏造しない。
+fn format_contact(
+    label: &str,
+    contact: Option<&LocalContact>,
+    timezone: Option<(&str, i32)>,
+) -> String {
+    let Some(c) = contact else {
+        return format!("  {label}: —\n");
+    };
+    let (y, mo, d, h, mi, s) = c.time_utc.to_gregorian();
+    let (ty, tmo, td, th, tmi, ts) = jd2_to_gregorian(c.time_tt.jd2());
+    let mut line = format!(
+        "  {label}: {y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:04.1} UTC / \
+         {ty:04}-{tmo:02}-{td:02} {th:02}:{tmi:02}:{ts:04.1} TT",
+    );
+    if let Some((tz_label, offset_min)) = timezone {
+        // ローカル時刻は UTC を表示のためだけにオフセット（内部 UTC/TT は不変, conventions §6）。
+        let local_jd = c.time_utc.jd2().jd() + f64::from(offset_min) / 1440.0;
+        let (ly, lmo, ld, lh, lmi, ls) = jd2_to_gregorian(JulianDate2::from_jd(local_jd));
+        line.push_str(&format!(
+            " / {ly:04}-{lmo:02}-{ld:02} {lh:02}:{lmi:02}:{ls:04.1} {tz_label}"
+        ));
+    }
+    line.push_str(&format!(
+        "  (alt {:.1}°, az {:.1}°)\n",
+        c.sun_altitude.0, c.sun_azimuth.0
+    ));
+    line
+}
+
+/// 局地条件を人間可読 text に整形する（S32a）。接触 C1/C2/最大/C3/C4 を時系列で（各 **UTC+TT**・
+/// `timezone` 指定時はローカル時刻も併記, accuracy.md §0）、食分・食面積・最大高度・**可視性 6 値**・
+/// 計算メタデータ（暦/ΔT モデル名・ΔT 不確実性帯）を出す。部分食地点の C2/C3（None）は `—`。
+pub fn format_local_text(circ: &LocalCircumstances, timezone: Option<(&str, i32)>) -> String {
+    let cs = &circ.contacts;
+    let mut out = String::new();
+    out.push_str(&format_contact("C1 ", cs.c1.as_ref(), timezone));
+    out.push_str(&format_contact("C2 ", cs.c2.as_ref(), timezone));
+    out.push_str(&format_contact("max", Some(&cs.maximum), timezone));
+    out.push_str(&format_contact("C3 ", cs.c3.as_ref(), timezone));
+    out.push_str(&format_contact("C4 ", cs.c4.as_ref(), timezone));
+    out.push_str(&format!(
+        "  magnitude: {mag:.4}  obscuration: {obsc:.4}  max altitude: {alt:.1}°\n",
+        mag = circ.magnitude.0,
+        obsc = circ.obscuration.0,
+        alt = circ.maximum_altitude.0,
+    ));
+    out.push_str(&format!("  visibility: {:?}\n", circ.visibility));
+    let m = &circ.metadata;
+    out.push_str(&format!(
+        "  ephemeris: {em} {ev}  ΔT: {dt} (±{unc:.2}s)  accuracy: {acc:?}\n",
+        em = m.ephemeris_model,
+        ev = m.ephemeris_version,
+        dt = m.delta_t_model,
+        unc = m.delta_t_uncertainty_seconds,
+        acc = m.accuracy_profile,
+    ));
+    out
+}
+
+/// `umbra local` を実行し、整形済み text 出力を返す（S32a）。
+///
+/// 不正日付・緯度経度範囲外・不正 timezone は **エンジン実走前に** fast-fail
+/// （[`CliError::InvalidDate`]/[`CliError::Domain`]/[`CliError::InvalidTimezone`]）。
+/// `--date` の UTC 暦日 `[date, date+1日)` を `search` し、見つかった日食に
+/// `local_circumstances(observer)` を適用する。該当日食なしは「食なし」を返す（エラーにしない）。
+/// 西経入力は [`Observer::from_degrees`] が東経へ正規化吸収する（conventions §3）。
+pub fn run_local(args: &LocalArgs) -> Result<String, CliError> {
+    let date = parse_date(&args.date)?;
+    let observer = Observer::from_degrees(args.lat, args.lon, args.elevation)?;
+    let timezone: Option<(&str, i32)> = match &args.timezone {
+        Some(tz) => Some((tz.as_str(), parse_utc_offset(tz)?)),
+        None => None,
+    };
+
+    // 大気差を反映したエンジン設定（精度プロファイル＋ refraction 上書き）。
+    let mut config = match args.accuracy {
+        AccuracyArg::Standard => EngineConfig::standard(),
+        AccuracyArg::Reference => EngineConfig::reference(),
+    };
+    config.refraction = args.refraction.into();
+
+    let time = bundled_time_data();
+    let earth_orientation = time.eop().clone();
+    let engine = EclipseEngine::new(
+        AnalyticalEphemeris::new(),
+        EspenakMeeusDeltaT,
+        earth_orientation,
+        time,
+        config,
+    );
+
+    // 指定日（UTC 暦日 [date, date+1 日)）に起こる日食を探索する。
+    let day_end = UtcInstant::from_jd2(JulianDate2::from_jd(date.jd2().jd() + 1.0));
+    let range = UtcRange {
+        start: date,
+        end: day_end,
+    };
+    let Some(eclipse) = engine.search(range)?.into_iter().next() else {
+        return Ok(format!(
+            "No solar eclipse on {} at this location.\n",
+            args.date
+        ));
+    };
+
+    let circ = engine.local_circumstances(&eclipse, observer)?;
+    let mut out = format!(
+        "{key}  {kind:?}\n",
+        key = eclipse.event_key,
+        kind = eclipse.kind
+    );
+    out.push_str(&format_local_text(&circ, timezone));
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1158,6 +1365,438 @@ mod tests {
         assert!(
             arr.iter().any(|e| e["kind"]["type"] == "Total"),
             "少なくとも 1 要素の kind.type が \"Total\"（2017 皆既）: {s}"
+        );
+    }
+
+    // ==================================================================
+    // === S32a: umbra local (text) ===
+    // ==================================================================
+    // ISSUE-032 S32a 受け入れテスト（standard・`umbra local` text 出力・--format なし）。
+    //
+    // ## オラクル戦略（実装方針に立ち入らず、確定仕様の公開 IF だけを縛る）
+    // - **parse_utc_offset**: 期待分値を独立算術（例 9*60）で組む（実装の文字列処理を写経しない）。
+    //   明確に妥当な offset は Ok(分)、明確なゴミ（"foo"/""）は InvalidTimezone（入力保持）。
+    // - **format_local_text**: 既知 fixture（中心地点 FullyVisible／部分地点）を構造体リテラルで
+    //   組み、出力に既知値が部分文字列として出る存在確認（厳密レイアウトは縛らない）。
+    //   C2/C3 が None の地点は em ダッシュ "—" で描かれ、架空の接触時刻を捏造しないことを縛る。
+    //   timezone Some 時はローカル時刻ラベルが追加されつつ UTC/TT が温存されることを縛る。
+    // - **run_local（fast-fail）**: 不正 date／緯度範囲外（Domain）／不正 timezone は **エンジン実走前**
+    //   に Err（高速）。red 段階では未解決シンボルでコンパイル不能。
+    // - **西経吸収**: コアの正規化契約（−100° ≡ 260°）を Observer 等値で固定（CLI が依存する契約）。
+    // - **run_local（SLOW・1〜2 件）**: 実エンジンで 2024-04-08 の皆既路上地点を解く（≈分）。
+    //
+    // ## red 設計（本体未実装）
+    // `Command::Local`/`LocalArgs`/`RefractionArg`/`run_local`/`parse_utc_offset`/`format_local_text`、
+    // および `CliError::{InvalidTimezone, Domain}` は本スライスで導入予定で現状未実装。
+    // テストはコンパイル時点で未解決シンボル（red）。
+
+    use umbra_core::{DomainError, Observer};
+    use umbra_eclipse::{LocalCircumstances, LocalContact, LocalContactSet, Visibility};
+
+    // ------------------------------------------------------------------
+    // S32a 構築ヘルパ（局地接触・局地条件 fixture）
+    // ------------------------------------------------------------------
+
+    /// 局地接触点を既知値で組む（time_utc/time_tt は互いに区別できる別値）。
+    fn local_contact(
+        utc_h: u8,
+        utc_mi: u8,
+        tt_frac: f64,
+        alt: f64,
+        az: f64,
+        pa: f64,
+        visible: bool,
+    ) -> LocalContact {
+        LocalContact {
+            time_utc: utc(2024, 4, 8, utc_h, utc_mi, 0.0),
+            time_tt: tt(2_460_409.0, tt_frac),
+            sun_altitude: Degrees(alt),
+            sun_azimuth: Degrees(az),
+            position_angle: Degrees(pa),
+            visible,
+        }
+    }
+
+    /// 中心地点（FullyVisible）の局地条件 fixture。c1..c4 すべて Some・各々別時刻。
+    fn fully_visible_circ() -> LocalCircumstances {
+        LocalCircumstances {
+            contacts: LocalContactSet {
+                c1: Some(local_contact(17, 18, 0.111, 60.0, 120.0, 250.0, true)),
+                c2: Some(local_contact(18, 32, 0.222, 68.0, 150.0, 260.0, true)),
+                maximum: local_contact(18, 34, 0.234, 70.5, 152.0, 265.0, true),
+                c3: Some(local_contact(18, 36, 0.246, 69.0, 154.0, 80.0, true)),
+                c4: Some(local_contact(20, 1, 0.333, 45.0, 230.0, 90.0, true)),
+            },
+            magnitude: EclipseMagnitude(1.0123),
+            obscuration: Obscuration(1.0),
+            maximum_altitude: Degrees(70.5),
+            visibility: Visibility::FullyVisible,
+            metadata: metadata(),
+        }
+    }
+
+    /// 部分地点（PartialVisible）の局地条件 fixture。c2/c3 は None（中心接触なし）。
+    fn partial_visible_circ() -> LocalCircumstances {
+        LocalCircumstances {
+            contacts: LocalContactSet {
+                c1: Some(local_contact(17, 45, 0.150, 30.0, 100.0, 240.0, true)),
+                c2: None,
+                maximum: local_contact(19, 0, 0.270, 22.0, 200.0, 255.0, true),
+                c3: None,
+                c4: Some(local_contact(20, 15, 0.390, 8.0, 250.0, 95.0, true)),
+            },
+            magnitude: EclipseMagnitude(0.62),
+            obscuration: Obscuration(0.51),
+            maximum_altitude: Degrees(22.0),
+            visibility: Visibility::PartialVisible,
+            metadata: metadata(),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 1. parse_utc_offset（FAST・独立算術オラクル）
+    // ------------------------------------------------------------------
+
+    /// 妥当な UTC offset 各表記が **符号付き分**へ正しくパースされる（期待値は独立算術で構成）。
+    /// "+HH:MM"/"-HH:MM"/"+HHMM"/"-HHMM"/"Z" の全表記と符号・コロン有無を 1 件ずつ縛る。
+    /// 殺す変異: 符号を無視する、コロン有無で分岐を誤る、時↔分の取り違え、Z を 0 にしない。
+    #[test]
+    fn parse_utc_offset_valid_forms_to_signed_minutes() {
+        assert_eq!(
+            parse_utc_offset("+09:00").expect("妥当 offset"),
+            9 * 60,
+            "+09:00 = +540 分"
+        );
+        assert_eq!(
+            parse_utc_offset("-05:30").expect("妥当 offset"),
+            -(5 * 60 + 30),
+            "-05:30 = -330 分"
+        );
+        assert_eq!(parse_utc_offset("Z").expect("Z は 0"), 0, "Z = 0 分");
+        assert_eq!(
+            parse_utc_offset("+00:00").expect("妥当 offset"),
+            0,
+            "+00:00 = 0 分"
+        );
+        assert_eq!(
+            parse_utc_offset("+0000").expect("妥当 offset"),
+            0,
+            "+0000 = 0 分"
+        );
+        assert_eq!(
+            parse_utc_offset("+0900").expect("妥当 offset"),
+            9 * 60,
+            "+0900 = +540 分（コロン無し）"
+        );
+        assert_eq!(
+            parse_utc_offset("-0500").expect("妥当 offset"),
+            -(5 * 60),
+            "-0500 = -300 分（コロン無し）"
+        );
+    }
+
+    /// 明確なゴミ文字列は `Err(CliError::InvalidTimezone(入力))`（入力文字列をそのまま保持）。
+    /// 殺す変異: 不正入力を 0 等にフォールバックして Ok を返す、InvalidTimezone に別文字列を載せる。
+    #[test]
+    fn parse_utc_offset_garbage_is_invalid_timezone() {
+        match parse_utc_offset("foo") {
+            Err(CliError::InvalidTimezone(s)) => {
+                assert_eq!(s, "foo", "InvalidTimezone は入力 \"foo\" を保持");
+            }
+            other => panic!("expected Err(InvalidTimezone(\"foo\")), got {other:?}"),
+        }
+        match parse_utc_offset("") {
+            Err(CliError::InvalidTimezone(s)) => {
+                assert_eq!(s, "", "InvalidTimezone は空入力を保持");
+            }
+            other => panic!("expected Err(InvalidTimezone(\"\")), got {other:?}"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 2. format_local_text（FAST・既知 fixture の内容存在で縛る）
+    // ------------------------------------------------------------------
+
+    /// 中心地点（FullyVisible・timezone なし）を整形すると、各接触の UTC 暦日と TT ラベルが
+    /// 併記され、食分・食面積・最大高度・可視性名・計算メタデータ（暦/ΔT モデル名・不確実性帯）が
+    /// 出力に含まれる（accuracy.md §0: UTC+TT 併記必須）。
+    /// 殺す変異: TT を接触行から落とし UTC のみ出す、食分/食面積/最大高度/可視性名/メタデータの欠落。
+    #[test]
+    fn format_local_text_central_site_contains_key_fields() {
+        let out = format_local_text(&fully_visible_circ(), None);
+
+        // 接触の UTC 暦日（2024-04-08）。
+        assert!(
+            out.contains("2024-04-08"),
+            "接触の UTC 暦日が出力に含まれる: {out}"
+        );
+        // TT 併記（TT ラベル）。
+        assert!(out.contains("TT"), "接触の TT 併記が出力に含まれる: {out}");
+        // 食分（1.0123）。
+        assert!(
+            out.contains("1.0123"),
+            "食分 1.0123 が出力に含まれる: {out}"
+        );
+        // 食面積（1.0）。
+        assert!(out.contains("1.0"), "食面積 1.0 が出力に含まれる: {out}");
+        // 最大高度（70.5）。
+        assert!(
+            out.contains("70.5"),
+            "最大高度 70.5 が出力に含まれる: {out}"
+        );
+        // 可視性名（FullyVisible）。
+        assert!(
+            out.contains("FullyVisible"),
+            "可視性名 FullyVisible が出力に含まれる: {out}"
+        );
+        // 計算メタデータ: 暦モデル名・ΔT モデル名・ΔT 不確実性帯。
+        assert!(
+            out.contains("ELP/MPP02+VSOP87D"),
+            "ephemeris モデル名が出力に含まれる: {out}"
+        );
+        assert!(
+            out.contains("EspenakMeeus"),
+            "ΔT モデル名が出力に含まれる: {out}"
+        );
+        assert!(
+            out.contains("0.5"),
+            "ΔT 不確実性帯（0.5）が出力に含まれる: {out}"
+        );
+    }
+
+    /// 部分地点（c2/c3 が None）を整形すると、欠落接触は em ダッシュ "—"（U+2014）で描かれ、
+    /// 架空の中心接触時刻を捏造しない。非 Option の maximum は常に出る。可視性名も出る（非 panic）。
+    /// 殺す変異: c2/c3 の None を "—" で表示しない、None なのに架空時刻を出す、maximum を落とす、
+    ///   部分地点で panic する。
+    #[test]
+    fn format_local_text_partial_site_shows_dash_for_none_contacts() {
+        let circ = partial_visible_circ();
+        // fixture 前提: maximum ≈ 19:00 UTC（架空 c2/c3 時刻と区別する材料）。to_gregorian は丸め
+        // 境界で 18:59:59.9995 を返しうる（S31b で判明した暦往復の ±eps）ため、暦成分の厳密比較で
+        // なく JD レベルで ±1 分以内を確認する。
+        let max_jd = circ.contacts.maximum.time_utc.jd2().jd();
+        let expected_jd = utc(2024, 4, 8, 19, 0, 0.0).jd2().jd();
+        assert!(
+            (max_jd - expected_jd).abs() < 1.0 / 1440.0,
+            "fixture 前提: maximum ≈ 19:00 UTC（|Δ| < 1 分）"
+        );
+
+        let out = format_local_text(&circ, None);
+
+        // 欠落接触（c2/c3）は em ダッシュで描かれる。
+        assert!(
+            out.contains('—'),
+            "None 接触は em ダッシュ '—'(U+2014) で描かれる: {out}"
+        );
+        // 非 Option の maximum は常に存在（最大食 UTC 暦日が出る）。
+        assert!(
+            out.contains("2024-04-08"),
+            "maximum（非 Option）の UTC 暦日が出力に含まれる: {out}"
+        );
+        // 可視性名（PartialVisible）。
+        assert!(
+            out.contains("PartialVisible"),
+            "部分地点の可視性名 PartialVisible が出力に含まれる: {out}"
+        );
+    }
+
+    /// timezone Some 時はローカル時刻ラベル（"+09:00"）が追加されつつ、内部の UTC/TT は温存される。
+    /// 殺す変異: timezone ラベルを描かない、ローカル表示で UTC を消す、TT を落とす。
+    #[test]
+    fn format_local_text_with_timezone_adds_label_and_keeps_utc_tt() {
+        let out = format_local_text(&fully_visible_circ(), Some(("+09:00", 540)));
+
+        // ローカル時刻ラベルが追加される。
+        assert!(
+            out.contains("+09:00"),
+            "timezone ラベル +09:00 が出力に含まれる: {out}"
+        );
+        // UTC は温存（接触の UTC 暦日が依然として出る）。
+        assert!(
+            out.contains("2024-04-08"),
+            "ローカル表示でも UTC 暦日は温存される: {out}"
+        );
+        // TT も温存。
+        assert!(
+            out.contains("TT"),
+            "ローカル表示でも TT 併記は温存される: {out}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 3. run_local（fast-fail = FAST / 正常系 = SLOW）
+    // ------------------------------------------------------------------
+
+    /// 不正 `--date` はエンジン実走前に `Err(CliError::InvalidDate(入力))`（fast-fail）。
+    /// 殺す変異: 不正 date を黙って受理してエンジンに進む、InvalidDate でなく別 variant を返す。
+    #[test]
+    fn run_local_invalid_date_is_invalid_date_error() {
+        let args = LocalArgs {
+            date: "not-a-date".to_string(),
+            lat: 35.0,
+            lon: 139.0,
+            elevation: 0.0,
+            timezone: None,
+            accuracy: AccuracyArg::Standard,
+            refraction: RefractionArg::Standard,
+        };
+        let r = run_local(&args);
+        assert!(
+            matches!(r, Err(CliError::InvalidDate(ref s)) if s == "not-a-date"),
+            "expected Err(InvalidDate(\"not-a-date\")), got {r:?}"
+        );
+    }
+
+    /// 緯度範囲外（91.0）は Observer 構築で弾かれ `Err(CliError::Domain(_))`（エンジン実走前）。
+    /// 殺す変異: 緯度範囲チェックを迂回してエンジンに進む、Domain でなく別 variant を返す。
+    #[test]
+    fn run_local_latitude_out_of_range_is_domain_error() {
+        let args = LocalArgs {
+            date: "2024-04-08".to_string(),
+            lat: 91.0,
+            lon: 0.0,
+            elevation: 0.0,
+            timezone: None,
+            accuracy: AccuracyArg::Standard,
+            refraction: RefractionArg::Standard,
+        };
+        let r = run_local(&args);
+        assert!(
+            matches!(r, Err(CliError::Domain(_))),
+            "expected Err(Domain(_)) for lat=91.0, got {r:?}"
+        );
+    }
+
+    /// 不正 `--timezone`（"foo"）は date/lat/lon が妥当でもエンジン実走前に
+    /// `Err(CliError::InvalidTimezone("foo"))`。
+    /// 殺す変異: timezone 検証をエンジン後に回す/省く、InvalidTimezone でなく別 variant を返す。
+    #[test]
+    fn run_local_invalid_timezone_is_invalid_timezone_error() {
+        let args = LocalArgs {
+            date: "2024-04-08".to_string(),
+            lat: 35.0,
+            lon: 139.0,
+            elevation: 0.0,
+            timezone: Some("foo".to_string()),
+            accuracy: AccuracyArg::Standard,
+            refraction: RefractionArg::Standard,
+        };
+        let r = run_local(&args);
+        assert!(
+            matches!(r, Err(CliError::InvalidTimezone(ref s)) if s == "foo"),
+            "expected Err(InvalidTimezone(\"foo\")), got {r:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 4. 西経吸収（FAST・コア正規化契約・型レベル）
+    // ------------------------------------------------------------------
+
+    /// CLI が依存するコア契約: 西経 −100° は東経 260° と正規化後に等価な Observer になる。
+    /// 殺す変異: 経度正規化を行わず西経入力が別地点になる（CLI の lon 吸収契約破壊）。
+    #[test]
+    fn observer_west_longitude_absorbs_to_equivalent_east() {
+        let west = Observer::from_degrees(35.0, -100.0, 0.0).expect("妥当 Observer");
+        let east = Observer::from_degrees(35.0, 260.0, 0.0).expect("妥当 Observer");
+        assert_eq!(
+            west, east,
+            "西経 −100° ≡ 東経 260°（正規化後の Observer 等値）"
+        );
+        // DomainError 型の存在も固定（lat 範囲外は Domain で surface する契約の土台）。
+        let _ = DomainError::OutOfRange {
+            what: "geodetic latitude",
+        };
+    }
+
+    /// clap が **負の緯度（南緯）・負の経度（西経）** を `--lat`/`--lon` の値として受理する
+    /// （`-34.0` をフラグと誤認しない）。`allow_hyphen_values` の脱落＝南半球/西経の入力拒否を撃破。
+    /// 殺す変異: `--lat` の `allow_hyphen_values` を外す（負緯度が clap パースエラーになる）。
+    #[test]
+    fn local_args_accept_negative_lat_lon_via_clap() {
+        let cli = Cli::try_parse_from([
+            "umbra",
+            "local",
+            "--date",
+            "2024-04-08",
+            "--lat",
+            "-34.0",
+            "--lon",
+            "-58.0",
+        ])
+        .expect("負の緯度・経度は clap が値として受理する");
+        match cli.command {
+            Command::Local(args) => {
+                assert_eq!(args.lat, -34.0, "南緯 -34.0 が値として渡る");
+                assert_eq!(args.lon, -58.0, "西経 -58.0 が値として渡る");
+            }
+            other => panic!("expected Command::Local, got {other:?}"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 5. run_local（SLOW・実エンジン）
+    // ------------------------------------------------------------------
+
+    /// 【SLOW・1 件】正常系: 2024-04-08・米中部 Texas の皆既路上地点・timezone -05:00 で `Ok(s)`。
+    /// s は日食日付 "2024-04-08"・可視性名のいずれか・timezone ラベル "-05:00" を含む（構造的存在
+    /// のみ・計算値は過度に縛らない＝コアの精度は別所でテスト済み）。実エンジン実走で SLOW。
+    /// 殺す変異: 観測地点をエンジンに渡さない、整形を呼ばない、timezone ラベルを出さない。
+    // SLOW
+    #[test]
+    fn run_local_2024_total_path_site_produces_output() {
+        let args = LocalArgs {
+            date: "2024-04-08".to_string(),
+            lat: 30.0,
+            lon: -98.0,
+            elevation: 0.0,
+            timezone: Some("-05:00".to_string()),
+            accuracy: AccuracyArg::Standard,
+            refraction: RefractionArg::Standard,
+        };
+        let out = run_local(&args).expect("2024-04-08 Texas の局地計算は成功する");
+        assert!(
+            out.contains("2024-04-08"),
+            "日食日付 2024-04-08 が出力に含まれる: {out}"
+        );
+        // 6 値のいずれかの可視性名が出る（どれかは地点依存・少なくとも 1 つ）。
+        let visibility_names = [
+            "NotVisible",
+            "BelowHorizon",
+            "SunriseEclipse",
+            "SunsetEclipse",
+            "PartialVisible",
+            "FullyVisible",
+        ];
+        assert!(
+            visibility_names.iter().any(|n| out.contains(n)),
+            "可視性名（6 値のいずれか）が出力に含まれる: {out}"
+        );
+        assert!(
+            out.contains("-05:00"),
+            "timezone ラベル -05:00 が出力に含まれる: {out}"
+        );
+    }
+
+    /// 【SLOW・1 件】日食なし日付（2024-06-15）は `Ok(s)`・s は「日食なし」を示し、架空の event_key
+    /// （`#` 付き安定キー）を捏造しない。実エンジン実走で SLOW。
+    /// 殺す変異: 日食なし日に架空イベントを出す、no-eclipse メッセージを出さず panic/Err。
+    // SLOW
+    #[test]
+    fn run_local_no_eclipse_date_reports_no_eclipse() {
+        let args = LocalArgs {
+            date: "2024-06-15".to_string(),
+            lat: 35.0,
+            lon: 139.0,
+            elevation: 0.0,
+            timezone: None,
+            accuracy: AccuracyArg::Standard,
+            refraction: RefractionArg::Standard,
+        };
+        let out = run_local(&args).expect("日食なし日付でも Ok（メッセージ）を返す");
+        // 架空の安定キー（"YYYY-MM-DD#NNNN" の '#'）を捏造しない。
+        assert!(
+            !out.contains('#'),
+            "日食なし日に架空 event_key（'#'）を捏造しない: {out}"
         );
     }
 }
