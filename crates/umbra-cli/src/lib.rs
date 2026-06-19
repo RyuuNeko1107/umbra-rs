@@ -3,7 +3,8 @@
 //! 薄い CLI ラッパ: 引数解釈（clap）・日付パース・`EclipseEngine::search` 呼び出し・整形出力。
 //! 計算は umbra-eclipse が担保。本クレートは境界（引数・パース・出力・エラー/終了コード）が責務。
 //!
-//! S31a 範囲: `umbra search`（text 出力）。`--format json`（serde 横断配線）は後続スライス。
+//! 範囲: `umbra search`（`--format <text|json>`）。S31a で text、S31b で json（serde 横断配線・
+//! `SolarEclipse` 推移閉包に Serialize を通し `serde_json` で整形）を実装。
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use umbra_core::{jd2_to_gregorian, EspenakMeeusDeltaT, UtcInstant};
@@ -44,6 +45,18 @@ pub struct SearchArgs {
     /// 種別フィルタ（既定 all）。
     #[arg(long, value_enum, default_value_t = KindFilter::All)]
     pub kind: KindFilter,
+    /// 出力形式（既定 text）。
+    #[arg(long, value_enum, default_value_t = FormatArg::Text)]
+    pub format: FormatArg,
+}
+
+/// 出力形式引数（S31b）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FormatArg {
+    /// 人間可読テキスト（既定）。
+    Text,
+    /// JSON（`SolarEclipse` の serde・配列。機械可読・列挙は `{type:..}` タグ付き）。
+    Json,
 }
 
 /// 精度プロファイル引数（公開 2 層, api-draft §3.1）。
@@ -87,6 +100,9 @@ pub enum CliError {
     /// エンジン側エラー（探索・時刻系・暦・範囲外など, 透過）。
     #[error(transparent)]
     Eclipse(#[from] EclipseError),
+    /// JSON 整形失敗（`--format json`・serde_json 由来, 透過）。
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
 }
 
 /// `YYYY-MM-DD`（UTC 0:00:00）を [`UtcInstant`] にパースする。
@@ -162,6 +178,19 @@ pub fn format_search_text(eclipses: &[SolarEclipse]) -> String {
     out
 }
 
+/// 日食リストを JSON（`SolarEclipse` の serde 配列）に整形する（S31b）。
+///
+/// 出力は pretty-print された JSON **配列**（1 日食 1 要素・入力順）＋末尾改行。空リストは
+/// `[]`（該当なしは空配列・エラーにしない, api-draft §3.2）。各日食は自身の `metadata`
+/// （暦/ΔT モデル・不確実性帯）を含む。時刻は `{iso, jd}`（自己記述＋可逆）、列挙は
+/// `{type:..}`（A7 タグ付き）、数値の単位はフィールド名（`path_width_km` 等, A7）で出力する。
+/// 改変・丸めで精度を捏造しない（コア値を素通し, accuracy.md §0）。
+pub fn format_search_json(eclipses: &[SolarEclipse]) -> Result<String, CliError> {
+    let mut out = serde_json::to_string_pretty(eclipses)?;
+    out.push('\n');
+    Ok(out)
+}
+
 /// `umbra search` を実行し、整形済み text 出力を返す（日付パース→エンジン構築→search→
 /// kind フィルタ→整形）。出力は呼び出し側（main）が印字する（テスト容易性のため String 返し）。
 ///
@@ -203,7 +232,10 @@ pub fn run_search(args: &SearchArgs) -> Result<String, CliError> {
         .into_iter()
         .filter(|eclipse| kind_matches(args.kind, eclipse.kind))
         .collect();
-    Ok(format_search_text(&filtered))
+    match args.format {
+        FormatArg::Text => Ok(format_search_text(&filtered)),
+        FormatArg::Json => format_search_json(&filtered),
+    }
 }
 
 #[cfg(test)]
@@ -636,6 +668,7 @@ mod tests {
             to: "2020-01-01".to_string(),
             accuracy: AccuracyArg::Standard,
             kind: KindFilter::All,
+            format: FormatArg::Text,
         };
         let r = run_search(&args);
         match r {
@@ -657,6 +690,7 @@ mod tests {
             to: "2020-12-31".to_string(),
             accuracy: AccuracyArg::Standard,
             kind: KindFilter::All,
+            format: FormatArg::Text,
         };
         let r = run_search(&args);
         assert!(
@@ -677,6 +711,7 @@ mod tests {
             to: "2017-09-01".to_string(),
             accuracy: AccuracyArg::Standard,
             kind: KindFilter::All,
+            format: FormatArg::Text,
         };
         let out = run_search(&args).expect("2017-08 の探索は成功する");
         assert!(
@@ -686,6 +721,443 @@ mod tests {
         assert!(
             out.contains("Total"),
             "皆既を示す種別表記 Total が出力に含まれる: {out}"
+        );
+    }
+
+    // ==================================================================
+    // === S31b: --format json ===
+    // ==================================================================
+    // S31b 受け入れテスト（standard・`umbra search --format json`）。
+    //
+    // ## オラクル戦略
+    // 出力文字列を `serde_json::from_str::<serde_json::Value>` でパースし、**パースされた
+    // Value** に対して構造を assert する（生 JSON の文字列一致は構造検証に使わない。
+    // 部分文字列は二次シグナルとしてのみ許容）。値は既知 fixture（total_eclipse/partial_eclipse）
+    // 由来で、観測可能な JSON 契約（凍結仕様）をそのまま縛る。
+    //
+    // ## red 設計（本体未実装）
+    // `FormatArg`・`format_search_json`・`SearchArgs.format`・serde 配線は本スライスで導入予定で
+    // 現状未実装。テストはコンパイル時点で未解決シンボル（red）。
+
+    use serde_json::Value;
+
+    /// `format_search_json` 出力をパースして JSON 配列 Value を返すヘルパ（パース成功＝有効 JSON）。
+    fn parse_json_array(eclipses: &[SolarEclipse]) -> Vec<Value> {
+        let s = format_search_json(eclipses).expect("JSON 整形は成功する");
+        let v: Value = serde_json::from_str(&s).expect("出力は有効な JSON（パース成功必須）");
+        v.as_array().expect("トップレベルは JSON 配列").clone()
+    }
+
+    /// 皆既 fixture 1 件の JSON 契約を全面的に縛る（event_key・kind タグ・gamma・greatest の
+    /// time_utc(Z)/time_tt(非 Z)/jd・position・magnitude/obscuration（透過数値）・
+    /// path_width_km/central_duration_seconds/sun_altitude_deg（改名値）・metadata・bessel）。
+    /// 殺す変異: kind をタグ無し（bare string / untagged）にする、gamma/greatest 各値の欠落・誤配線、
+    ///   magnitude/obscuration をオブジェクト（newtype 透過しない）にする、フィールド改名漏れ、
+    ///   TT iso に Z を付ける、jd チャネルを落とす、metadata/bessel フィールド欠落。
+    #[test]
+    fn format_search_json_total_fixture_contract() {
+        let arr = parse_json_array(&[total_eclipse()]);
+        assert_eq!(arr.len(), 1, "皆既 1 件 → 配列長 1");
+        let obj = &arr[0];
+
+        // event_key（安定キー・文字列）。
+        assert_eq!(
+            obj["event_key"],
+            Value::from("2024-04-08#1252"),
+            "event_key（皆既）"
+        );
+
+        // kind は内部タグ付き enum オブジェクト {type:"Total"}（bare string でない）。
+        assert_eq!(
+            obj["kind"]["type"],
+            Value::from("Total"),
+            "kind は {{type:\"Total\"}} のタグ付きオブジェクト"
+        );
+        assert!(
+            !obj["kind"].is_string(),
+            "kind は文字列でなくオブジェクト（bare string 回帰を撃破）: {}",
+            obj["kind"]
+        );
+
+        // global.
+        let global = &obj["global"];
+        assert_eq!(
+            global["kind"]["type"],
+            Value::from("Total"),
+            "global.kind タグ（皆既）"
+        );
+        assert_eq!(
+            global["gamma"].as_f64().expect("gamma は数値"),
+            0.3431,
+            "global.gamma（皆既）"
+        );
+
+        // 接触点 Option: 皆既は全て Some（オブジェクト）。
+        assert!(
+            global["partial_begin"].is_object(),
+            "partial_begin は Some（オブジェクト）: {}",
+            global["partial_begin"]
+        );
+        assert!(
+            global["central_begin"].is_object(),
+            "central_begin は Some（皆既）: {}",
+            global["central_begin"]
+        );
+        assert!(
+            global["central_end"].is_object(),
+            "central_end は Some（皆既）: {}",
+            global["central_end"]
+        );
+        assert!(
+            global["partial_end"].is_object(),
+            "partial_end は Some（皆既）: {}",
+            global["partial_end"]
+        );
+
+        // P1 接触: contact(16, 10.0) → lat 10.0, time_utc iso は 2024-04-08T16:00:00 で始まる。
+        assert_eq!(
+            global["partial_begin"]["position"]["lat_deg"]
+                .as_f64()
+                .expect("P1 lat_deg は数値"),
+            10.0,
+            "partial_begin.position.lat_deg == 10.0"
+        );
+        let p1_iso = global["partial_begin"]["time_utc"]["iso"]
+            .as_str()
+            .expect("P1 time_utc.iso は文字列");
+        assert!(
+            p1_iso.starts_with("2024-04-08T16:00:00"),
+            "partial_begin.time_utc.iso は 2024-04-08T16:00:00 で始まる: {p1_iso}"
+        );
+
+        // greatest.
+        let greatest = &global["greatest"];
+
+        // greatest.time_utc: {iso, jd:{part1,part2}}。iso は UTC → 末尾 Z。
+        let utc_iso = greatest["time_utc"]["iso"]
+            .as_str()
+            .expect("greatest.time_utc.iso は文字列");
+        assert_eq!(
+            utc_iso, "2024-04-08T18:17:00.0Z",
+            "greatest.time_utc.iso（UTC・末尾 Z）"
+        );
+        assert!(
+            greatest["time_utc"]["jd"]["part1"].is_number(),
+            "time_utc.jd.part1 は数値（lossless チャネル）: {}",
+            greatest["time_utc"]["jd"]["part1"]
+        );
+        assert!(
+            greatest["time_utc"]["jd"]["part2"].is_number(),
+            "time_utc.jd.part2 は数値: {}",
+            greatest["time_utc"]["jd"]["part2"]
+        );
+
+        // greatest.time_tt: {iso, jd}。TT iso は UTC でないため末尾 Z を持たない。
+        let tt_iso = greatest["time_tt"]["iso"]
+            .as_str()
+            .expect("greatest.time_tt.iso は文字列");
+        assert!(
+            !tt_iso.ends_with('Z'),
+            "TT iso は末尾 Z を持たない（TT は UTC でない）: {tt_iso}"
+        );
+        assert!(
+            greatest["time_tt"]["jd"]["part1"].is_number(),
+            "time_tt.jd.part1 は数値: {}",
+            greatest["time_tt"]["jd"]["part1"]
+        );
+        assert!(
+            greatest["time_tt"]["jd"]["part2"].is_number(),
+            "time_tt.jd.part2 は数値: {}",
+            greatest["time_tt"]["jd"]["part2"]
+        );
+
+        // greatest.position == {lat_deg:25.0, lon_deg:-104.0}。
+        assert_eq!(
+            greatest["position"]["lat_deg"]
+                .as_f64()
+                .expect("position.lat_deg は数値"),
+            25.0,
+            "greatest.position.lat_deg"
+        );
+        assert_eq!(
+            greatest["position"]["lon_deg"]
+                .as_f64()
+                .expect("position.lon_deg は数値"),
+            -104.0,
+            "greatest.position.lon_deg"
+        );
+
+        // magnitude/obscuration は透過 newtype = bare number（オブジェクトでない）。
+        assert_eq!(
+            greatest["magnitude"].as_f64().expect("magnitude は数値"),
+            1.0566,
+            "greatest.magnitude（透過数値）"
+        );
+        assert!(
+            greatest["magnitude"].is_number(),
+            "magnitude は bare number（newtype 透過）: {}",
+            greatest["magnitude"]
+        );
+        assert_eq!(
+            greatest["obscuration"]
+                .as_f64()
+                .expect("obscuration は数値"),
+            1.0,
+            "greatest.obscuration（透過数値）"
+        );
+        assert!(
+            greatest["obscuration"].is_number(),
+            "obscuration は bare number（newtype 透過）: {}",
+            greatest["obscuration"]
+        );
+
+        // 改名フィールド（単位サフィックス付き）。
+        assert_eq!(
+            greatest["path_width_km"]
+                .as_f64()
+                .expect("path_width_km は数値（皆既）"),
+            197.0,
+            "greatest.path_width_km（皆既）"
+        );
+        assert_eq!(
+            greatest["central_duration_seconds"]
+                .as_f64()
+                .expect("central_duration_seconds は数値（皆既）"),
+            268.0,
+            "greatest.central_duration_seconds（皆既）"
+        );
+        assert_eq!(
+            greatest["sun_altitude_deg"]
+                .as_f64()
+                .expect("sun_altitude_deg は数値"),
+            70.3,
+            "greatest.sun_altitude_deg（皆既）"
+        );
+
+        // metadata.
+        let metadata = &obj["metadata"];
+        assert_eq!(
+            metadata["ephemeris_model"],
+            Value::from("ELP/MPP02+VSOP87D"),
+            "metadata.ephemeris_model"
+        );
+        assert_eq!(
+            metadata["delta_t_model"],
+            Value::from("EspenakMeeus"),
+            "metadata.delta_t_model"
+        );
+        assert_eq!(
+            metadata["delta_t_uncertainty_seconds"]
+                .as_f64()
+                .expect("delta_t_uncertainty_seconds は数値"),
+            0.5,
+            "metadata.delta_t_uncertainty_seconds"
+        );
+        assert_eq!(
+            metadata["accuracy_profile"]["type"],
+            Value::from("Standard"),
+            "metadata.accuracy_profile は {{type:\"Standard\"}} タグ付き"
+        );
+        assert!(
+            metadata["generated_at"]["iso"].is_string(),
+            "metadata.generated_at.iso は文字列（UtcInstant オブジェクト形）: {}",
+            metadata["generated_at"]
+        );
+
+        // bessel.
+        let bessel = &obj["bessel"];
+        assert_eq!(
+            bessel["tan_f1"].as_f64().expect("tan_f1 は数値"),
+            0.00465,
+            "bessel.tan_f1"
+        );
+        assert_eq!(
+            bessel["x"]["coefficients"],
+            Value::from(vec![Value::from(0.20)]),
+            "bessel.x.coefficients == [0.20]"
+        );
+        assert_eq!(
+            bessel["fit_error"]["max_x"]
+                .as_f64()
+                .expect("fit_error.max_x は数値"),
+            1.0e-7,
+            "bessel.fit_error.max_x"
+        );
+        assert!(
+            bessel["fit_interval"]["start"]["jd"]["part1"].is_number(),
+            "bessel.fit_interval.start.jd.part1 は数値（TtInstant オブジェクト形）: {}",
+            bessel["fit_interval"]["start"]
+        );
+    }
+
+    /// 部分食 fixture の特有契約（中心食フィールドが null・magnitude<1・kind タグ Partial）。
+    /// 殺す変異: None を null でなく省略/0 で出す、path_width_km/central_duration_seconds を皆既値で埋める、
+    ///   central_begin/central_end の null を欠落させる、kind タグを Total/未タグにする。
+    #[test]
+    fn format_search_json_partial_fixture_contract() {
+        let arr = parse_json_array(&[partial_eclipse()]);
+        assert_eq!(arr.len(), 1, "部分 1 件 → 配列長 1");
+        let obj = &arr[0];
+
+        assert_eq!(
+            obj["event_key"],
+            Value::from("2025-03-29#1264"),
+            "event_key（部分）"
+        );
+        assert_eq!(
+            obj["kind"]["type"],
+            Value::from("Partial"),
+            "kind は {{type:\"Partial\"}}"
+        );
+
+        let greatest = &obj["global"]["greatest"];
+        assert_eq!(
+            greatest["magnitude"].as_f64().expect("magnitude は数値"),
+            0.938,
+            "magnitude（部分）"
+        );
+        // 中心食フィールドは None → null。
+        assert_eq!(
+            greatest["path_width_km"],
+            Value::Null,
+            "path_width_km は null（部分は中心食でない）"
+        );
+        assert_eq!(
+            greatest["central_duration_seconds"],
+            Value::Null,
+            "central_duration_seconds は null（部分）"
+        );
+
+        let global = &obj["global"];
+        assert_eq!(
+            global["central_begin"],
+            Value::Null,
+            "global.central_begin は null（部分）"
+        );
+        assert_eq!(
+            global["central_end"],
+            Value::Null,
+            "global.central_end は null（部分）"
+        );
+    }
+
+    /// 複数 fixture（皆既→部分）で配列長 2・順序保存（全要素が順序通り出力される）。
+    /// 殺す変異: 1 件目だけ/末尾だけ出す、順序を入れ替える、2 件目を落とす。
+    #[test]
+    fn format_search_json_preserves_order_and_every_element() {
+        let arr = parse_json_array(&[total_eclipse(), partial_eclipse()]);
+        assert_eq!(arr.len(), 2, "2 件入力 → 配列長 2");
+        assert_eq!(
+            arr[0]["event_key"],
+            Value::from("2024-04-08#1252"),
+            "要素 0 は皆既 event_key（順序保存）"
+        );
+        assert_eq!(
+            arr[1]["event_key"],
+            Value::from("2025-03-29#1264"),
+            "要素 1 は部分 event_key（順序保存）"
+        );
+    }
+
+    /// 空入力は長さ 0 の JSON 配列（空出力・架空日食を捏造しない）。パース成功必須。
+    /// 殺す変異: 空入力で架空の日食を 1 件出す、null/オブジェクトを出す、パース不能な出力。
+    #[test]
+    fn format_search_json_empty_input_is_empty_array() {
+        let arr = parse_json_array(&[]);
+        assert_eq!(arr.len(), 0, "空入力 → 長さ 0 の配列（捏造しない）");
+    }
+
+    /// kind タグの安定性: kind は key "type"・値はバリアント名のオブジェクト（Total/Partial を網羅）。
+    /// bare string / untagged 表現への回帰を陽に撃破する（time_utc 等の他フィールドと独立に縛る）。
+    /// 殺す変異: kind を bare string にする、untagged にする、タグ key を "type" 以外にする、
+    ///   バリアント名を別表記（小文字/別名）にする。
+    #[test]
+    fn format_search_json_kind_is_internally_tagged_object() {
+        let total = parse_json_array(&[total_eclipse()]);
+        assert!(
+            total[0]["kind"].is_object(),
+            "kind はオブジェクト（bare string でない）: {}",
+            total[0]["kind"]
+        );
+        assert_eq!(
+            total[0]["kind"]["type"],
+            Value::from("Total"),
+            "kind.type == バリアント名 \"Total\""
+        );
+
+        let partial = parse_json_array(&[partial_eclipse()]);
+        assert!(
+            partial[0]["kind"].is_object(),
+            "kind はオブジェクト（部分）: {}",
+            partial[0]["kind"]
+        );
+        assert_eq!(
+            partial[0]["kind"]["type"],
+            Value::from("Partial"),
+            "kind.type == バリアント名 \"Partial\""
+        );
+    }
+
+    /// run_search ディスパッチ: format=Json でも入力検証（不正日付）を fast-fail でバイパスしない。
+    /// 殺す変異: JSON 経路で不正日付検証を飛ばす、別 variant を返す。
+    #[test]
+    fn run_search_json_invalid_from_still_fast_fails() {
+        let args = SearchArgs {
+            from: "not-a-date".to_string(),
+            to: "2020-12-31".to_string(),
+            accuracy: AccuracyArg::Standard,
+            kind: KindFilter::All,
+            format: FormatArg::Json,
+        };
+        let r = run_search(&args);
+        assert!(
+            matches!(r, Err(CliError::InvalidDate(ref s)) if s == "not-a-date"),
+            "JSON 経路でも不正 from は InvalidDate で fast-fail: {r:?}"
+        );
+    }
+
+    /// run_search ディスパッチ: format=Json でも from>to を fast-fail（RangeOrder）でバイパスしない。
+    /// 殺す変異: JSON 経路で順序検証を飛ばす、別 variant を返す。
+    #[test]
+    fn run_search_json_from_after_to_still_range_order() {
+        let args = SearchArgs {
+            from: "2020-12-31".to_string(),
+            to: "2020-01-01".to_string(),
+            accuracy: AccuracyArg::Standard,
+            kind: KindFilter::All,
+            format: FormatArg::Json,
+        };
+        let r = run_search(&args);
+        match r {
+            Err(CliError::RangeOrder { from, to }) => {
+                assert_eq!(from, "2020-12-31", "RangeOrder.from（JSON 経路）");
+                assert_eq!(to, "2020-01-01", "RangeOrder.to（JSON 経路）");
+            }
+            other => panic!("expected Err(RangeOrder {{..}}) on JSON path, got {other:?}"),
+        }
+    }
+
+    /// 【SLOW・1 件】正常系: 2017-08・Standard・All・format=Json で `Ok(s)`。s は有効な JSON 配列で
+    /// パースでき、少なくとも 1 要素の `["kind"]["type"]` が `"Total"`（2017 皆既）。
+    /// 内部で実エンジン（≈分）を実走するため SLOW。red 段階では未解決シンボルでコンパイル不能。
+    /// 殺す変異: JSON 経路でエンジンを実走しない、整形を text に流す、kind タグを落とす。
+    // SLOW
+    #[test]
+    fn run_search_json_2017_total_eclipse_is_valid_json_array() {
+        let args = SearchArgs {
+            from: "2017-08-01".to_string(),
+            to: "2017-09-01".to_string(),
+            accuracy: AccuracyArg::Standard,
+            kind: KindFilter::All,
+            format: FormatArg::Json,
+        };
+        let s = run_search(&args).expect("2017-08 の JSON 探索は成功する");
+        let v: Value = serde_json::from_str(&s).expect("出力は有効な JSON（パース成功必須）");
+        let arr = v.as_array().expect("トップレベルは JSON 配列");
+        assert!(!arr.is_empty(), "2017-08 には少なくとも 1 件の日食");
+        assert!(
+            arr.iter().any(|e| e["kind"]["type"] == "Total"),
+            "少なくとも 1 要素の kind.type が \"Total\"（2017 皆既）: {s}"
         );
     }
 }

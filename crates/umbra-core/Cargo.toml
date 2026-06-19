@@ -11,5 +11,11 @@ description = "umbra-rs core primitives: time, angle, distance, vector, constant
 [lints]
 workspace = true
 
+[features]
+# 公開結果型の serde 表現（Serialize のみ）。コア計算は serde 非依存（api-draft §0）。
+# 時刻型は {iso, jd} の custom Serialize、量 newtype は透過（ISSUE-031 S31b）。
+serde = ["dep:serde"]
+
 [dependencies]
 thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }

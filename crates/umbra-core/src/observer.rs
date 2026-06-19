@@ -15,10 +15,14 @@ use crate::error::DomainError;
 
 /// 距離 \[m\]。順序付き（高度比較など, api-draft §1.1）。
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Meters(pub f64);
 
 /// 距離 \[km\]。順序付き（経路幅・高度比較など, api-draft §1.1）。
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Kilometers(pub f64);
 
 impl Meters {

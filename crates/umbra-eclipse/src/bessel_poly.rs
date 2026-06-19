@@ -42,6 +42,7 @@ fn tt_at_hours(epoch: TtInstant, hours: f64) -> TtInstant {
 
 /// フィット残差（fit 区間での直接値と多項式値の最大絶対差, Re 無次元）。誤差を隠さず必ず保持。
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct BesselFitError {
     /// x の最大絶対残差（Re）。
     pub max_x: f64,
@@ -69,6 +70,7 @@ impl BesselFitError {
 /// [`InstantaneousBesselianElements`] を構成する。tan f1/f2 は定数（NASA 慣習）。
 /// 直接評価（`DirectBesselianSource`, ISSUE-037, fit 誤差ゼロ）と `BesselianSource` 契約で差し替え可能。
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct BesselianPolynomial {
     /// 多項式の基準時刻 t0（NASA 形式, 経過時間[hour]の原点）。
     pub epoch_tt: TtInstant,

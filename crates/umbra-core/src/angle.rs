@@ -10,10 +10,14 @@ const TWO_PI: f64 = 2.0 * PI;
 
 /// ラジアン角。
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Radians(pub f64);
 
 /// 度角。
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Degrees(pub f64);
 
 impl Radians {

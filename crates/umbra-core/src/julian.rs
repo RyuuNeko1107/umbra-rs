@@ -8,6 +8,7 @@ use crate::constants::{J2000_JD, JULIAN_CENTURY_DAYS, JULIAN_MILLENNIUM_DAYS};
 
 /// 2要素ユリウス日。`jd = part1 + part2`。
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct JulianDate2 {
     /// 大きい側（通常は整数日に正規化）。
     pub part1: f64,

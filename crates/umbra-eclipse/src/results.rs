@@ -27,6 +27,7 @@ use crate::magnitude::{EclipseMagnitude, Obscuration};
 
 /// 全球接触点（時刻 TT/UTC ＋ 地表点）。
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct GlobalContact {
     /// 接触の UTC 時刻。
     pub time_utc: UtcInstant,
@@ -38,6 +39,7 @@ pub struct GlobalContact {
 
 /// 最大食の全球条件。
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct GreatestEclipse {
     /// 最大食の UTC 時刻。
     pub time_utc: UtcInstant,
@@ -49,16 +51,20 @@ pub struct GreatestEclipse {
     pub magnitude: EclipseMagnitude,
     /// 食面積（0..1）。
     pub obscuration: Obscuration,
-    /// 帯幅 \[km\]（中心食のみ Some）。
+    /// 帯幅 \[km\]（中心食のみ Some）。JSON は単位明示で `path_width_km`（A7）。
+    #[cfg_attr(feature = "serde", serde(rename = "path_width_km"))]
     pub path_width: Option<Kilometers>,
-    /// 中心食継続時間 \[s\]（中心食のみ Some）。
+    /// 中心食継続時間 \[s\]（中心食のみ Some）。JSON は単位明示で `central_duration_seconds`（A7）。
+    #[cfg_attr(feature = "serde", serde(rename = "central_duration_seconds"))]
     pub central_duration: Option<f64>,
-    /// 最大食地点での太陽高度。
+    /// 最大食地点での太陽高度。JSON は単位明示で `sun_altitude_deg`（A7）。
+    #[cfg_attr(feature = "serde", serde(rename = "sun_altitude_deg"))]
     pub sun_altitude: Degrees,
 }
 
 /// 全球条件（種別・P1/U1/最大食/U4/P4・gamma）。
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct GlobalCircumstances {
     /// 日食種別。
     pub kind: SolarEclipseKind,
@@ -78,6 +84,7 @@ pub struct GlobalCircumstances {
 
 /// `search()` の各要素（全球日食）。
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct SolarEclipse {
     /// 安定キー（DB 用, A4: 最大食 UTC 日付 + lunation 番号）。
     pub event_key: String,

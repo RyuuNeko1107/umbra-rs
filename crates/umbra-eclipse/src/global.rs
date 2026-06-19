@@ -39,6 +39,8 @@ const PENUMBRA_LIMIT: f64 = 1.5433;
 /// 太陽食の種別。
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type"))]
 pub enum SolarEclipseKind {
     /// 部分食。
     Partial,

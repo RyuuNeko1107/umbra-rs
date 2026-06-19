@@ -17,6 +17,9 @@ workspace = true
 # §78 標準構築経路（ISSUE-043 S5b）を有効にする。off 時は外部供給が必須となる。
 default = ["bundled-data"]
 bundled-data = ["umbra-ephemeris/bundled-data"]
+# 全球結果型（SolarEclipse 推移閉包）の serde 表現（Serialize のみ, ISSUE-031 S31b）。
+# core/geo の serde へカスケード（列挙は #[serde(tag="type")]、数値の単位はフィールド名で明示・A7）。
+serde = ["dep:serde", "umbra-core/serde", "umbra-geo/serde"]
 
 [dependencies]
 umbra-core = { path = "../umbra-core" }
@@ -24,3 +27,4 @@ umbra-ephemeris = { path = "../umbra-ephemeris", default-features = false }
 # 全球/局地 result 型の地理座標（GeoPoint 等, ISSUE-043 S4d）。geo→core のみ＝循環なし。
 umbra-geo = { path = "../umbra-geo" }
 thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }

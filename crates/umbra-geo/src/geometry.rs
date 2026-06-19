@@ -32,6 +32,20 @@ impl GeoPoint {
     }
 }
 
+/// `GeoPoint` の JSON 表現（ISSUE-031 S31b・A7: 数値の単位はフィールド名で明示）。
+/// 公開入出力は測地緯度・東経の度（conventions §3）なので `{ "lat_deg", "lon_deg" }`。
+/// 内部表現（ラジアン）でなく度で出力する。Serialize のみ（api-draft §0）。
+#[cfg(feature = "serde")]
+impl serde::Serialize for GeoPoint {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = serializer.serialize_struct("GeoPoint", 2)?;
+        st.serialize_field("lat_deg", &self.lat.degrees().0)?;
+        st.serialize_field("lon_deg", &self.lon.degrees().0)?;
+        st.end()
+    }
+}
+
 /// 折れ線（中心線・限界線）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeoLine {

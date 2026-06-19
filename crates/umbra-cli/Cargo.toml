@@ -23,9 +23,12 @@ workspace = true
 umbra-core = { path = "../umbra-core" }
 # bundled_time_data（同梱 EOP/閏秒）に bundled-data feature が要る（既定 on だが明示する）。
 umbra-ephemeris = { path = "../umbra-ephemeris", features = ["bundled-data"] }
-umbra-eclipse = { path = "../umbra-eclipse" }
+# S31b: --format json で全球結果型を Serialize するため serde feature を有効化（core/geo へカスケード）。
+umbra-eclipse = { path = "../umbra-eclipse", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
+# S31b: SolarEclipse 列の JSON 整形（format_search_json の to_string_pretty）。
+serde_json = "1"
 
 [dev-dependencies]
 # format_search_text / kind_matches の fixture SolarEclipse を struct リテラルで

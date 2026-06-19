@@ -16,6 +16,7 @@ use core::f64::consts::PI;
 
 /// 単項式（monomial）係数による多項式。係数は昇べき: `p(t) = Σ coefficients[i] · tⁱ`。
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Polynomial {
     /// 昇べき順の係数（`coefficients[i]` が tⁱ の係数）。
     pub coefficients: Vec<f64>,

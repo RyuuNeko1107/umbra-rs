@@ -267,6 +267,71 @@ pub struct TaiInstant(JulianDate2);
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct TtInstant(JulianDate2);
 
+/// JD を **0.1 秒へ丸めた**暦本体文字列 `YYYY-MM-DDThh:mm:ss.s`（時刻系マーカ無し）を作る
+/// （iso 表示用, ISSUE-031 S31b）。
+///
+/// `jd2_to_gregorian` は丸め境界で ±eps を返しうる（例: 16:00:00 を 15:59:59.9995 と返す）。
+/// これを `{:.1}` に素通しすると `15:59:60.0` のような不正表記になる。そこで秒を **整数 1/10 秒**
+/// （`tenths`, 0..=600）へ丸め、60.0 到達分を 分→時→日 へ繰り上げる。日跨ぎ（23:59:59.95＋）は
+/// JD の整数日に +1 して年月日のみ再導出する（時刻成分は 00:00:00）。整数で組み立てるため
+/// `{:.1}` の浮動小数丸め（0.05→"0.1" 化）も回避する。lossless 値は別途 `jd` フィールドが持つ。
+#[cfg(feature = "serde")]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn iso_body_tenths(jd: JulianDate2) -> String {
+    let (mut y, mut mo, mut d, mut h, mut mi, s) = jd2_to_gregorian(jd);
+    // 秒を 1/10 秒（整数）へ丸める。s ∈ [0,60) なので tenths ∈ 0..=600。
+    let mut tenths = (s * 10.0).round() as i64;
+    if tenths >= 600 {
+        tenths -= 600;
+        mi += 1;
+    }
+    if mi >= 60 {
+        mi -= 60;
+        h += 1;
+    }
+    if h >= 24 {
+        h -= 24;
+        // 日跨ぎ: 整数日を 1 進めて年月日のみ採用（時刻は繰り上げ済みの 00:00:00.x）。
+        let (ny, nmo, nd, ..) = jd2_to_gregorian(JulianDate2::new(jd.part1 + 1.0, jd.part2));
+        y = ny;
+        mo = nmo;
+        d = nd;
+    }
+    let s_whole = (tenths / 10) as u8;
+    let s_tenth = (tenths % 10) as u8;
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s_whole:02}.{s_tenth}")
+}
+
+/// `UtcInstant` の JSON 表現（ISSUE-031 S31b・api-draft §0/A7）。自己記述かつ可逆な
+/// `{ "iso": <暦形式・末尾 Z>, "jd": { "part1", "part2" } }`。iso は人間可読の表示チャネル
+/// （秒は 0.1 秒へ丸め）、jd は lossless チャネル（2 要素 JD をそのまま）。Serialize のみ（§0）。
+#[cfg(feature = "serde")]
+impl serde::Serialize for UtcInstant {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        // UTC はオフセット 0 を表す `Z` を付ける（RFC3339）。
+        let iso = format!("{}Z", iso_body_tenths(self.jd2()));
+        let mut st = serializer.serialize_struct("UtcInstant", 2)?;
+        st.serialize_field("iso", &iso)?;
+        st.serialize_field("jd", &self.jd2())?;
+        st.end()
+    }
+}
+
+/// `TtInstant` の JSON 表現（ISSUE-031 S31b）。`{ "iso": <暦形式・Z なし>, "jd": {..} }`。
+/// TT は UTC ではないため iso に UTC マーカ `Z` を付けない（時刻系はフィールド名 `time_tt` が表す）。
+#[cfg(feature = "serde")]
+impl serde::Serialize for TtInstant {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let iso = iso_body_tenths(self.jd2());
+        let mut st = serializer.serialize_struct("TtInstant", 2)?;
+        st.serialize_field("iso", &iso)?;
+        st.serialize_field("jd", &self.jd2())?;
+        st.end()
+    }
+}
+
 impl UtcInstant {
     /// UTC スケールの JD から構築。
     pub fn from_jd2(jd: JulianDate2) -> Self {
@@ -359,6 +424,7 @@ pub struct TimeRange<T> {
 
 /// 時間区間（フィット区間など。`TimeRange` と別用途で使い分ける）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct TimeInterval<T> {
     /// 開始。
     pub start: T,

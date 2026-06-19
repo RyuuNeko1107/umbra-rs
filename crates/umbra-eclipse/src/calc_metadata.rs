@@ -14,6 +14,7 @@ use crate::config::AccuracyProfile;
 /// 計算結果に付随するメタデータ（accuracy.md §0）。暦・ΔT・地球/月モデル・精度プロファイル・
 /// ライブラリ版の「レシピ」と、生成時刻印・ΔT 不確かさ（将来 UTC 律速）を保持する。
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct CalculationMetadata {
     /// ライブラリ版（再現性キー）。
     pub library_version: String,

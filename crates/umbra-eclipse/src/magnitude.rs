@@ -18,10 +18,14 @@ use core::f64::consts::PI;
 
 /// 食分（太陽直径に対する食い込み量）。皆既で 1 を超えうる（api-draft §3.4）。
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct EclipseMagnitude(pub f64);
 
 /// 食面積（太陽面積に対し月が覆う割合）。厳密に `[0, 1]`（api-draft §3.4）。
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Obscuration(pub f64);
 
 /// 基本面の中心間距離 `m` と影半径 `l1`（半影, 外接）・`l2`（本影, 符号付き）から食分を求める。

@@ -14,6 +14,8 @@ use crate::horizontal::RefractionModel;
 /// 精度プロファイル（公開 2 層, accuracy.md §1）。探索段の高速化は非公開の内部粗スキャンで扱う。
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type"))]
 pub enum AccuracyProfile {
     /// 本番標準（VSOP87D+ELP/MPP02 フル・IAU2006/2000A・見かけ補正 ON）。
     Standard,
