@@ -79,6 +79,20 @@ fn local_contact(time_utc: UtcInstant, time_tt: TtInstant) -> LocalContact {
     }
 }
 
+/// 計算側の局地接触で **visible フラグを明示**したもの（地平下接触の合成用）。
+/// 時刻 2 値と visible 以外は固定フィラー。USNO オラクルは地平下接触を None として省くため、
+/// `visible:false` の computed 接触 vs golden None は「不一致でない」べき（本スライスの是正対象）。
+fn local_contact_vis(time_utc: UtcInstant, time_tt: TtInstant, visible: bool) -> LocalContact {
+    LocalContact {
+        time_utc,
+        time_tt,
+        sun_altitude: Degrees(40.0),
+        sun_azimuth: Degrees(200.0),
+        position_angle: Degrees(300.0),
+        visible,
+    }
+}
+
 /// 合成 `computed: LocalCircumstances`。compare_local が読む値だけを引数で指定し、metadata はフィラー。
 fn computed_local(
     contacts: LocalContactSet,
@@ -415,6 +429,272 @@ fn compare_local_both_none_contacts_skipped() {
         (e.contact_seconds[1] - 2.0).abs() < SEC_EPS,
         "contact_seconds[1]=c4 の +2.0, got {}",
         e.contact_seconds[1]
+    );
+}
+
+// ============================================================
+// compare_local — 地平下接触の presence 規約（USNO は地平下接触を None で省く）
+//   computed が Some{visible:false} ＝ 地平下接触のとき、golden None は「不一致でない」。
+//   visible:true の Some vs golden None は従来どおり不一致。
+// ============================================================
+
+/// 受け入れ「地平下の computed 接触（Some{visible:false}）vs golden None は presence 不一致でない」。
+/// 日没皆既（例 2002-12-04 の Ceduna/Lyndhurst/Adelaide）の C4 部分食終了は地平下で起こり、
+/// エンジンは `Some{visible:false}` を返すが USNO オラクルは省いて `None` を格納する。両表現は
+/// 「観測不能」で一致しているので不一致にしてはならない。
+/// 構成: computed C4 = Some(visible:false)、golden C4 = None。他接触は両 None で単離。
+/// → contact_presence_mismatches == 0（現行コードは 1 と数える＝本テストが PRIMARY RED）。
+/// 殺す変異/バグ: `(Some,None)` を無条件で不一致計上する現行実装、`visible` ガードの脱落・反転。
+#[test]
+fn compare_local_below_horizon_contact_vs_golden_none_not_mismatch() {
+    let g_utc = utc(2002, 12, 4, 7, 0, 0.0);
+    let base = tt(2_452_612.0, 0.0);
+
+    // golden: C4 は None（USNO が地平下接触を省く）。他接触も None。maximum のみ存在。
+    let golden = golden_location(
+        None,
+        None,
+        golden_contact(g_utc, Some(base), 1.0),
+        None,
+        None, // c4: golden None
+        1.0,
+        1.0,
+        1.0,
+        Visibility::FullyVisible,
+    );
+    // computed: C4 は Some だが地平下（visible:false）。
+    let computed = computed_local(
+        LocalContactSet {
+            c1: None,
+            c2: None,
+            maximum: local_contact_vis(g_utc, base, true),
+            c3: None,
+            c4: Some(local_contact_vis(g_utc, base, false)), // 地平下接触
+        },
+        1.0,
+        1.0,
+        1.0,
+        Visibility::FullyVisible,
+    );
+    let e = compare_local(&computed, &golden);
+    assert_eq!(
+        e.contact_presence_mismatches, 0,
+        "地平下 computed C4(visible:false) vs golden None は不一致でない → 0, got {}",
+        e.contact_presence_mismatches
+    );
+    // 他フィールドが地平下規約の影響を受けないことの単離確認。
+    assert!(
+        e.contact_seconds.is_empty(),
+        "両 Some の接触は無いので contact_seconds は空, got {:?}",
+        e.contact_seconds
+    );
+    assert!(
+        (e.maximum_seconds).abs() < SEC_EPS,
+        "maximum は差 0（地平下規約と独立）, got {}",
+        e.maximum_seconds
+    );
+}
+
+/// 受け入れ「地平**上**の computed 接触（Some{visible:true}）vs golden None は従来どおり不一致」。
+/// 可視接触をエンジンが返したのに USNO が省くのは真の食い違い（過剰抑制ガード）。
+/// 構成: computed C4 = Some(visible:true)、golden C4 = None。他は両 None。
+/// → contact_presence_mismatches == 1（現行でも通る。地平下抑制が visible:true まで漏れないことを縛る）。
+/// 殺す変異/バグ: `visible` を見ずに常に抑制する、ガード条件を `visible==false` でなく恒真にする実装。
+#[test]
+fn compare_local_above_horizon_contact_vs_golden_none_is_mismatch() {
+    let g_utc = utc(2024, 4, 8, 18, 0, 0.0);
+    let base = tt(2_451_545.0, 0.0);
+
+    let golden = golden_location(
+        None,
+        None,
+        golden_contact(g_utc, Some(base), 50.0),
+        None,
+        None, // c4: golden None
+        1.0,
+        1.0,
+        50.0,
+        Visibility::FullyVisible,
+    );
+    let computed = computed_local(
+        LocalContactSet {
+            c1: None,
+            c2: None,
+            maximum: local_contact_vis(g_utc, base, true),
+            c3: None,
+            c4: Some(local_contact_vis(g_utc, base, true)), // 地平上の可視接触
+        },
+        1.0,
+        1.0,
+        50.0,
+        Visibility::FullyVisible,
+    );
+    let e = compare_local(&computed, &golden);
+    assert_eq!(
+        e.contact_presence_mismatches, 1,
+        "地平上 computed C4(visible:true) vs golden None は真の不一致 → 1, got {}",
+        e.contact_presence_mismatches
+    );
+}
+
+/// 受け入れ「computed None vs golden Some は（visible 規約に関わらず）従来どおり不一致」。
+/// golden だけが接触を持つ＝エンジンの取りこぼしであり、地平下抑制の対象外。
+/// 構成: computed C4 = None、golden C4 = Some。他は両 None。
+/// → contact_presence_mismatches == 1（不変）。
+/// 殺す変異/バグ: 地平下抑制を `(None,Some)` 側へ誤って広げる実装。
+#[test]
+fn compare_local_computed_none_vs_golden_some_is_mismatch_unchanged() {
+    let g_utc = utc(2024, 4, 8, 18, 0, 0.0);
+    let base = tt(2_451_545.0, 0.0);
+
+    let golden = golden_location(
+        None,
+        None,
+        golden_contact(g_utc, Some(base), 50.0),
+        None,
+        Some(golden_contact(g_utc, Some(base), 50.0)), // c4: golden Some
+        1.0,
+        1.0,
+        50.0,
+        Visibility::FullyVisible,
+    );
+    let computed = computed_local(
+        LocalContactSet {
+            c1: None,
+            c2: None,
+            maximum: local_contact_vis(g_utc, base, true),
+            c3: None,
+            c4: None, // computed None
+        },
+        1.0,
+        1.0,
+        50.0,
+        Visibility::FullyVisible,
+    );
+    let e = compare_local(&computed, &golden);
+    assert_eq!(
+        e.contact_presence_mismatches, 1,
+        "computed None vs golden Some は不一致（不変）→ 1, got {}",
+        e.contact_presence_mismatches
+    );
+}
+
+/// 受け入れ「両 Some の接触は visible に関係なく時刻比較され、presence 不一致にならない」。
+/// 地平下抑制は **golden None のときだけ**効く。両 Some なら（地平下でも）時刻誤差を積む（不変）。
+/// 構成: computed C4 = Some(visible:false, +2.0 s)、golden C4 = Some。他は両 None。
+/// → contact_presence_mismatches == 0、contact_seconds == [+2.0]（時刻比較が生きている）。
+/// 殺す変異/バグ: 地平下接触を両 Some でも抑制してしまい時刻誤差を取りこぼす実装。
+#[test]
+fn compare_local_below_horizon_both_some_still_time_compared() {
+    let g_utc = utc(2024, 4, 8, 18, 0, 0.0);
+    let base = tt(2_451_545.0, 0.0);
+
+    let golden = golden_location(
+        None,
+        None,
+        golden_contact(g_utc, Some(base), 50.0),
+        None,
+        Some(golden_contact(g_utc, Some(base), -1.0)), // c4: golden Some（地平下高度でも存在）
+        1.0,
+        1.0,
+        50.0,
+        Visibility::FullyVisible,
+    );
+    let computed = computed_local(
+        LocalContactSet {
+            c1: None,
+            c2: None,
+            maximum: local_contact_vis(g_utc, base, true),
+            c3: None,
+            // computed C4: 地平下（visible:false）だが golden も Some → 時刻比較される。+2.0 s。
+            c4: Some(local_contact_vis(
+                g_utc,
+                tt(2_451_545.0, 2.0 / 86400.0),
+                false,
+            )),
+        },
+        1.0,
+        1.0,
+        50.0,
+        Visibility::FullyVisible,
+    );
+    let e = compare_local(&computed, &golden);
+    assert_eq!(
+        e.contact_presence_mismatches, 0,
+        "両 Some は presence 不一致でない（visible 無関係）→ 0, got {}",
+        e.contact_presence_mismatches
+    );
+    assert_eq!(
+        e.contact_seconds.len(),
+        1,
+        "両 Some の C4 は時刻誤差として積まれる, got {:?}",
+        e.contact_seconds
+    );
+    assert!(
+        (e.contact_seconds[0] - 2.0).abs() < SEC_EPS,
+        "C4 の時刻誤差 = +2.0 s（地平下でも両 Some なら比較される）, got {}",
+        e.contact_seconds[0]
+    );
+}
+
+/// 受け入れ「C1..C4 混在: 地平下 Some vs None は抑制、地平上 Some vs None と None vs Some は計上」。
+/// 構成（全 4 接触を使う）:
+///   C1 = computed Some(visible:false) / golden None → 抑制（不一致でない）。
+///   C2 = computed Some(visible:true)  / golden None → 不一致。
+///   C3 = computed None / golden Some                → 不一致。
+///   C4 = computed Some / golden Some（+1.5 s）       → 両 Some・時刻比較（不一致でない）。
+/// → contact_presence_mismatches == 2（C2,C3 のみ）、contact_seconds == [+1.5]（C4 のみ）。
+/// 殺す変異/バグ: 地平下ガードの取りこぼし/過剰適用、presence と time の取り違え、件数誤り。
+#[test]
+fn compare_local_mixed_contacts_only_genuine_mismatches_counted() {
+    let g_utc = utc(2002, 12, 4, 7, 0, 0.0);
+    let base = tt(2_452_612.0, 0.0);
+
+    let golden = golden_location(
+        None,                                         // c1: golden None
+        None,                                         // c2: golden None
+        golden_contact(g_utc, Some(base), 5.0),       // maximum
+        Some(golden_contact(g_utc, Some(base), 5.0)), // c3: golden Some
+        Some(golden_contact(g_utc, Some(base), 5.0)), // c4: golden Some
+        1.0,
+        1.0,
+        5.0,
+        Visibility::FullyVisible,
+    );
+    let computed = computed_local(
+        LocalContactSet {
+            c1: Some(local_contact_vis(g_utc, base, false)), // 地平下 vs None → 抑制
+            c2: Some(local_contact_vis(g_utc, base, true)),  // 地平上 vs None → 不一致
+            maximum: local_contact_vis(g_utc, base, true),
+            c3: None, // None vs Some → 不一致
+            // c4: 両 Some。+1.5 s。
+            c4: Some(local_contact_vis(
+                g_utc,
+                tt(2_452_612.0, 1.5 / 86400.0),
+                true,
+            )),
+        },
+        1.0,
+        1.0,
+        5.0,
+        Visibility::FullyVisible,
+    );
+    let e = compare_local(&computed, &golden);
+    assert_eq!(
+        e.contact_presence_mismatches, 2,
+        "真の不一致は C2(地平上 vs None) と C3(None vs Some) の 2 件のみ, got {}",
+        e.contact_presence_mismatches
+    );
+    assert_eq!(
+        e.contact_seconds.len(),
+        1,
+        "両 Some は C4 のみ → contact_seconds len 1, got {:?}",
+        e.contact_seconds
+    );
+    assert!(
+        (e.contact_seconds[0] - 1.5).abs() < SEC_EPS,
+        "C4 の時刻誤差 = +1.5 s, got {}",
+        e.contact_seconds[0]
     );
 }
 

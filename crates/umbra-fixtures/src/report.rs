@@ -303,7 +303,15 @@ pub fn compare_local(computed: &LocalCircumstances, golden: &GoldenLocation) -> 
                 gold.time_utc,
                 gold.time_tt,
             )),
-            (Some(_), None) | (None, Some(_)) => contact_presence_mismatches += 1,
+            // 地平下の computed 接触（visible=false）は USNO（golden）が省略する慣習と一致＝
+            // 不一致に数えない（両表現とも「観測不能」で合致。日没/日の出食の C1/C4 等）。
+            // 地平上の接触を golden が持たない場合は真の不一致。
+            (Some(local), None) => {
+                if local.visible {
+                    contact_presence_mismatches += 1;
+                }
+            }
+            (None, Some(_)) => contact_presence_mismatches += 1,
             (None, None) => {}
         }
     }
