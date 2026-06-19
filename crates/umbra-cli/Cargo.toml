@@ -8,6 +8,10 @@ repository.workspace = true
 publish = false
 description = "umbra-rs command-line interface — work in progress"
 
+[lib]
+name = "umbra_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "umbra"
 path = "src/main.rs"
@@ -16,3 +20,14 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+umbra-core = { path = "../umbra-core" }
+# bundled_time_data（同梱 EOP/閏秒）に bundled-data feature が要る（既定 on だが明示する）。
+umbra-ephemeris = { path = "../umbra-ephemeris", features = ["bundled-data"] }
+umbra-eclipse = { path = "../umbra-eclipse" }
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+# format_search_text / kind_matches の fixture SolarEclipse を struct リテラルで
+# 構築するため、GlobalContact/GreatestEclipse 内の GeoPoint を直接組む必要がある。
+umbra-geo = { path = "../umbra-geo" }
