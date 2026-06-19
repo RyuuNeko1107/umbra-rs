@@ -22,7 +22,7 @@ pub mod timescales;
 pub mod vector;
 
 pub use angle::{Degrees, Radians};
-pub use calendar::{gregorian_to_jd2, jd2_to_gregorian};
+pub use calendar::{gregorian_to_jd2, jd2_to_gregorian, jd2_to_gregorian_deciseconds};
 pub use deltat::{
     tt_to_ut1, ut1_to_tt, utc_to_ut1, CompositeDeltaT, DeltaTModel, DeltaTSource,
     EspenakMeeusDeltaT, EOP_DELTA_T_UNCERTAINTY_SECONDS,

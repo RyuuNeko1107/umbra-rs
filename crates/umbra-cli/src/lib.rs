@@ -10,7 +10,8 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use umbra_core::{
-    jd2_to_gregorian, DomainError, EspenakMeeusDeltaT, JulianDate2, Observer, UtcInstant,
+    jd2_to_gregorian_deciseconds, DomainError, EspenakMeeusDeltaT, JulianDate2, Observer,
+    UtcInstant,
 };
 use umbra_eclipse::{
     standard_engine, EclipseEngine, EclipseError, EngineConfig, LocalCircumstances, LocalContact,
@@ -206,9 +207,10 @@ pub fn format_search_text(eclipses: &[SolarEclipse]) -> String {
     let mut out = String::new();
     for e in eclipses {
         let g = &e.global.greatest;
-        let (y, mo, d, h, mi, s) = g.time_utc.to_gregorian();
+        // 表示は 0.1 秒丸め（暦往復 ±eps による "15:59:60.0" 不正表記を回避・共通ヘルパ）。
+        let (y, mo, d, h, mi, s) = jd2_to_gregorian_deciseconds(g.time_utc.jd2());
         // TT も暦形式で併記（accuracy.md §0: UTC+TT 両方）。TT-JD をグレゴリオ暦に直す。
-        let (ty, tmo, td, th, tmi, ts) = jd2_to_gregorian(g.time_tt.jd2());
+        let (ty, tmo, td, th, tmi, ts) = jd2_to_gregorian_deciseconds(g.time_tt.jd2());
         let m = &e.metadata;
         out.push_str(&format!(
             "{key}  {kind:?}\n",
@@ -342,8 +344,9 @@ fn format_contact(
     let Some(c) = contact else {
         return format!("  {label}: —\n");
     };
-    let (y, mo, d, h, mi, s) = c.time_utc.to_gregorian();
-    let (ty, tmo, td, th, tmi, ts) = jd2_to_gregorian(c.time_tt.jd2());
+    // 表示は 0.1 秒丸め（暦往復 ±eps による "15:59:60.0" 不正表記を回避・共通ヘルパ）。
+    let (y, mo, d, h, mi, s) = jd2_to_gregorian_deciseconds(c.time_utc.jd2());
+    let (ty, tmo, td, th, tmi, ts) = jd2_to_gregorian_deciseconds(c.time_tt.jd2());
     let mut line = format!(
         "  {label}: {y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:04.1} UTC / \
          {ty:04}-{tmo:02}-{td:02} {th:02}:{tmi:02}:{ts:04.1} TT",
@@ -351,7 +354,8 @@ fn format_contact(
     if let Some((tz_label, offset_min)) = timezone {
         // ローカル時刻は UTC を表示のためだけにオフセット（内部 UTC/TT は不変, conventions §6）。
         let local_jd = c.time_utc.jd2().jd() + f64::from(offset_min) / 1440.0;
-        let (ly, lmo, ld, lh, lmi, ls) = jd2_to_gregorian(JulianDate2::from_jd(local_jd));
+        let (ly, lmo, ld, lh, lmi, ls) =
+            jd2_to_gregorian_deciseconds(JulianDate2::from_jd(local_jd));
         line.push_str(&format!(
             " / {ly:04}-{lmo:02}-{ld:02} {lh:02}:{lmi:02}:{ls:04.1} {tz_label}"
         ));
@@ -2232,6 +2236,113 @@ mod tests {
         assert!(
             !v["local"]["visibility"]["type"].is_null(),
             "local.visibility.type が存在: {s}"
+        );
+    }
+
+    // ==================================================================
+    // === text 0.1s 丸め（:60.0 回帰防止） ===
+    // ==================================================================
+    // text 整形は秒を `{:04.1}` で印字するため、暦往復のドリフトで jd2_to_gregorian が
+    // 16:00:00 に対し 15:59:59.9995 を返すと "15:59:60.0"（不正な :60 秒）が出る。
+    // text 整形器は共有の 0.1 秒丸めヘルパ経由で秒を桁上げし、:60 を絶対に出さないことを縛る。
+    //
+    // ## オラクル戦略
+    // 既知ドリフト時刻 utc(2024,4,8,16,0,0.0)（jd2_to_gregorian で 15:59:59.9995）を最大食/最大
+    // 接触に据えた fixture を構造体リテラルで組み、**観測可能な text 出力**に "16:00:00" を含み
+    // ":60"（および "15:59:60"）を含まないことを縛る。JSON 経路は S31b/S32b 済みなので再検証しない。
+    //
+    // ## red 設計
+    // 整形器が依然 raw jd2_to_gregorian を使うため、出力に "15:59:60.0" が現れ実行時に FAIL する
+    // （コンパイルは通る＝既存公開 IF のまま）。
+
+    /// 既知ドリフト時刻を最大食に据えた皆既 fixture（total_eclipse の greatest 時刻のみ差し替え）。
+    fn drift_greatest_eclipse() -> SolarEclipse {
+        let greatest = GreatestEclipse {
+            // jd2_to_gregorian で 15:59:59.9995 を返す既知ドリフト分境界。
+            time_utc: utc(2024, 4, 8, 16, 0, 0.0),
+            time_tt: tt(2_460_409.0, 0.123),
+            position: geo(25.0, -104.0),
+            magnitude: EclipseMagnitude(1.0566),
+            obscuration: Obscuration(1.0),
+            path_width: Some(Kilometers(197.0)),
+            central_duration: Some(268.0),
+            sun_altitude: Degrees(70.3),
+        };
+        let global = GlobalCircumstances {
+            kind: SolarEclipseKind::Total,
+            partial_begin: Some(contact(16, 10.0)),
+            central_begin: Some(contact(17, 20.0)),
+            greatest,
+            central_end: Some(contact(19, 40.0)),
+            partial_end: Some(contact(20, 50.0)),
+            gamma: 0.3431,
+        };
+        SolarEclipse {
+            event_key: "2024-04-08#1252".to_string(),
+            kind: SolarEclipseKind::Total,
+            global,
+            bessel: minimal_bessel(),
+            metadata: metadata(),
+        }
+    }
+
+    /// 既知ドリフト時刻を最大接触に据えた局地条件 fixture（maximum を 16:00 に差し替え）。
+    fn drift_maximum_circ() -> LocalCircumstances {
+        LocalCircumstances {
+            contacts: LocalContactSet {
+                c1: Some(local_contact(15, 30, 0.111, 60.0, 120.0, 250.0, true)),
+                c2: None,
+                // jd2_to_gregorian で 15:59:59.9995 を返す既知ドリフト分境界。
+                maximum: local_contact(16, 0, 0.234, 70.5, 152.0, 265.0, true),
+                c3: None,
+                c4: Some(local_contact(16, 30, 0.333, 45.0, 230.0, 90.0, true)),
+            },
+            magnitude: EclipseMagnitude(1.0123),
+            obscuration: Obscuration(1.0),
+            maximum_altitude: Degrees(70.5),
+            visibility: Visibility::FullyVisible,
+            metadata: metadata(),
+        }
+    }
+
+    /// format_search_text の最大食 UTC が 16:00:00 のとき、出力に "16:00:00" を含み ":60"
+    /// （まして "15:59:60"）を含まない。raw jd2_to_gregorian の 15:59:59.9995 を `{:04.1}` で
+    /// 印字すると "15:59:60.0" が出る回帰を撃破する。
+    /// 殺す変異: text 経路で raw jd2_to_gregorian を使う（"15:59:60.0" 出力）、丸めヘルパを経由しない。
+    #[test]
+    fn format_search_text_rounds_drift_minute_no_sixty_seconds() {
+        let out = format_search_text(&[drift_greatest_eclipse()]);
+        assert!(
+            out.contains("16:00:00"),
+            "最大食 UTC は 16:00:00 に丸められる: {out}"
+        );
+        assert!(
+            !out.contains(":60"),
+            ":60 秒（不正な秒）を出力に含まない: {out}"
+        );
+        assert!(
+            !out.contains("15:59:60"),
+            "15:59:60 を出力に含まない（ドリフト丸め回帰）: {out}"
+        );
+    }
+
+    /// format_local_text の最大接触 UTC が 16:00:00 のとき、出力に "16:00:00" を含み ":60" を
+    /// 含まない。局地 text 経路でも raw jd2_to_gregorian による "15:59:60.0" 回帰を撃破する。
+    /// 殺す変異: 局地 text 経路で raw jd2_to_gregorian を使う、丸めヘルパを経由しない。
+    #[test]
+    fn format_local_text_rounds_drift_minute_no_sixty_seconds() {
+        let out = format_local_text(&drift_maximum_circ(), None);
+        assert!(
+            out.contains("16:00:00"),
+            "最大接触 UTC は 16:00:00 に丸められる: {out}"
+        );
+        assert!(
+            !out.contains(":60"),
+            ":60 秒（不正な秒）を出力に含まない: {out}"
+        );
+        assert!(
+            !out.contains("15:59:60"),
+            "15:59:60 を出力に含まない（ドリフト丸め回帰）: {out}"
         );
     }
 }

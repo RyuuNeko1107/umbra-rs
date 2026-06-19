@@ -270,36 +270,13 @@ pub struct TtInstant(JulianDate2);
 /// JD を **0.1 秒へ丸めた**暦本体文字列 `YYYY-MM-DDThh:mm:ss.s`（時刻系マーカ無し）を作る
 /// （iso 表示用, ISSUE-031 S31b）。
 ///
-/// `jd2_to_gregorian` は丸め境界で ±eps を返しうる（例: 16:00:00 を 15:59:59.9995 と返す）。
-/// これを `{:.1}` に素通しすると `15:59:60.0` のような不正表記になる。そこで秒を **整数 1/10 秒**
-/// （`tenths`, 0..=600）へ丸め、60.0 到達分を 分→時→日 へ繰り上げる。日跨ぎ（23:59:59.95＋）は
-/// JD の整数日に +1 して年月日のみ再導出する（時刻成分は 00:00:00）。整数で組み立てるため
-/// `{:.1}` の浮動小数丸め（0.05→"0.1" 化）も回避する。lossless 値は別途 `jd` フィールドが持つ。
+/// 0.1 秒丸め＋分/時/日の繰り上げ（境界 ±eps の `15:59:60.0` 不正表記回避）は共有関数
+/// [`crate::calendar::jd2_to_gregorian_deciseconds`] が担う。返る秒は `[0.0,60.0)` の 0.1 刻みなので
+/// `{:04.1}` で素直に整形できる。lossless 値は別途 `jd` フィールドが持つ。
 #[cfg(feature = "serde")]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn iso_body_tenths(jd: JulianDate2) -> String {
-    let (mut y, mut mo, mut d, mut h, mut mi, s) = jd2_to_gregorian(jd);
-    // 秒を 1/10 秒（整数）へ丸める。s ∈ [0,60) なので tenths ∈ 0..=600。
-    let mut tenths = (s * 10.0).round() as i64;
-    if tenths >= 600 {
-        tenths -= 600;
-        mi += 1;
-    }
-    if mi >= 60 {
-        mi -= 60;
-        h += 1;
-    }
-    if h >= 24 {
-        h -= 24;
-        // 日跨ぎ: 整数日を 1 進めて年月日のみ採用（時刻は繰り上げ済みの 00:00:00.x）。
-        let (ny, nmo, nd, ..) = jd2_to_gregorian(JulianDate2::new(jd.part1 + 1.0, jd.part2));
-        y = ny;
-        mo = nmo;
-        d = nd;
-    }
-    let s_whole = (tenths / 10) as u8;
-    let s_tenth = (tenths % 10) as u8;
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s_whole:02}.{s_tenth}")
+    let (y, mo, d, h, mi, s) = crate::calendar::jd2_to_gregorian_deciseconds(jd);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:04.1}")
 }
 
 /// `UtcInstant` の JSON 表現（ISSUE-031 S31b・api-draft §0/A7）。自己記述かつ可逆な
