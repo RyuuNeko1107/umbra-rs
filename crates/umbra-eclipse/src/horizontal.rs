@@ -53,7 +53,8 @@ pub struct Horizontal {
 pub enum Visibility {
     /// その地点で食域外（接触なし）。
     NotVisible,
-    /// 最大食時も太陽が地平下（食全体が観測不能）。
+    /// 食全体が地平下（最大食も両接触も地平下＝観測不能。日の出/日没で端の相が地平上なら
+    /// `SunriseEclipse`/`SunsetEclipse` となり本値にはならない）。
     BelowHorizon,
     /// 日の出中に食が進行（食開始 C1 が地平下、最大以降が地平上）。
     SunriseEclipse,
@@ -142,16 +143,25 @@ pub(crate) fn classify_visibility(
     if !in_eclipse {
         return Visibility::NotVisible;
     }
-    // 最大食時も地平下 → 食全体が観測不能。
-    if altitude_max.0 < HORIZON_ALTITUDE_DEG {
-        return Visibility::BelowHorizon;
-    }
     let c1_above = altitude_c1.is_some_and(|a| a.0 >= HORIZON_ALTITUDE_DEG);
     let c4_above = altitude_c4.is_some_and(|a| a.0 >= HORIZON_ALTITUDE_DEG);
     let c1_below = altitude_c1.is_some_and(|a| a.0 < HORIZON_ALTITUDE_DEG);
     let c4_below = altitude_c4.is_some_and(|a| a.0 < HORIZON_ALTITUDE_DEG);
 
-    if c1_above && c4_above {
+    if altitude_max.0 < HORIZON_ALTITUDE_DEG {
+        // 幾何的最大食は地平下。ただし太陽が食の最中に地平を跨ぐ日の出/日没食では端の相が
+        // 観測可能なため一律 BelowHorizon にはしない（観測可能最大はオラクルと定義が異なるが、
+        // 可視性クラスは観測可能性で判定する。accuracy.md §2.1E）。
+        // C4 地平上＝最大食後に太陽が昇る（日の出食・後半可視）、C1 地平上＝最大食前に沈む
+        // （日没食・前半可視）。いずれも無ければ食全体が地平下＝観測不能。
+        if c4_above {
+            Visibility::SunriseEclipse
+        } else if c1_above {
+            Visibility::SunsetEclipse
+        } else {
+            Visibility::BelowHorizon
+        }
+    } else if c1_above && c4_above {
         // C1〜C4 すべて地平上。
         Visibility::FullyVisible
     } else if c1_below {
@@ -700,6 +710,63 @@ mod tests {
         );
     }
 
+    /// 受け入れ点（FIX 主題）: 最大食が地平直下だが C4 が地平上 → SunriseEclipse。
+    /// Caribou ME 2025-03-29 型（幾何 max≈−0.05°, C4 地平上）。太陽が max〜C4 の間に昇り
+    /// 後半相が観測可能なので SunriseEclipse。現行コード（max<0 で即 BelowHorizon）は
+    /// BelowHorizon を返すため red。撃破する変異: 146 行「max<0→BelowHorizon early return」を
+    /// 接触考慮分岐へ置換しないと落ちる（C4 地平上の救済漏れ）。
+    #[test]
+    fn visibility_max_below_with_c4_above_is_sunrise_eclipse() {
+        assert_eq!(
+            classify_visibility(true, Some(Degrees(-2.0)), Degrees(-0.05), Some(Degrees(3.0))),
+            Visibility::SunriseEclipse,
+            "max<0 but c4≥0 must yield SunriseEclipse (Sun rises between max and C4; later phase observable)"
+        );
+    }
+
+    /// 受け入れ点（FIX 主題）: 最大食が地平直下だが C1 が地平上（C4 地平下）→ SunsetEclipse。
+    /// 太陽が C1〜max の間に没し前半相のみ観測可能なので SunsetEclipse。現行コード
+    /// （max<0 で即 BelowHorizon）は BelowHorizon を返すため red。撃破する変異: max<0 早期
+    /// return（146 行）＋「C4 救済のみで C1 救済を欠く」部分修正を落とす（C1 地平上の救済）。
+    #[test]
+    fn visibility_max_below_with_c1_above_is_sunset_eclipse() {
+        assert_eq!(
+            classify_visibility(true, Some(Degrees(3.0)), Degrees(-0.05), Some(Degrees(-2.0))),
+            Visibility::SunsetEclipse,
+            "max<0 with c1≥0 and c4<0 must yield SunsetEclipse (Sun set between C1 and max; earlier phase observable)"
+        );
+    }
+
+    /// 受け入れ点（FIX のガード）: max 地平下 ∧ 両接触とも地平下 → BelowHorizon（不変）。
+    /// 食全体が地平下で観測不能。FIX が過剰救済しない（max<0 でも接触が両方下なら BelowHorizon を
+    /// 維持する）ことを縛る。撃破する変異: 「max<0 ならば常に救済（無条件 Sunrise/Sunset）」へ
+    /// 広げる過修正を落とす。
+    #[test]
+    fn visibility_max_below_with_both_contacts_below_is_below_horizon() {
+        assert_eq!(
+            classify_visibility(
+                true,
+                Some(Degrees(-3.0)),
+                Degrees(-0.05),
+                Some(Degrees(-2.0))
+            ),
+            Visibility::BelowHorizon,
+            "max<0 with both contacts <0 must remain BelowHorizon (entire eclipse below horizon)"
+        );
+    }
+
+    /// 受け入れ点（FIX のガード）: max 地平下 ∧ 両接触 None → BelowHorizon（真に観測不能）。
+    /// 接触情報が無く max も地平下なら観測可能性を示す材料が無いので BelowHorizon。撃破する変異:
+    /// 「max<0 で None を地平上扱いして救済」する過修正を落とす（`is_some_and` の None=false を縛る）。
+    #[test]
+    fn visibility_max_below_with_both_contacts_none_is_below_horizon() {
+        assert_eq!(
+            classify_visibility(true, None, Degrees(-5.0), None),
+            Visibility::BelowHorizon,
+            "max<0 with both contacts None must be BelowHorizon (no observable phase)"
+        );
+    }
+
     /// C1・C4 とも地平上（max も自動的に上）→ FullyVisible（全経過観測可能）。
     #[test]
     fn visibility_all_contacts_above_is_fully_visible() {
@@ -784,11 +851,13 @@ mod tests {
             Visibility::SunriseEclipse,
             "c1 just below 0 must flip to SunriseEclipse (boundary at geometric 0°)"
         );
-        // max = −ε → BelowHorizon（0 と −ε の境界）。
+        // max = −ε（わずか地平下）だが C1・C4 とも地平上 → SunriseEclipse。
+        // 修正前は「max<0 で即 BelowHorizon」だったが、接触が地平上なら食は観測可能。
+        // 判定木は C4 地平上を先に見るため SunriseEclipse（後半相が観測可能）。
         assert_eq!(
             classify_visibility(true, Some(Degrees(1.0)), Degrees(-1e-9), Some(Degrees(1.0))),
-            Visibility::BelowHorizon,
-            "max just below 0 must be BelowHorizon (boundary at geometric 0°)"
+            Visibility::SunriseEclipse,
+            "max just below 0 with both contacts above must be SunriseEclipse (c4≥0 checked first; not BelowHorizon)"
         );
     }
 
