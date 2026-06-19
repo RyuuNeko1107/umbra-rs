@@ -34,4 +34,4 @@ pub fn fixtures_checksum() -> String {
 
 /// 記録済みの期待チェックサム（フィクスチャ変更時のみ更新する＝ドリフト検出器）。
 pub const FIXTURES_CHECKSUM: &str =
-    "f74cf7b562b2ace4f16063f6a5c535918a1d393364db20d7fbb8fe0ad642c72e";
+    "7b378b99d765a5187095e9073c583a7bbfdde77453fb2f8cfc5ace3970a5a854";

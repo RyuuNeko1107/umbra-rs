@@ -4,8 +4,8 @@
 
 event_key = "2026-08-12-total"
 kind = "Total"
-greatest_utc = "2026-08-12 17:03:49.6"
-greatest_tt = "2026-08-12 17:05:01.0"
+greatest_utc = "2026-08-12 17:45:53.8"
+greatest_tt = "2026-08-12 17:47:05.2"
 gamma = 0.8978
 magnitude = 1.0386
 delta_t_seconds = 71.4
