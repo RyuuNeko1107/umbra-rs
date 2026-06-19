@@ -4,6 +4,8 @@
 //! DE データは crate 非同梱（利用者が `.bsp` を任意取得, data-sources §2.3）。
 //!
 //! - [`daf`]: DAF/SPK の構造解析（ファイルレコード＋セグメント記述子）。S1。
-//! - 後続: SPK type2 Chebyshev 評価（S2）・`JplEphemeris`＋`Ephemeris` 実装（S3）。
+//! - [`eval`]: SPK type 2 Chebyshev 評価（セグメント native 位置/速度）。S2。
+//! - 後続: `JplEphemeris`＋`Ephemeris` 実装（S3）。
 
 pub(crate) mod daf;
+pub(crate) mod eval;
