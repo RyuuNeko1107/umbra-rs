@@ -103,16 +103,20 @@ pub struct SolarEclipse {
 /// `local_contacts::ContactInstant`（時刻のみの幾何ソルバ出力）に、ISSUE-028 の太陽地平座標・
 /// position angle・可視を付与した公開 result 型。EclipseEngine（S7）が組み立てる。
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct LocalContact {
     /// 接触の UTC 時刻。
     pub time_utc: UtcInstant,
     /// 接触の TT 時刻（幾何相対の一級値, conventions §6）。
     pub time_tt: TtInstant,
-    /// 接触時の太陽高度（conventions §7）。
+    /// 接触時の太陽高度（conventions §7）。JSON は単位明示で `sun_altitude_deg`（A7）。
+    #[cfg_attr(feature = "serde", serde(rename = "sun_altitude_deg"))]
     pub sun_altitude: Degrees,
-    /// 接触時の太陽方位（北 0°・東回り）。
+    /// 接触時の太陽方位（北 0°・東回り）。JSON は単位明示で `sun_azimuth_deg`（A7）。
+    #[cfg_attr(feature = "serde", serde(rename = "sun_azimuth_deg"))]
     pub sun_azimuth: Degrees,
-    /// 接触の位置角（太陽周縁上, 北 0°・東回り）。
+    /// 接触の位置角（太陽周縁上, 北 0°・東回り）。JSON は単位明示で `position_angle_deg`（A7）。
+    #[cfg_attr(feature = "serde", serde(rename = "position_angle_deg"))]
     pub position_angle: Degrees,
     /// 接触時に太陽が地平上か（可視）。
     pub visible: bool,
@@ -121,6 +125,7 @@ pub struct LocalContact {
 /// 局地接触集合（A3: c1..c4 は部分食地点で `None`、`maximum` は常に存在＝非 Option）。
 /// フィールドは時系列順（c1, c2, maximum, c3, c4）。
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct LocalContactSet {
     /// 第1接触 C1（部分食開始・外接）。
     pub c1: Option<LocalContact>,
@@ -136,6 +141,7 @@ pub struct LocalContactSet {
 
 /// 観測地点の局地条件（`local_circumstances()` の結果）。
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct LocalCircumstances {
     /// 接触集合（C1〜C4 ＋ 最大食）。
     pub contacts: LocalContactSet,
@@ -143,7 +149,8 @@ pub struct LocalCircumstances {
     pub magnitude: EclipseMagnitude,
     /// 最大食での食面積（0..1）。
     pub obscuration: Obscuration,
-    /// 最大食での太陽高度。
+    /// 最大食での太陽高度。JSON は単位明示で `maximum_altitude_deg`（A7）。
+    #[cfg_attr(feature = "serde", serde(rename = "maximum_altitude_deg"))]
     pub maximum_altitude: Degrees,
     /// 可視性（6 値）。
     pub visibility: Visibility,
@@ -153,6 +160,7 @@ pub struct LocalCircumstances {
 
 /// 可視日食（`next_visible_eclipse()` の結果）。日食とその観測地点の局地条件。
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct VisibleSolarEclipse {
     /// 全球日食。
     pub eclipse: SolarEclipse,

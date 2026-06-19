@@ -48,6 +48,8 @@ pub struct Horizontal {
 /// 食の可視性（api-draft §3.4）。
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type"))]
 pub enum Visibility {
     /// その地点で食域外（接触なし）。
     NotVisible,

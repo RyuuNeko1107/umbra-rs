@@ -14,7 +14,7 @@ use umbra_core::{
 };
 use umbra_eclipse::{
     standard_engine, EclipseEngine, EclipseError, EngineConfig, LocalCircumstances, LocalContact,
-    RefractionModel, SolarEclipse, SolarEclipseKind, UtcRange,
+    RefractionModel, SolarEclipse, SolarEclipseKind, UtcRange, VisibleSolarEclipse,
 };
 use umbra_ephemeris::{bundled_time_data, AnalyticalEphemeris};
 
@@ -89,6 +89,9 @@ pub struct LocalArgs {
     /// 大気差モデル（既定 standard・conventions §7 / EngineConfig 既定と一致）。
     #[arg(long, value_enum, default_value_t = RefractionArg::Standard)]
     pub refraction: RefractionArg,
+    /// 出力形式（既定 text。S32b で json 追加）。
+    #[arg(long, value_enum, default_value_t = FormatArg::Text)]
+    pub format: FormatArg,
 }
 
 /// 大気差モデル引数（S32a）。`umbra_eclipse::RefractionModel` に対応。
@@ -422,26 +425,44 @@ pub fn run_local(args: &LocalArgs) -> Result<String, CliError> {
         config,
     );
 
-    // 指定日（UTC 暦日 [date, date+1 日)）に起こる日食を探索する。
+    // 指定日（UTC 暦日 [date, date+1 日)）に起こる日食を探索し、あれば局地条件を求める。
     let day_end = UtcInstant::from_jd2(JulianDate2::from_jd(date.jd2().jd() + 1.0));
     let range = UtcRange {
         start: date,
         end: day_end,
     };
-    let Some(eclipse) = engine.search(range)?.into_iter().next() else {
-        return Ok(format!(
-            "No solar eclipse on {} at this location.\n",
-            args.date
-        ));
+    let found: Option<VisibleSolarEclipse> = match engine.search(range)?.into_iter().next() {
+        Some(eclipse) => {
+            let local = engine.local_circumstances(&eclipse, observer)?;
+            Some(VisibleSolarEclipse { eclipse, local })
+        }
+        None => None,
     };
 
-    let circ = engine.local_circumstances(&eclipse, observer)?;
-    let mut out = format!(
-        "{key}  {kind:?}\n",
-        key = eclipse.event_key,
-        kind = eclipse.kind
-    );
-    out.push_str(&format_local_text(&circ, timezone));
+    match args.format {
+        FormatArg::Text => Ok(match &found {
+            Some(vse) => {
+                let mut out = format!(
+                    "{key}  {kind:?}\n",
+                    key = vse.eclipse.event_key,
+                    kind = vse.eclipse.kind
+                );
+                out.push_str(&format_local_text(&vse.local, timezone));
+                out
+            }
+            // 該当日食なし（エラーにしない・架空 event_key を出さない）。
+            None => format!("No solar eclipse on {} at this location.\n", args.date),
+        }),
+        FormatArg::Json => format_local_json(found.as_ref()),
+    }
+}
+
+/// 局地条件を JSON に整形する（S32b）。該当日食あり→`VisibleSolarEclipse`（`{eclipse, local}`）の
+/// pretty JSON、なし→JSON `null`。いずれも末尾改行付き。時刻は `{iso, jd}`、列挙は `{type:..}`、
+/// 数値の単位はフィールド名（`maximum_altitude_deg` 等, A7）。コア値を素通し（accuracy.md §0）。
+pub fn format_local_json(found: Option<&VisibleSolarEclipse>) -> Result<String, CliError> {
+    let mut out = serde_json::to_string_pretty(&found)?;
+    out.push('\n');
     Ok(out)
 }
 
@@ -1639,6 +1660,7 @@ mod tests {
             timezone: None,
             accuracy: AccuracyArg::Standard,
             refraction: RefractionArg::Standard,
+            format: FormatArg::Text,
         };
         let r = run_local(&args);
         assert!(
@@ -1659,6 +1681,7 @@ mod tests {
             timezone: None,
             accuracy: AccuracyArg::Standard,
             refraction: RefractionArg::Standard,
+            format: FormatArg::Text,
         };
         let r = run_local(&args);
         assert!(
@@ -1680,6 +1703,7 @@ mod tests {
             timezone: Some("foo".to_string()),
             accuracy: AccuracyArg::Standard,
             refraction: RefractionArg::Standard,
+            format: FormatArg::Text,
         };
         let r = run_local(&args);
         assert!(
@@ -1752,6 +1776,7 @@ mod tests {
             timezone: Some("-05:00".to_string()),
             accuracy: AccuracyArg::Standard,
             refraction: RefractionArg::Standard,
+            format: FormatArg::Text,
         };
         let out = run_local(&args).expect("2024-04-08 Texas の局地計算は成功する");
         assert!(
@@ -1791,12 +1816,422 @@ mod tests {
             timezone: None,
             accuracy: AccuracyArg::Standard,
             refraction: RefractionArg::Standard,
+            format: FormatArg::Text,
         };
         let out = run_local(&args).expect("日食なし日付でも Ok（メッセージ）を返す");
         // 架空の安定キー（"YYYY-MM-DD#NNNN" の '#'）を捏造しない。
         assert!(
             !out.contains('#'),
             "日食なし日に架空 event_key（'#'）を捏造しない: {out}"
+        );
+    }
+
+    // ==================================================================
+    // === S32b: umbra local --format json ===
+    // ==================================================================
+    // ISSUE-032 S32b 受け入れテスト（standard・`umbra local --format json`）。
+    //
+    // ## オラクル戦略
+    // 出力文字列を `serde_json::from_str::<serde_json::Value>` でパースし、**パースされた
+    // Value** に対して構造を assert する（生 JSON のレイアウト一致は使わない。部分文字列は
+    // 二次シグナルとしてのみ許容）。値は既知 fixture（fully_visible_circ / partial_visible_circ /
+    // total_eclipse）由来で、凍結された観測可能 JSON 契約をそのまま縛る。S31a→S31b と同形で
+    // local 結果型グラフ（VisibleSolarEclipse → LocalCircumstances → LocalContactSet/
+    // LocalContact など）に Serialize を横断配線し serde_json で整形する。
+    //
+    // ## red 設計（本体未実装）
+    // `LocalArgs.format`・`format_local_json`・local 結果型の Serialize 配線は本スライスで導入予定で
+    // 現状未実装。テストはコンパイル時点で未解決シンボル／未実装トレイト境界（red）。
+
+    use umbra_eclipse::VisibleSolarEclipse;
+
+    /// `format_local_json(Some(..))` 出力をパースして JSON Value を返すヘルパ（パース成功＝有効 JSON）。
+    fn parse_local_json_value(vse: &VisibleSolarEclipse) -> Value {
+        let s = format_local_json(Some(vse)).expect("JSON 整形は成功する");
+        serde_json::from_str(&s).expect("出力は有効な JSON（パース成功必須）")
+    }
+
+    /// FullyVisible fixture の JSON 契約を全面的に縛る。`obj["eclipse"]`（SolarEclipse 形・軽い確認）と
+    /// `obj["local"]`（magnitude/obscuration の透過数値・maximum_altitude_deg 改名・visibility の
+    /// 内部タグ・metadata・contacts.maximum の instant 形＋`_deg` 改名キー＋未サフィックスキー不在＋
+    /// visible bool・c1..c4 全 Some）を検証する。
+    /// 殺す変異: eclipse/local の二分割を崩す、visibility を bare string にする、
+    ///   maximum_altitude を `_deg` 改名しない、maximum 接触の alt/az/PA を `_deg` 改名しない、
+    ///   maximum を null/省略にする、c1..c4 を Some で出さない、time_utc/time_tt の iso/jd を落とす、
+    ///   UTC iso の末尾 Z を落とす・TT iso に Z を付ける、magnitude/obscuration をオブジェクト化する。
+    #[test]
+    fn format_local_json_some_fully_visible_contract() {
+        let vse = VisibleSolarEclipse {
+            eclipse: total_eclipse(),
+            local: fully_visible_circ(),
+        };
+        let obj = parse_local_json_value(&vse);
+        assert!(
+            obj.is_object(),
+            "Some(..) は JSON オブジェクトにシリアライズ: {obj}"
+        );
+
+        // --- eclipse（S31b で確立済みの SolarEclipse 形・軽い確認のみ）---
+        let eclipse = &obj["eclipse"];
+        assert!(
+            eclipse["event_key"].is_string(),
+            "eclipse.event_key は文字列: {eclipse}"
+        );
+        assert_eq!(
+            eclipse["event_key"],
+            Value::from("2024-04-08#1252"),
+            "eclipse.event_key（total_eclipse）"
+        );
+        assert!(
+            !eclipse["kind"]["type"].is_null(),
+            "eclipse.kind.type が存在（タグ付き enum）: {eclipse}"
+        );
+
+        // --- local ---
+        let local = &obj["local"];
+
+        // magnitude / obscuration は透過 newtype = bare number。
+        assert!(
+            local["magnitude"].is_number(),
+            "local.magnitude は bare number（newtype 透過）: {}",
+            local["magnitude"]
+        );
+        assert_eq!(
+            local["magnitude"].as_f64().expect("magnitude は数値"),
+            1.0123,
+            "local.magnitude（FullyVisible fixture）"
+        );
+        assert!(
+            local["obscuration"].is_number(),
+            "local.obscuration は bare number（newtype 透過）: {}",
+            local["obscuration"]
+        );
+        assert_eq!(
+            local["obscuration"].as_f64().expect("obscuration は数値"),
+            1.0,
+            "local.obscuration（FullyVisible fixture）"
+        );
+
+        // maximum_altitude_deg（A7 単位サフィックス改名）。未改名 maximum_altitude は不在。
+        assert_eq!(
+            local["maximum_altitude_deg"]
+                .as_f64()
+                .expect("maximum_altitude_deg は数値"),
+            70.5,
+            "local.maximum_altitude_deg（改名・単位付き）"
+        );
+        assert!(
+            local["maximum_altitude"].is_null(),
+            "未改名キー maximum_altitude は不在（_deg 改名漏れを撃破）: {}",
+            local["maximum_altitude"]
+        );
+
+        // visibility は内部タグ付き enum オブジェクト {type:"FullyVisible"}（bare string でない）。
+        assert!(
+            local["visibility"].is_object(),
+            "local.visibility はオブジェクト（bare string でない）: {}",
+            local["visibility"]
+        );
+        assert_eq!(
+            local["visibility"]["type"],
+            Value::from("FullyVisible"),
+            "local.visibility は {{type:\"FullyVisible\"}} タグ付き"
+        );
+
+        // metadata（metadata() 由来・S31b と同形）。
+        let metadata = &local["metadata"];
+        assert_eq!(
+            metadata["ephemeris_model"],
+            Value::from("ELP/MPP02+VSOP87D"),
+            "local.metadata.ephemeris_model"
+        );
+        assert_eq!(
+            metadata["accuracy_profile"]["type"],
+            Value::from("Standard"),
+            "local.metadata.accuracy_profile は {{type:\"Standard\"}} タグ付き"
+        );
+
+        // --- contacts ---
+        let contacts = &local["contacts"];
+
+        // maximum は非 Option（常にオブジェクト）。
+        let maximum = &contacts["maximum"];
+        assert!(
+            maximum.is_object(),
+            "contacts.maximum は常にオブジェクト（非 Option）: {maximum}"
+        );
+
+        // maximum.time_utc / time_tt は {iso, jd:{part1,part2}} の instant 形。
+        let utc_iso = maximum["time_utc"]["iso"]
+            .as_str()
+            .expect("maximum.time_utc.iso は文字列");
+        assert!(
+            utc_iso.ends_with('Z'),
+            "maximum.time_utc.iso は UTC（末尾 Z）: {utc_iso}"
+        );
+        assert!(
+            maximum["time_utc"]["jd"]["part1"].is_number(),
+            "maximum.time_utc.jd.part1 は数値（lossless チャネル）: {}",
+            maximum["time_utc"]["jd"]["part1"]
+        );
+        assert!(
+            maximum["time_utc"]["jd"]["part2"].is_number(),
+            "maximum.time_utc.jd.part2 は数値: {}",
+            maximum["time_utc"]["jd"]["part2"]
+        );
+        let tt_iso = maximum["time_tt"]["iso"]
+            .as_str()
+            .expect("maximum.time_tt.iso は文字列");
+        assert!(
+            !tt_iso.ends_with('Z'),
+            "maximum.time_tt.iso は末尾 Z を持たない（TT は UTC でない）: {tt_iso}"
+        );
+        assert!(
+            maximum["time_tt"]["jd"]["part1"].is_number(),
+            "maximum.time_tt.jd.part1 は数値: {}",
+            maximum["time_tt"]["jd"]["part1"]
+        );
+        assert!(
+            maximum["time_tt"]["jd"]["part2"].is_number(),
+            "maximum.time_tt.jd.part2 は数値: {}",
+            maximum["time_tt"]["jd"]["part2"]
+        );
+
+        // maximum の角度は `_deg` 改名（A7）・visible は bool。
+        assert!(
+            maximum["sun_altitude_deg"].is_number(),
+            "maximum.sun_altitude_deg は数値（改名）: {}",
+            maximum["sun_altitude_deg"]
+        );
+        assert!(
+            maximum["sun_azimuth_deg"].is_number(),
+            "maximum.sun_azimuth_deg は数値（改名）: {}",
+            maximum["sun_azimuth_deg"]
+        );
+        assert!(
+            maximum["position_angle_deg"].is_number(),
+            "maximum.position_angle_deg は数値（改名）: {}",
+            maximum["position_angle_deg"]
+        );
+        assert!(
+            maximum["visible"].is_boolean(),
+            "maximum.visible は bool: {}",
+            maximum["visible"]
+        );
+        // 未改名キー（_deg なし）は maximum 接触上に不在。
+        assert!(
+            maximum["sun_altitude"].is_null(),
+            "未改名キー sun_altitude は不在（_deg 改名漏れを撃破）: {}",
+            maximum["sun_altitude"]
+        );
+        assert!(
+            maximum["sun_azimuth"].is_null(),
+            "未改名キー sun_azimuth は不在: {}",
+            maximum["sun_azimuth"]
+        );
+        assert!(
+            maximum["position_angle"].is_null(),
+            "未改名キー position_angle は不在: {}",
+            maximum["position_angle"]
+        );
+
+        // FullyVisible fixture: c1..c4 すべて Some（オブジェクト）。
+        assert!(
+            contacts["c1"].is_object(),
+            "contacts.c1 は Some（オブジェクト）: {}",
+            contacts["c1"]
+        );
+        assert!(
+            contacts["c2"].is_object(),
+            "contacts.c2 は Some（オブジェクト）: {}",
+            contacts["c2"]
+        );
+        assert!(
+            contacts["c3"].is_object(),
+            "contacts.c3 は Some（オブジェクト）: {}",
+            contacts["c3"]
+        );
+        assert!(
+            contacts["c4"].is_object(),
+            "contacts.c4 は Some（オブジェクト）: {}",
+            contacts["c4"]
+        );
+    }
+
+    /// PartialVisible fixture: 内側接触 c2/c3（None）が JSON null・c1/maximum/c4 はオブジェクト・
+    /// visibility タグは PartialVisible。
+    /// 殺す変異: None の内側接触を null でなく省略/0/架空時刻で出す、c1/maximum/c4 を落とす、
+    ///   visibility タグを FullyVisible/未タグにする。
+    #[test]
+    fn format_local_json_partial_visible_has_null_inner_contacts() {
+        let vse = VisibleSolarEclipse {
+            eclipse: total_eclipse(),
+            local: partial_visible_circ(),
+        };
+        let obj = parse_local_json_value(&vse);
+        let local = &obj["local"];
+        let contacts = &local["contacts"];
+
+        // c2/c3 は None → JSON null。
+        assert_eq!(
+            contacts["c2"],
+            Value::Null,
+            "contacts.c2 は null（部分地点は中心接触なし）"
+        );
+        assert_eq!(
+            contacts["c3"],
+            Value::Null,
+            "contacts.c3 は null（部分地点）"
+        );
+
+        // c1 / maximum / c4 はオブジェクト。
+        assert!(
+            contacts["c1"].is_object(),
+            "contacts.c1 は Some（部分地点でも C1 あり）: {}",
+            contacts["c1"]
+        );
+        assert!(
+            contacts["maximum"].is_object(),
+            "contacts.maximum は常にオブジェクト: {}",
+            contacts["maximum"]
+        );
+        assert!(
+            contacts["c4"].is_object(),
+            "contacts.c4 は Some（部分地点でも C4 あり）: {}",
+            contacts["c4"]
+        );
+
+        // visibility タグ。
+        assert_eq!(
+            local["visibility"]["type"],
+            Value::from("PartialVisible"),
+            "local.visibility は {{type:\"PartialVisible\"}}（部分地点）"
+        );
+    }
+
+    /// 日食なし（None）は JSON リテラル `null` にシリアライズされ、出力は有効な JSON。
+    /// 殺す変異: None を null でなく空オブジェクト/空文字/架空イベントで出す、パース不能な出力。
+    #[test]
+    fn format_local_json_none_is_json_null() {
+        let s = format_local_json(None).expect("None でも JSON 整形は成功する");
+        let v: Value = serde_json::from_str(&s).expect("出力は有効な JSON（パース成功必須）");
+        assert!(
+            v.is_null(),
+            "format_local_json(None) は JSON null（日食なしを null で表す）: {v}"
+        );
+    }
+
+    /// visibility タグ安定性: `local["visibility"]` は key "type"・値はバリアント名のオブジェクト
+    /// （FullyVisible / PartialVisible を網羅）。bare string / untagged への回帰を陽に撃破する。
+    /// 殺す変異: visibility を bare string にする、untagged にする、タグ key を "type" 以外にする、
+    ///   バリアント名を別表記にする。
+    #[test]
+    fn format_local_json_visibility_is_internally_tagged() {
+        let full = VisibleSolarEclipse {
+            eclipse: total_eclipse(),
+            local: fully_visible_circ(),
+        };
+        let full_obj = parse_local_json_value(&full);
+        let full_vis = &full_obj["local"]["visibility"];
+        assert!(
+            full_vis.is_object(),
+            "visibility はオブジェクト（bare string でない）: {full_vis}"
+        );
+        assert_eq!(
+            full_vis["type"],
+            Value::from("FullyVisible"),
+            "visibility.type == バリアント名 \"FullyVisible\""
+        );
+
+        let partial = VisibleSolarEclipse {
+            eclipse: total_eclipse(),
+            local: partial_visible_circ(),
+        };
+        let partial_obj = parse_local_json_value(&partial);
+        let partial_vis = &partial_obj["local"]["visibility"];
+        assert!(
+            partial_vis.is_object(),
+            "visibility はオブジェクト（部分地点）: {partial_vis}"
+        );
+        assert_eq!(
+            partial_vis["type"],
+            Value::from("PartialVisible"),
+            "visibility.type == バリアント名 \"PartialVisible\""
+        );
+    }
+
+    /// run_local ディスパッチ: format=Json でも不正日付検証を fast-fail でバイパスしない
+    /// （エンジン非実走＝高速）。
+    /// 殺す変異: JSON 経路で不正日付検証を飛ばす、別 variant を返す。
+    #[test]
+    fn run_local_json_invalid_date_still_fast_fails() {
+        let args = LocalArgs {
+            date: "not-a-date".to_string(),
+            lat: 35.0,
+            lon: 139.0,
+            elevation: 0.0,
+            timezone: None,
+            accuracy: AccuracyArg::Standard,
+            refraction: RefractionArg::Standard,
+            format: FormatArg::Json,
+        };
+        let r = run_local(&args);
+        assert!(
+            matches!(r, Err(CliError::InvalidDate(ref s)) if s == "not-a-date"),
+            "JSON 経路でも不正 date は InvalidDate で fast-fail: {r:?}"
+        );
+    }
+
+    /// run_local ディスパッチ: format=Json でも不正 timezone 検証を fast-fail でバイパスしない
+    /// （date/lat/lon は妥当・エンジン非実走＝高速）。text 経路の対称テスト。
+    /// 殺す変異: JSON 経路で timezone 検証をエンジン後に回す/省く、別 variant を返す。
+    #[test]
+    fn run_local_json_invalid_timezone_still_fast_fails() {
+        let args = LocalArgs {
+            date: "2024-04-08".to_string(),
+            lat: 35.0,
+            lon: 139.0,
+            elevation: 0.0,
+            timezone: Some("foo".to_string()),
+            accuracy: AccuracyArg::Standard,
+            refraction: RefractionArg::Standard,
+            format: FormatArg::Json,
+        };
+        let r = run_local(&args);
+        assert!(
+            matches!(r, Err(CliError::InvalidTimezone(ref s)) if s == "foo"),
+            "JSON 経路でも不正 timezone は InvalidTimezone で fast-fail: {r:?}"
+        );
+    }
+
+    /// 【SLOW・1 件】正常系: 2024-04-08・米中部 Texas 路上地点・timezone -05:00・format=Json で
+    /// `Ok(s)`。s は有効な JSON オブジェクトでパースでき、`["eclipse"]["event_key"]` が文字列・
+    /// `["local"]["visibility"]["type"]` が存在する（計算値は過度に縛らない）。実エンジン実走で SLOW。
+    /// 殺す変異: JSON 経路でエンジンを実走しない、整形を text に流す、eclipse/local 二分割を崩す、
+    ///   visibility タグを落とす。
+    // SLOW
+    #[test]
+    fn run_local_json_2024_total_path_site_is_valid_json() {
+        let args = LocalArgs {
+            date: "2024-04-08".to_string(),
+            lat: 30.0,
+            lon: -98.0,
+            elevation: 0.0,
+            timezone: Some("-05:00".to_string()),
+            accuracy: AccuracyArg::Standard,
+            refraction: RefractionArg::Standard,
+            format: FormatArg::Json,
+        };
+        let s = run_local(&args).expect("2024-04-08 Texas の JSON 局地計算は成功する");
+        let v: Value = serde_json::from_str(&s).expect("出力は有効な JSON（パース成功必須）");
+        assert!(v.is_object(), "トップレベルは JSON オブジェクト: {s}");
+        assert!(
+            v["eclipse"]["event_key"].is_string(),
+            "eclipse.event_key は文字列: {s}"
+        );
+        assert!(
+            !v["local"]["visibility"]["type"].is_null(),
+            "local.visibility.type が存在: {s}"
         );
     }
 }
