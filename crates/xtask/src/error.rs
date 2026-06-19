@@ -1,6 +1,7 @@
 //! xtask のエラー型（ISSUE-046）。
 
 use thiserror::Error;
+use umbra_eclipse::EclipseError;
 
 /// xtask サブコマンド実行中のエラー。
 #[derive(Debug, Error)]
@@ -42,4 +43,18 @@ pub enum XtaskError {
         #[source]
         source: std::io::Error,
     },
+    /// フラグに不正な値（`--format`/`--accuracy` の未知値, ISSUE-030 S30f validate）。
+    #[error("invalid value '{value}' for {flag}")]
+    InvalidArgument {
+        /// 対象フラグ（例 `--format`）。
+        flag: String,
+        /// 与えられた不正値。
+        value: String,
+    },
+    /// 日食エンジン側エラー（validate のゴールデン照合・透過, ISSUE-030 S30f）。
+    #[error(transparent)]
+    Eclipse(#[from] EclipseError),
+    /// レポート JSON 整形失敗（serde_json 由来・透過, ISSUE-030 S30f）。
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
 }

@@ -13,6 +13,7 @@ pub mod eop;
 pub mod error;
 pub mod nutation;
 pub mod packed;
+pub mod validate;
 pub mod vsop87;
 
 use dataset::Dataset;
@@ -28,7 +29,9 @@ SUBCOMMANDS:
     generate-coefficients   一次データ→packed 係数を決定的に生成（033/034/040）
     verify-generated        コミット済み generated と再生成の checksum 差分を検査
     verify-data             EOP/閏秒/ΔT の valid_to 期限・checksum を検査
-    check-licenses          cargo-deny + データ provenance/NOTICE 整合を検査";
+    check-licenses          cargo-deny + データ provenance/NOTICE 整合を検査
+    validate                ゴールデン照合を実エンジンで実走し誤差レポートを出力（ISSUE-030）
+                            [--accuracy <standard|reference>] [--format <text|json>]";
 
 /// 記録済み checksum と再生成物の checksum を比較し、不一致なら [`XtaskError::ChecksumMismatch`]。
 /// `verify-generated` の中核（1 バイトの差異でも fail する決定的検査）。
@@ -144,6 +147,7 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
         "check-licenses" => Err(XtaskError::NotImplemented(
             "check-licenses — cargo-deny + provenance 整合は CI ゲートで実装".to_string(),
         )),
+        "validate" => validate::run_validate(args),
         other => Err(XtaskError::UnknownSubcommand(other.to_string())),
     }
 }

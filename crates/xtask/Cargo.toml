@@ -15,6 +15,16 @@ workspace = true
 umbra-core = { path = "../umbra-core" }
 sha2 = "0.10"
 thiserror = "2"
+# validate サブコマンド（ISSUE-030 S30f）: ゴールデン照合を実エンジンで実走しレポート出力。
+# umbra-fixtures（検証専用）の依存は dev ツールである xtask に限定（本番 CLI は非依存・architecture §1）。
+umbra-eclipse = { path = "../umbra-eclipse" }
+umbra-ephemeris = { path = "../umbra-ephemeris", features = ["bundled-data"] }
+umbra-fixtures = { path = "../umbra-fixtures" }
+serde_json = "1"
+
+[dev-dependencies]
+# validate 統合テスト（ISSUE-030 S30f）の合成フィクスチャ構築に GeoPoint を使う（テスト専用）。
+umbra-geo = { path = "../umbra-geo" }
 
 [[bin]]
 name = "xtask"
