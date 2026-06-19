@@ -22,3 +22,6 @@ sha2 = "0.10"
 # 全球比較テスト（ISSUE-030 S30b）で computed SolarEclipse を struct リテラル構築する際、
 # GreatestEclipse/GlobalContact 内の GeoPoint を直接組むため。
 umbra-geo = { path = "../umbra-geo" }
+# report_against_golden の SLOW 統合テスト（ISSUE-030 S30d）で実エンジンを構築するため
+# （bundled_time_data / standard_engine）。本体は trait 注入で umbra-ephemeris 非依存。
+umbra-ephemeris = { path = "../umbra-ephemeris", features = ["bundled-data"] }

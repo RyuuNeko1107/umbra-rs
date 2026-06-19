@@ -9,7 +9,7 @@
 //! 数値（max/mean/p95）は必ず保持する。許容を pass のために拡大しない。
 
 use umbra_core::{TtInstant, UtcInstant};
-use umbra_eclipse::{LocalCircumstances, SolarEclipse};
+use umbra_eclipse::{EclipseError, LocalCircumstances, SolarEclipse};
 
 use crate::types::{GoldenEclipse, GoldenLocation};
 
@@ -370,6 +370,73 @@ pub fn aggregate_local(errors: &[LocalErrors], profile: &ToleranceProfile) -> Lo
         contact_presence_mismatches,
         pass,
     }
+}
+
+/// ゴールデンから「当日の食」と「指定地点の局地条件」を計算する注入インターフェース。
+///
+/// 実装は実エンジン（`EclipseEngine` 経由・SLOW）でもモック（テスト）でもよい。これにより
+/// [`report_against_golden`] のオーケストレーション（ループ・取りこぼし計数・集計）を、実エンジンを
+/// 走らせずに検証できる（エンジン結線は SLOW 統合テストで担保, ISSUE-030 S30d）。
+pub trait GoldenComputer {
+    /// `golden` の食日に起こる食を返す（見つからなければ `None`＝取りこぼし）。
+    fn eclipse_on(&self, golden: &GoldenEclipse) -> Result<Option<SolarEclipse>, EclipseError>;
+    /// 指定食・指定地点の局地条件を返す。
+    fn local_at(
+        &self,
+        eclipse: &SolarEclipse,
+        location: &GoldenLocation,
+    ) -> Result<LocalCircumstances, EclipseError>;
+}
+
+/// ゴールデン照合の総合レポート（全球＋地点別の集計と被覆カウント）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct GoldenReport {
+    /// 全球条件の集計レポート。
+    pub global: GlobalReport,
+    /// 地点別条件の集計レポート。
+    pub local: LocalReport,
+    /// computer が食を返した（=照合できた）golden 数。
+    pub eclipses_found: usize,
+    /// computer が `None` を返した golden 数（取りこぼし＝異常シグナル）。
+    pub eclipses_missing: usize,
+    /// 比較した地点の総数（照合できた食の地点合計）。
+    pub locations_compared: usize,
+}
+
+/// golden 群に `computer` を適用し、全球＋地点別比較を集計したレポートを返す（純粋オーケストレーション）。
+///
+/// 各 golden について `eclipse_on` で食を取得（`None` は `eclipses_missing` に計上し以降スキップ）、
+/// 見つかれば [`compare_global`] と、各地点の `local_at` → [`compare_local`] を収集する。最後に
+/// [`aggregate_global`]/[`aggregate_local`] で集計する。`eclipse_on`/`local_at` のエラーは伝播する。
+pub fn report_against_golden<C: GoldenComputer>(
+    computer: &C,
+    golden: &[GoldenEclipse],
+    profile: &ToleranceProfile,
+) -> Result<GoldenReport, EclipseError> {
+    let mut global_errors = Vec::new();
+    let mut local_errors = Vec::new();
+    let mut eclipses_missing = 0usize;
+    for g in golden {
+        match computer.eclipse_on(g)? {
+            Some(eclipse) => {
+                global_errors.push(compare_global(&eclipse, g));
+                for location in &g.locations {
+                    let local = computer.local_at(&eclipse, location)?;
+                    local_errors.push(compare_local(&local, location));
+                }
+            }
+            None => eclipses_missing += 1,
+        }
+    }
+    let eclipses_found = global_errors.len();
+    let locations_compared = local_errors.len();
+    Ok(GoldenReport {
+        global: aggregate_global(&global_errors, profile),
+        local: aggregate_local(&local_errors, profile),
+        eclipses_found,
+        eclipses_missing,
+        locations_compared,
+    })
 }
 
 #[cfg(test)]

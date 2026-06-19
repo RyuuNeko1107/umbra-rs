@@ -8,6 +8,10 @@
 - **S30c**（compare_local / aggregate_local / contact_time_error_seconds 追加後の全体）:
   **69 mutants: 62 caught / 7 unviable / 0 missed**。可視性カウント検査は match/mismatch 取り違えを
   確実に撃破するため非対称（false 3 / true 1）に強化。
+- **S30d**（report_against_golden / GoldenComputer 追加後の全体）:
+  **72 mutants: 64 caught / 8 unviable / 0 missed**。実エンジン SLOW 統合テスト
+  （`report_against_golden_real_engine_one_golden`）は各変異で再実行すると非現実的なため
+  `cargo mutants … -- -- --skip real_engine` で除外（オーケストレーションはモック注入の高速テストが縛る）。
 
 対象（純粋・検証基盤）:
 - `ErrorStats::from_errors`（絶対誤差の記述統計 max|e| / mean|e| / p95）。
@@ -19,6 +23,7 @@
 - `contact_time_error_seconds`（TT 優先・days_since・2要素保持の共有時刻誤差ヘルパ）。
 - `compare_local`（地点別。接触 C1–C4 の Some/None 対・presence 不一致計上・可視性一致）。
 - `aggregate_local`（接触フラット集計＋ 7 ゲート pass・可視性/presence 不一致カウント）。
+- `report_against_golden`（GoldenComputer 注入のオーケストレーション。found/missing/locations 計数・集計）。
 
 ## caught（統計・契約のコア）
 

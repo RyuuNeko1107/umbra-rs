@@ -23,8 +23,9 @@ mod types;
 pub use checksum::{fixtures_checksum, FIXTURES_CHECKSUM};
 pub use loader::golden_eclipses;
 pub use report::{
-    aggregate_global, aggregate_local, compare_global, compare_local, ErrorStats, GlobalErrors,
-    GlobalReport, LocalErrors, LocalReport, ToleranceProfile,
+    aggregate_global, aggregate_local, compare_global, compare_local, report_against_golden,
+    ErrorStats, GlobalErrors, GlobalReport, GoldenComputer, GoldenReport, LocalErrors, LocalReport,
+    ToleranceProfile,
 };
 pub use types::{GoldenContact, GoldenEclipse, GoldenLocation, LocationClass, OracleSource};
 
