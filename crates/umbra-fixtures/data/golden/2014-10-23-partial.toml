@@ -1,0 +1,94 @@
+# ゴールデンフィクスチャ: 2014 Oct 23 partial 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2014-10-23-partial"
+kind = "Partial"
+greatest_utc = "2014-10-23 21:44:31.7"
+greatest_tt = "2014-10-23 21:45:39.2"
+gamma = 1.0908
+magnitude = 0.8114
+delta_t_seconds = 67.5
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2014Oct23Pbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=67.5s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=67.9s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Edmonton, AB, Canada"
+latitude_deg = 53.55
+east_longitude_deg = -113.49
+elevation_m = 670.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.724
+obscuration = 0.642
+max_altitude_deg = 16.1
+max_azimuth_deg = 222.0
+maximum = { utc = "2014-10-23 22:02:17.8", altitude_deg = 16.1 }
+c1 = { utc = "2014-10-23 20:40:30.6", altitude_deg = 22.5 }
+c4 = { utc = "2014-10-23 23:18:19.7", altitude_deg = 7.4 }
+
+[[location]]
+name = "Denver, CO, USA"
+latitude_deg = 39.74
+east_longitude_deg = -104.99
+elevation_m = 1600.0
+class = "HighElevation"
+visibility = "FullyVisible"
+magnitude = 0.556
+obscuration = 0.447
+max_altitude_deg = 15.9
+max_azimuth_deg = 239.4
+maximum = { utc = "2014-10-23 22:35:12.6", altitude_deg = 15.9 }
+c1 = { utc = "2014-10-23 21:18:27.0", altitude_deg = 27.4 }
+c4 = { utc = "2014-10-23 23:43:38.6", altitude_deg = 3.9 }
+
+[[location]]
+name = "Vancouver, BC, Canada"
+latitude_deg = 49.28
+east_longitude_deg = -123.12
+elevation_m = 70.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.658
+obscuration = 0.564
+max_altitude_deg = 23.6
+max_azimuth_deg = 212.3
+maximum = { utc = "2014-10-23 21:56:38.0", altitude_deg = 23.6 }
+c1 = { utc = "2014-10-23 20:31:38.3", altitude_deg = 28.6 }
+c4 = { utc = "2014-10-23 23:16:19.6", altitude_deg = 15.0 }
+
+[[location]]
+name = "San Francisco, CA, USA"
+latitude_deg = 37.77
+east_longitude_deg = -122.42
+elevation_m = 15.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.504
+obscuration = 0.390
+max_altitude_deg = 30.5
+max_azimuth_deg = 221.2
+maximum = { utc = "2014-10-23 22:15:25.7", altitude_deg = 30.5 }
+c1 = { utc = "2014-10-23 20:51:36.1", altitude_deg = 38.8 }
+c4 = { utc = "2014-10-23 23:31:43.8", altitude_deg = 19.1 }
+
+[[location]]
+name = "Mexico City, Mexico"
+latitude_deg = 19.43
+east_longitude_deg = -99.13
+elevation_m = 2240.0
+class = "HighElevation"
+visibility = "FullyVisible"
+magnitude = 0.120
+obscuration = 0.049
+max_altitude_deg = 12.5
+max_azimuth_deg = 252.7
+maximum = { utc = "2014-10-23 23:09:04.4", altitude_deg = 12.5 }
+c1 = { utc = "2014-10-23 22:31:42.0", altitude_deg = 20.9 }
+c4 = { utc = "2014-10-23 23:43:34.8", altitude_deg = 4.7 }

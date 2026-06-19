@@ -1,0 +1,99 @@
+# ゴールデンフィクスチャ: 2009 Jul 22 total 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2009-07-22-total"
+kind = "Total"
+greatest_utc = "2009-07-22 02:35:18.1"
+greatest_tt = "2009-07-22 02:36:24.0"
+gamma = 0.0698
+magnitude = 1.0799
+delta_t_seconds = 65.9
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2009Jul22Tbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=65.9s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=66.0s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Wuhan, China"
+latitude_deg = 30.59
+east_longitude_deg = 114.3
+elevation_m = 30.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.031
+obscuration = 1.000
+max_altitude_deg = 47.8
+max_azimuth_deg = 93.0
+maximum = { utc = "2009-07-22 01:26:42.3", altitude_deg = 47.8 }
+c1 = { utc = "2009-07-22 00:14:56.3", altitude_deg = 32.4 }
+c2 = { utc = "2009-07-22 01:24:00.8", altitude_deg = 47.2 }
+c3 = { utc = "2009-07-22 01:29:27.0", altitude_deg = 48.4 }
+c4 = { utc = "2009-07-22 02:46:18.9", altitude_deg = 64.6 }
+
+[[location]]
+name = "Surat, India"
+latitude_deg = 21.17
+east_longitude_deg = 72.83
+elevation_m = 10.0
+class = "Sunrise"
+visibility = "SunriseEclipse"
+magnitude = 1.030
+obscuration = 1.000
+max_altitude_deg = 2.3
+max_azimuth_deg = 69.1
+maximum = { utc = "2009-07-22 00:52:54.5", altitude_deg = 2.3 }
+c2 = { utc = "2009-07-22 00:51:17.9", altitude_deg = 2.0 }
+c3 = { utc = "2009-07-22 00:54:33.8", altitude_deg = 2.7 }
+c4 = { utc = "2009-07-22 01:49:51.8", altitude_deg = 14.9 }
+
+[[location]]
+name = "Chongqing, China"
+latitude_deg = 29.56
+east_longitude_deg = 106.55
+elevation_m = 240.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.016
+obscuration = 1.000
+max_altitude_deg = 38.6
+max_azimuth_deg = 86.7
+maximum = { utc = "2009-07-22 01:15:15.3", altitude_deg = 38.6 }
+c1 = { utc = "2009-07-22 00:07:59.3", altitude_deg = 24.1 }
+c2 = { utc = "2009-07-22 01:13:13.1", altitude_deg = 38.2 }
+c3 = { utc = "2009-07-22 01:17:20.6", altitude_deg = 39.1 }
+c4 = { utc = "2009-07-22 02:30:46.0", altitude_deg = 55.0 }
+
+[[location]]
+name = "Tokyo, Japan"
+latitude_deg = 35.68
+east_longitude_deg = 139.65
+elevation_m = 40.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.749
+obscuration = 0.699
+max_altitude_deg = 72.8
+max_azimuth_deg = 151.1
+maximum = { utc = "2009-07-22 02:12:46.7", altitude_deg = 72.8 }
+c1 = { utc = "2009-07-22 00:55:25.3", altitude_deg = 61.0 }
+c4 = { utc = "2009-07-22 03:30:09.7", altitude_deg = 72.0 }
+
+[[location]]
+name = "Hong Kong"
+latitude_deg = 22.32
+east_longitude_deg = 114.17
+elevation_m = 30.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.749
+obscuration = 0.698
+max_altitude_deg = 47.3
+max_azimuth_deg = 83.8
+maximum = { utc = "2009-07-22 01:25:46.1", altitude_deg = 47.3 }
+c1 = { utc = "2009-07-22 00:14:32.3", altitude_deg = 31.0 }
+c4 = { utc = "2009-07-22 02:46:00.2", altitude_deg = 65.8 }

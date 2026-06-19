@@ -1,0 +1,93 @@
+# ゴールデンフィクスチャ: 2018 Aug 11 partial 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2018-08-11-partial"
+kind = "Partial"
+greatest_utc = "2018-08-11 09:46:19.2"
+greatest_tt = "2018-08-11 09:47:28.0"
+gamma = 1.1476
+magnitude = 0.7368
+delta_t_seconds = 68.7
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2018Aug11Pbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=68.7s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=69.9s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Murmansk, Russia"
+latitude_deg = 68.97
+east_longitude_deg = 33.08
+elevation_m = 50.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.305
+obscuration = 0.196
+max_altitude_deg = 36.1
+max_azimuth_deg = 171.8
+maximum = { utc = "2018-08-11 09:25:22.0", altitude_deg = 36.1 }
+c1 = { utc = "2018-08-11 08:39:20.6", altitude_deg = 35.0 }
+c4 = { utc = "2018-08-11 10:11:29.2", altitude_deg = 36.2 }
+
+[[location]]
+name = "Reykjavik, Iceland"
+latitude_deg = 64.13
+east_longitude_deg = -21.9
+elevation_m = 40.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.198
+obscuration = 0.104
+max_altitude_deg = 21.4
+max_azimuth_deg = 99.3
+maximum = { utc = "2018-08-11 08:44:07.8", altitude_deg = 21.4 }
+c1 = { utc = "2018-08-11 08:09:57.1", altitude_deg = 17.7 }
+c4 = { utc = "2018-08-11 09:19:25.4", altitude_deg = 25.2 }
+
+[[location]]
+name = "Helsinki, Finland"
+latitude_deg = 60.17
+east_longitude_deg = 24.94
+elevation_m = 10.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.079
+obscuration = 0.027
+max_altitude_deg = 43.4
+max_azimuth_deg = 157.2
+maximum = { utc = "2018-08-11 09:17:44.1", altitude_deg = 43.4 }
+c1 = { utc = "2018-08-11 08:50:58.7", altitude_deg = 41.9 }
+c4 = { utc = "2018-08-11 09:44:44.2", altitude_deg = 44.4 }
+
+[[location]]
+name = "Beijing, China"
+latitude_deg = 39.9
+east_longitude_deg = 116.4
+elevation_m = 50.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 0.341
+obscuration = 0.230
+max_altitude_deg = 3.8
+max_azimuth_deg = 286.7
+maximum = { utc = "2018-08-11 10:51:11.8", altitude_deg = 3.8 }
+c1 = { utc = "2018-08-11 10:12:25.2", altitude_deg = 11.0 }
+
+[[location]]
+name = "Ulaanbaatar, Mongolia"
+latitude_deg = 47.89
+east_longitude_deg = 106.91
+elevation_m = 1300.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.408
+obscuration = 0.298
+max_altitude_deg = 14.0
+max_azimuth_deg = 277.3
+maximum = { utc = "2018-08-11 10:40:50.7", altitude_deg = 14.0 }
+c1 = { utc = "2018-08-11 09:56:15.8", altitude_deg = 21.5 }
+c4 = { utc = "2018-08-11 11:23:06.8", altitude_deg = 7.0 }

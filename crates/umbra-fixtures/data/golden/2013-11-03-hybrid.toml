@@ -1,0 +1,92 @@
+# ゴールデンフィクスチャ: 2013 Nov 03 hybrid 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2013-11-03-hybrid"
+kind = "Hybrid"
+greatest_utc = "2013-11-03 12:46:28.9"
+greatest_tt = "2013-11-03 12:47:36.1"
+gamma = 0.3272
+magnitude = 1.0159
+delta_t_seconds = 67.2
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2013Nov03Hbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=67.2s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=67.6s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Libreville, Gabon"
+latitude_deg = 0.39
+east_longitude_deg = 9.45
+elevation_m = 10.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.982
+obscuration = 0.980
+max_altitude_deg = 46.3
+max_azimuth_deg = 247.2
+maximum = { utc = "2013-11-03 13:50:48.3", altitude_deg = 46.3 }
+c1 = { utc = "2013-11-03 12:12:35.2", altitude_deg = 67.3 }
+c4 = { utc = "2013-11-03 15:14:16.0", altitude_deg = 26.7 }
+
+[[location]]
+name = "Kisangani, DR Congo"
+latitude_deg = 0.52
+east_longitude_deg = 25.2
+elevation_m = 400.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.980
+obscuration = 0.977
+max_altitude_deg = 25.2
+max_azimuth_deg = 252.9
+maximum = { utc = "2013-11-03 14:17:13.5", altitude_deg = 25.2 }
+c1 = { utc = "2013-11-03 12:55:16.3", altitude_deg = 44.6 }
+c4 = { utc = "2013-11-03 15:26:39.6", altitude_deg = 8.6 }
+
+[[location]]
+name = "Nairobi, Kenya"
+latitude_deg = -1.29
+east_longitude_deg = 36.82
+elevation_m = 1660.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 0.847
+obscuration = 0.807
+max_altitude_deg = 12.2
+max_azimuth_deg = 254.7
+maximum = { utc = "2013-11-03 14:26:55.3", altitude_deg = 12.2 }
+c1 = { utc = "2013-11-03 13:16:28.9", altitude_deg = 29.2 }
+
+[[location]]
+name = "Lagos, Nigeria"
+latitude_deg = 6.52
+east_longitude_deg = 3.38
+elevation_m = 40.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.809
+obscuration = 0.762
+max_altitude_deg = 53.1
+max_azimuth_deg = 233.7
+maximum = { utc = "2013-11-03 13:30:24.7", altitude_deg = 53.1 }
+c1 = { utc = "2013-11-03 11:48:34.9", altitude_deg = 67.8 }
+c4 = { utc = "2013-11-03 14:59:57.0", altitude_deg = 33.6 }
+
+[[location]]
+name = "Mombasa, Kenya"
+latitude_deg = -4.04
+east_longitude_deg = 39.67
+elevation_m = 15.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 0.740
+obscuration = 0.673
+max_altitude_deg = 9.8
+max_azimuth_deg = 255.2
+maximum = { utc = "2013-11-03 14:28:25.5", altitude_deg = 9.8 }
+c1 = { utc = "2013-11-03 13:21:57.0", altitude_deg = 25.9 }

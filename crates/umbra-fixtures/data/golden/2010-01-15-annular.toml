@@ -1,0 +1,103 @@
+# ゴールデンフィクスチャ: 2010 Jan 15 annular 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2010-01-15-annular"
+kind = "Annular"
+greatest_utc = "2010-01-15 07:06:32.8"
+greatest_tt = "2010-01-15 07:07:38.9"
+gamma = 0.4002
+magnitude = 0.919
+delta_t_seconds = 66.0
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2010Jan15Abeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=66.0s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=66.1s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Male, Maldives"
+latitude_deg = 4.18
+east_longitude_deg = 73.51
+elevation_m = 2.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.954
+obscuration = 0.845
+max_altitude_deg = 64.6
+max_azimuth_deg = 185.7
+maximum = { utc = "2010-01-15 07:25:46.9", altitude_deg = 64.6 }
+c1 = { utc = "2010-01-15 05:15:26.4", altitude_deg = 51.2 }
+c2 = { utc = "2010-01-15 07:20:25.9", altitude_deg = 64.7 }
+c3 = { utc = "2010-01-15 07:31:08.3", altitude_deg = 64.4 }
+c4 = { utc = "2010-01-15 09:23:16.5", altitude_deg = 49.7 }
+
+[[location]]
+name = "Kanyakumari, India"
+latitude_deg = 8.08
+east_longitude_deg = 77.55
+elevation_m = 10.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.950
+obscuration = 0.844
+max_altitude_deg = 58.7
+max_azimuth_deg = 201.0
+maximum = { utc = "2010-01-15 07:45:17.0", altitude_deg = 58.7 }
+c1 = { utc = "2010-01-15 05:36:11.8", altitude_deg = 54.4 }
+c2 = { utc = "2010-01-15 07:40:14.3", altitude_deg = 59.1 }
+c3 = { utc = "2010-01-15 07:50:20.0", altitude_deg = 58.2 }
+c4 = { utc = "2010-01-15 09:35:47.8", altitude_deg = 41.7 }
+
+[[location]]
+name = "Jaffna, Sri Lanka"
+latitude_deg = 9.66
+east_longitude_deg = 80.01
+elevation_m = 5.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.958
+obscuration = 0.843
+max_altitude_deg = 55.3
+max_azimuth_deg = 207.4
+maximum = { utc = "2010-01-15 07:54:38.5", altitude_deg = 55.3 }
+c1 = { utc = "2010-01-15 05:47:44.8", altitude_deg = 55.7 }
+c2 = { utc = "2010-01-15 07:49:35.4", altitude_deg = 55.8 }
+c3 = { utc = "2010-01-15 07:59:41.8", altitude_deg = 54.7 }
+c4 = { utc = "2010-01-15 09:41:16.3", altitude_deg = 37.8 }
+
+[[location]]
+name = "Qingdao, China"
+latitude_deg = 36.07
+east_longitude_deg = 120.38
+elevation_m = 30.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 0.948
+obscuration = 0.822
+max_altitude_deg = 1.3
+max_azimuth_deg = 242.5
+maximum = { utc = "2010-01-15 08:55:25.7", altitude_deg = 1.3 }
+c1 = { utc = "2010-01-15 07:36:55.3", altitude_deg = 14.4 }
+c2 = { utc = "2010-01-15 08:51:51.9", altitude_deg = 1.9 }
+c3 = { utc = "2010-01-15 08:59:01.1", altitude_deg = 0.6 }
+
+[[location]]
+name = "Nairobi, Kenya"
+latitude_deg = -1.29
+east_longitude_deg = 36.82
+elevation_m = 1660.0
+class = "HighElevation"
+visibility = "FullyVisible"
+magnitude = 0.930
+obscuration = 0.833
+max_altitude_deg = 25.5
+max_azimuth_deg = 112.9
+maximum = { utc = "2010-01-15 05:29:37.5", altitude_deg = 25.5 }
+c1 = { utc = "2010-01-15 04:06:29.8", altitude_deg = 6.2 }
+c2 = { utc = "2010-01-15 05:26:14.1", altitude_deg = 24.7 }
+c3 = { utc = "2010-01-15 05:33:03.3", altitude_deg = 26.3 }
+c4 = { utc = "2010-01-15 07:14:51.6", altitude_deg = 49.0 }

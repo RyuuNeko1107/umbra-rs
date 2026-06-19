@@ -8,12 +8,10 @@
 //! 特定の日食の gamma/接触時刻などのオラクル数値は **一切ハードコードしない**
 //! （実装出力とオラクル値の一致は ISSUE-030 = `ToleranceProfile` の領分。conventions §11）。
 //!
-//! ## seed フェーズの分割（ACTIVE / DEFERRED）
-//! 本スライスは「インフラ＋実データ seed」であり、ゴールデン20 全件は後続拡張。
-//! - **ACTIVE**: `golden_eclipses()` が返した内容に対し、現時点の seed で必ず成立すべき不変条件。
-//! - **DEFERRED**: `#[ignore = "..."]` でゴールデン20 全件の受け入れ基準を可視化のまま残す。
-//!
-//! 各テスト関数の doc にカバーする受け入れ箇条を明記する。
+//! ## 受け入れ基準（ゴールデン20 完備）
+//! NASA 5MCSE + USNO から完全転記したゴールデン20（20 日食・各 5 地点）に対し、構造・サニティ・
+//! 被覆・出典完全性・チェックサム固定の不変条件を縛る。各テスト関数の doc にカバーする受け入れ
+//! 箇条を明記する。食種別件数・地点数・全件数の上位被覆は末尾の `golden_twenty_*` 系が担う。
 //!
 //! ## 期待される RED（実装前）
 //! `umbra_fixtures` の公開 API（`GoldenEclipse` 他・`golden_eclipses()`・`fixtures_checksum()`・
@@ -552,13 +550,12 @@ fn event_keys_are_unique_and_nonempty() {
 }
 
 // ============================================================
-// DEFERRED: ゴールデン20 全件の受け入れ基準（後続拡張で外す）
+// ゴールデン20 全件の受け入れ基準（ISSUE-029 完備・実データ転記済み）
 // ============================================================
 
-/// DEFERRED / 受け入れ「ローダ: 20 件」。seed を golden-twenty に拡張したら有効化する。
+/// 受け入れ「ローダ: 20 件」。NASA 5MCSE + USNO から完全転記したゴールデン20。
 #[test]
-#[ignore = "full-set acceptance (ISSUE-029): expand seed to golden-twenty"]
-fn deferred_golden_twenty_has_exactly_20_eclipses() {
+fn golden_twenty_has_exactly_20_eclipses() {
     let eclipses = golden_eclipses();
     assert_eq!(
         eclipses.len(),
@@ -568,10 +565,9 @@ fn deferred_golden_twenty_has_exactly_20_eclipses() {
     );
 }
 
-/// DEFERRED / 受け入れ「各日食に地点 5〜10」。
+/// 受け入れ「各日食に地点 5〜10」。
 #[test]
-#[ignore = "full-set acceptance (ISSUE-029): expand seed to golden-twenty"]
-fn deferred_each_eclipse_has_5_to_10_locations() {
+fn each_eclipse_has_5_to_10_locations() {
     let eclipses = golden_eclipses();
     for e in &eclipses {
         let n = e.locations.len();
@@ -583,11 +579,10 @@ fn deferred_each_eclipse_has_5_to_10_locations() {
     }
 }
 
-/// DEFERRED / 受け入れ「accuracy.md §3.4 の食種別件数」:
+/// 受け入れ「accuracy.md §3.4 の食種別件数」:
 /// 皆既≥5 / 金環≥5 / 部分≥3 / ハイブリッド≥2 + 境界/日の出日没/極域 地点 ≥5。
 #[test]
-#[ignore = "full-set acceptance (ISSUE-029): expand seed to golden-twenty"]
-fn deferred_full_category_counts_match_accuracy_3_4() {
+fn full_category_counts_match_accuracy_3_4() {
     let eclipses = golden_eclipses();
     let count_kind = |k: SolarEclipseKind| eclipses.iter().filter(|e| e.kind_expected == k).count();
     assert!(

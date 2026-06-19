@@ -1,0 +1,97 @@
+# ゴールデンフィクスチャ: 2026 Aug 12 total 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2026-08-12-total"
+kind = "Total"
+greatest_utc = "2026-08-12 17:03:49.6"
+greatest_tt = "2026-08-12 17:05:01.0"
+gamma = 0.8978
+magnitude = 1.0386
+delta_t_seconds = 71.4
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2026Aug12Tbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=71.4s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=74.0s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Zaragoza, Spain"
+latitude_deg = 41.65
+east_longitude_deg = -0.89
+elevation_m = 200.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 1.007
+obscuration = 1.000
+max_altitude_deg = 5.9
+max_azimuth_deg = 284.5
+maximum = { utc = "2026-08-12 18:29:40.4", altitude_deg = 5.9 }
+c1 = { utc = "2026-08-12 17:34:38.5", altitude_deg = 16.0 }
+c2 = { utc = "2026-08-12 18:28:57.4", altitude_deg = 6.1 }
+c3 = { utc = "2026-08-12 18:30:25.3", altitude_deg = 5.8 }
+
+[[location]]
+name = "Bilbao, Spain"
+latitude_deg = 43.26
+east_longitude_deg = -2.93
+elevation_m = 20.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 1.001
+obscuration = 1.000
+max_altitude_deg = 8.1
+max_azimuth_deg = 282.7
+maximum = { utc = "2026-08-12 18:27:33.7", altitude_deg = 8.1 }
+c1 = { utc = "2026-08-12 17:31:45.2", altitude_deg = 18.2 }
+c2 = { utc = "2026-08-12 18:27:18.3", altitude_deg = 8.2 }
+c3 = { utc = "2026-08-12 18:27:50.8", altitude_deg = 8.1 }
+
+[[location]]
+name = "Reykjavik, Iceland"
+latitude_deg = 64.13
+east_longitude_deg = -21.9
+elevation_m = 40.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.002
+obscuration = 1.000
+max_altitude_deg = 24.5
+max_azimuth_deg = 252.8
+maximum = { utc = "2026-08-12 17:48:44.8", altitude_deg = 24.5 }
+c1 = { utc = "2026-08-12 16:47:12.7", altitude_deg = 30.6 }
+c2 = { utc = "2026-08-12 17:48:15.1", altitude_deg = 24.5 }
+c3 = { utc = "2026-08-12 17:49:16.3", altitude_deg = 24.4 }
+c4 = { utc = "2026-08-12 18:47:36.4", altitude_deg = 18.2 }
+
+[[location]]
+name = "Madrid, Spain"
+latitude_deg = 40.42
+east_longitude_deg = -3.7
+elevation_m = 650.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 0.999
+obscuration = 1.000
+max_altitude_deg = 7.2
+max_azimuth_deg = 283.3
+maximum = { utc = "2026-08-12 18:32:18.1", altitude_deg = 7.2 }
+c1 = { utc = "2026-08-12 17:36:42.1", altitude_deg = 17.7 }
+
+[[location]]
+name = "Lisbon, Portugal"
+latitude_deg = 38.72
+east_longitude_deg = -9.14
+elevation_m = 30.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.950
+obscuration = 0.945
+max_altitude_deg = 10.2
+max_azimuth_deg = 280.8
+maximum = { utc = "2026-08-12 18:36:03.8", altitude_deg = 10.2 }
+c1 = { utc = "2026-08-12 17:39:16.0", altitude_deg = 21.2 }
+c4 = { utc = "2026-08-12 19:29:04.0", altitude_deg = 0.2 }

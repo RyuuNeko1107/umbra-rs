@@ -1,0 +1,97 @@
+# ゴールデンフィクスチャ: 2021 Jun 10 annular 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2021-06-10-annular"
+kind = "Annular"
+greatest_utc = "2021-06-10 10:41:56.4"
+greatest_tt = "2021-06-10 10:43:06.1"
+gamma = 0.9152
+magnitude = 0.9435
+delta_t_seconds = 69.7
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2021Jun10Abeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=69.7s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=71.4s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Qaanaaq, Greenland"
+latitude_deg = 77.47
+east_longitude_deg = -69.23
+elevation_m = 10.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.964
+obscuration = 0.890
+max_altitude_deg = 22.4
+max_azimuth_deg = 84.4
+maximum = { utc = "2021-06-10 10:35:06.1", altitude_deg = 22.4 }
+c1 = { utc = "2021-06-10 09:30:21.1", altitude_deg = 19.0 }
+c2 = { utc = "2021-06-10 10:33:17.5", altitude_deg = 22.3 }
+c3 = { utc = "2021-06-10 10:36:56.6", altitude_deg = 22.5 }
+c4 = { utc = "2021-06-10 11:41:50.3", altitude_deg = 26.0 }
+
+[[location]]
+name = "Iqaluit, NU, Canada"
+latitude_deg = 63.75
+east_longitude_deg = -68.52
+elevation_m = 10.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.954
+obscuration = 0.888
+max_altitude_deg = 17.8
+max_azimuth_deg = 73.8
+maximum = { utc = "2021-06-10 10:07:58.6", altitude_deg = 17.8 }
+c1 = { utc = "2021-06-10 09:06:04.8", altitude_deg = 11.5 }
+c2 = { utc = "2021-06-10 10:06:27.8", altitude_deg = 17.6 }
+c3 = { utc = "2021-06-10 10:09:31.3", altitude_deg = 18.0 }
+c4 = { utc = "2021-06-10 11:13:26.7", altitude_deg = 24.9 }
+
+[[location]]
+name = "Toronto, ON, Canada"
+latitude_deg = 43.65
+east_longitude_deg = -79.38
+elevation_m = 80.0
+class = "Sunrise"
+visibility = "BelowHorizon"
+magnitude = 0.861
+obscuration = 0.801
+max_altitude_deg = -0.2
+max_azimuth_deg = 57.0
+maximum = { utc = "2021-06-10 09:39:57.6", altitude_deg = -0.2 }
+c4 = { utc = "2021-06-10 10:37:54.9", altitude_deg = 9.0 }
+
+[[location]]
+name = "London, United Kingdom"
+latitude_deg = 51.51
+east_longitude_deg = -0.13
+elevation_m = 11.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.316
+obscuration = 0.200
+max_altitude_deg = 54.9
+max_azimuth_deg = 134.0
+maximum = { utc = "2021-06-10 10:13:08.4", altitude_deg = 54.9 }
+c1 = { utc = "2021-06-10 09:08:45.9", altitude_deg = 46.6 }
+c4 = { utc = "2021-06-10 11:22:26.6", altitude_deg = 60.6 }
+
+[[location]]
+name = "Moscow, Russia"
+latitude_deg = 55.75
+east_longitude_deg = 37.62
+elevation_m = 150.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.267
+obscuration = 0.156
+max_altitude_deg = 50.8
+max_azimuth_deg = 225.5
+maximum = { utc = "2021-06-10 11:26:22.5", altitude_deg = 50.8 }
+c1 = { utc = "2021-06-10 10:22:21.2", altitude_deg = 55.8 }
+c4 = { utc = "2021-06-10 12:27:26.8", altitude_deg = 43.8 }

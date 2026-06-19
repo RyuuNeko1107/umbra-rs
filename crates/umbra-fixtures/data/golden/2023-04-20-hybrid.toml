@@ -64,3 +64,33 @@ max_azimuth_deg = 43.2
 maximum = { utc = "2023-04-20 03:45:13.2", altitude_deg = 65.8 }
 c1 = { utc = "2023-04-20 02:29:21.0", altitude_deg = 50.5 }
 c4 = { utc = "2023-04-20 05:06:34.0", altitude_deg = 72.0 }
+
+[[location]]
+name = "Dili, Timor-Leste"
+latitude_deg = -8.56
+east_longitude_deg = 125.57
+elevation_m = 10.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.981
+obscuration = 0.979
+max_altitude_deg = 67.5
+max_azimuth_deg = 332.4
+maximum = { utc = "2023-04-20 04:18:23.4", altitude_deg = 67.5 }
+c1 = { utc = "2023-04-20 02:43:23.6", altitude_deg = 66.0 }
+c4 = { utc = "2023-04-20 05:53:38.8", altitude_deg = 50.5 }
+
+[[location]]
+name = "Darwin, NT, Australia"
+latitude_deg = -12.46
+east_longitude_deg = 130.84
+elevation_m = 30.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.845
+obscuration = 0.807
+max_altitude_deg = 60.9
+max_azimuth_deg = 324.6
+maximum = { utc = "2023-04-20 04:22:23.0", altitude_deg = 60.9 }
+c1 = { utc = "2023-04-20 02:47:36.3", altitude_deg = 65.1 }
+c4 = { utc = "2023-04-20 05:55:25.0", altitude_deg = 43.7 }

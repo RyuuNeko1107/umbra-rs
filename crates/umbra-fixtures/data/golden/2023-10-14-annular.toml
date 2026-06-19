@@ -65,3 +65,35 @@ max_azimuth_deg = 123.1
 maximum = { utc = "2023-10-14 16:24:27.2", altitude_deg = 27.5 }
 c1 = { utc = "2023-10-14 15:07:56.1", altitude_deg = 13.3 }
 c4 = { utc = "2023-10-14 17:50:03.8", altitude_deg = 40.5 }
+
+[[location]]
+name = "Eugene, OR, USA"
+latitude_deg = 44.05
+east_longitude_deg = -123.09
+elevation_m = 130.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.956
+obscuration = 0.888
+max_altitude_deg = 18.0
+max_azimuth_deg = 121.6
+maximum = { utc = "2023-10-14 16:18:49.8", altitude_deg = 18.0 }
+c1 = { utc = "2023-10-14 15:05:25.5", altitude_deg = 6.1 }
+c2 = { utc = "2023-10-14 16:16:53.9", altitude_deg = 17.7 }
+c3 = { utc = "2023-10-14 16:20:47.6", altitude_deg = 18.3 }
+c4 = { utc = "2023-10-14 17:39:42.8", altitude_deg = 29.0 }
+
+[[location]]
+name = "Merida, Yucatan, Mexico"
+latitude_deg = 20.97
+east_longitude_deg = -89.62
+elevation_m = 10.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.947
+obscuration = 0.903
+max_altitude_deg = 60.4
+max_azimuth_deg = 169.8
+maximum = { utc = "2023-10-14 17:24:06.1", altitude_deg = 60.4 }
+c1 = { utc = "2023-10-14 15:44:58.8", altitude_deg = 48.6 }
+c4 = { utc = "2023-10-14 19:08:31.3", altitude_deg = 54.2 }

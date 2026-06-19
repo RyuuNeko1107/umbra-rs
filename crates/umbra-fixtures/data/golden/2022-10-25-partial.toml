@@ -1,0 +1,93 @@
+# ゴールデンフィクスチャ: 2022 Oct 25 partial 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2022-10-25-partial"
+kind = "Partial"
+greatest_utc = "2022-10-25 11:00:09.1"
+greatest_tt = "2022-10-25 11:01:19.2"
+gamma = 1.0701
+magnitude = 0.8619
+delta_t_seconds = 70.1
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2022Oct25Pbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=70.1s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=72.0s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Yekaterinburg, Russia"
+latitude_deg = 56.84
+east_longitude_deg = 60.61
+elevation_m = 250.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.836
+obscuration = 0.789
+max_altitude_deg = 9.9
+max_azimuth_deg = 228.9
+maximum = { utc = "2022-10-25 10:59:09.1", altitude_deg = 9.9 }
+c1 = { utc = "2022-10-25 09:46:23.6", altitude_deg = 16.3 }
+c4 = { utc = "2022-10-25 12:07:59.2", altitude_deg = 2.0 }
+
+[[location]]
+name = "Helsinki, Finland"
+latitude_deg = 60.17
+east_longitude_deg = 24.94
+elevation_m = 10.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.631
+obscuration = 0.540
+max_altitude_deg = 17.6
+max_azimuth_deg = 184.4
+maximum = { utc = "2022-10-25 10:21:30.5", altitude_deg = 17.6 }
+c1 = { utc = "2022-10-25 09:11:51.9", altitude_deg = 16.9 }
+c4 = { utc = "2022-10-25 11:31:19.8", altitude_deg = 15.6 }
+
+[[location]]
+name = "London, United Kingdom"
+latitude_deg = 51.51
+east_longitude_deg = -0.13
+elevation_m = 11.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.259
+obscuration = 0.152
+max_altitude_deg = 22.3
+max_azimuth_deg = 152.0
+maximum = { utc = "2022-10-25 09:59:04.1", altitude_deg = 22.3 }
+c1 = { utc = "2022-10-25 09:08:39.8", altitude_deg = 18.0 }
+c4 = { utc = "2022-10-25 10:51:20.7", altitude_deg = 25.3 }
+
+[[location]]
+name = "Tehran, Iran"
+latitude_deg = 35.69
+east_longitude_deg = 51.39
+elevation_m = 1190.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.642
+obscuration = 0.553
+max_altitude_deg = 24.5
+max_azimuth_deg = 232.3
+maximum = { utc = "2022-10-25 11:28:12.9", altitude_deg = 24.5 }
+c1 = { utc = "2022-10-25 10:10:58.7", altitude_deg = 35.3 }
+c4 = { utc = "2022-10-25 12:38:55.0", altitude_deg = 12.2 }
+
+[[location]]
+name = "New Delhi, India"
+latitude_deg = 28.61
+east_longitude_deg = 77.21
+elevation_m = 220.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 0.545
+obscuration = 0.439
+max_altitude_deg = 1.6
+max_azimuth_deg = 255.2
+maximum = { utc = "2022-10-25 12:00:27.7", altitude_deg = 1.6 }
+c1 = { utc = "2022-10-25 10:59:08.4", altitude_deg = 14.4 }

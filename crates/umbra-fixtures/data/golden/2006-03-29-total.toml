@@ -1,0 +1,98 @@
+# ゴールデンフィクスチャ: 2006 Mar 29 total 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2006-03-29-total"
+kind = "Total"
+greatest_utc = "2006-03-29 10:11:17.6"
+greatest_tt = "2006-03-29 10:12:22.5"
+gamma = 0.3843
+magnitude = 1.0515
+delta_t_seconds = 64.9
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2006Mar29Tbeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=64.9s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=64.9s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Side, Turkey"
+latitude_deg = 36.77
+east_longitude_deg = 31.39
+elevation_m = 10.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.023
+obscuration = 1.000
+max_altitude_deg = 54.1
+max_azimuth_deg = 205.1
+maximum = { utc = "2006-03-29 10:56:52.6", altitude_deg = 54.1 }
+c1 = { utc = "2006-03-29 09:38:24.8", altitude_deg = 56.3 }
+c2 = { utc = "2006-03-29 10:55:00.0", altitude_deg = 54.3 }
+c3 = { utc = "2006-03-29 10:58:46.9", altitude_deg = 53.9 }
+c4 = { utc = "2006-03-29 12:13:35.2", altitude_deg = 44.6 }
+
+[[location]]
+name = "Sabha, Libya"
+latitude_deg = 27.04
+east_longitude_deg = 14.43
+elevation_m = 420.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.900
+obscuration = 0.885
+max_altitude_deg = 63.3
+max_azimuth_deg = 149.9
+maximum = { utc = "2006-03-29 10:14:57.3", altitude_deg = 63.3 }
+c1 = { utc = "2006-03-29 08:56:54.2", altitude_deg = 50.9 }
+c4 = { utc = "2006-03-29 11:35:58.8", altitude_deg = 65.4 }
+
+[[location]]
+name = "Accra, Ghana"
+latitude_deg = 5.56
+east_longitude_deg = -0.2
+elevation_m = 60.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 1.012
+obscuration = 1.000
+max_altitude_deg = 46.5
+max_azimuth_deg = 90.9
+maximum = { utc = "2006-03-29 09:11:26.9", altitude_deg = 46.5 }
+c1 = { utc = "2006-03-29 08:00:47.6", altitude_deg = 29.0 }
+c2 = { utc = "2006-03-29 09:09:58.1", altitude_deg = 46.2 }
+c3 = { utc = "2006-03-29 09:12:58.4", altitude_deg = 46.9 }
+c4 = { utc = "2006-03-29 10:29:35.1", altitude_deg = 66.0 }
+
+[[location]]
+name = "Cairo, Egypt"
+latitude_deg = 30.04
+east_longitude_deg = 31.24
+elevation_m = 70.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.866
+obscuration = 0.842
+max_altitude_deg = 61.1
+max_azimuth_deg = 205.3
+maximum = { utc = "2006-03-29 10:47:42.4", altitude_deg = 61.1 }
+c1 = { utc = "2006-03-29 09:27:44.5", altitude_deg = 62.3 }
+c4 = { utc = "2006-03-29 12:06:20.3", altitude_deg = 50.0 }
+
+[[location]]
+name = "Athens, Greece"
+latitude_deg = 37.98
+east_longitude_deg = 23.73
+elevation_m = 90.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.864
+obscuration = 0.839
+max_altitude_deg = 55.2
+max_azimuth_deg = 187.5
+maximum = { utc = "2006-03-29 10:47:01.1", altitude_deg = 55.2 }
+c1 = { utc = "2006-03-29 09:30:17.0", altitude_deg = 52.8 }
+c4 = { utc = "2006-03-29 12:03:30.2", altitude_deg = 49.4 }

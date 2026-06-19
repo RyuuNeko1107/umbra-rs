@@ -63,3 +63,33 @@ max_azimuth_deg = 139.3
 maximum = { utc = "2025-03-29 11:05:29.0", altitude_deg = 23.9 }
 c1 = { utc = "2025-03-29 10:05:44.1", altitude_deg = 19.0 }
 c4 = { utc = "2025-03-29 12:07:06.7", altitude_deg = 27.5 }
+
+[[location]]
+name = "Nuuk, Greenland"
+latitude_deg = 64.18
+east_longitude_deg = -51.69
+elevation_m = 30.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.892
+obscuration = 0.874
+max_altitude_deg = 12.1
+max_azimuth_deg = 107.2
+maximum = { utc = "2025-03-29 10:53:55.1", altitude_deg = 12.1 }
+c1 = { utc = "2025-03-29 09:57:14.2", altitude_deg = 6.0 }
+c4 = { utc = "2025-03-29 11:52:58.2", altitude_deg = 17.9 }
+
+[[location]]
+name = "Dublin, Ireland"
+latitude_deg = 53.35
+east_longitude_deg = -6.26
+elevation_m = 20.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.514
+obscuration = 0.413
+max_altitude_deg = 36.9
+max_azimuth_deg = 151.6
+maximum = { utc = "2025-03-29 11:00:12.6", altitude_deg = 36.9 }
+c1 = { utc = "2025-03-29 10:01:27.9", altitude_deg = 31.7 }
+c4 = { utc = "2025-03-29 12:00:49.9", altitude_deg = 39.9 }

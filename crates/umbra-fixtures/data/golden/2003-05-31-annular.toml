@@ -1,0 +1,98 @@
+# ゴールデンフィクスチャ: 2003 May 31 annular 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2003-05-31-annular"
+kind = "Annular"
+greatest_utc = "2003-05-31 04:08:18.0"
+greatest_tt = "2003-05-31 04:09:22.5"
+gamma = 0.996
+magnitude = 0.9384
+delta_t_seconds = 64.5
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2003May31Abeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=64.5s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=64.6s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Reykjavik, Iceland"
+latitude_deg = 64.13
+east_longitude_deg = -21.9
+elevation_m = 40.0
+class = "Sunrise"
+visibility = "SunriseEclipse"
+magnitude = 0.968
+obscuration = 0.881
+max_altitude_deg = 1.4
+max_azimuth_deg = 36.4
+maximum = { utc = "2003-05-31 04:04:15.6", altitude_deg = 1.4 }
+c2 = { utc = "2003-05-31 04:02:29.3", altitude_deg = 1.2 }
+c3 = { utc = "2003-05-31 04:06:03.8", altitude_deg = 1.5 }
+c4 = { utc = "2003-05-31 05:01:18.1", altitude_deg = 5.6 }
+
+[[location]]
+name = "Akureyri, Iceland"
+latitude_deg = 65.68
+east_longitude_deg = -18.09
+elevation_m = 10.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.967
+obscuration = 0.882
+max_altitude_deg = 3.5
+max_azimuth_deg = 39.8
+maximum = { utc = "2003-05-31 04:03:42.5", altitude_deg = 3.5 }
+c1 = { utc = "2003-05-31 03:07:16.4", altitude_deg = 0.3 }
+c2 = { utc = "2003-05-31 04:01:55.8", altitude_deg = 3.4 }
+c3 = { utc = "2003-05-31 04:05:31.0", altitude_deg = 3.7 }
+c4 = { utc = "2003-05-31 05:01:38.7", altitude_deg = 7.8 }
+
+[[location]]
+name = "Stornoway, Scotland"
+latitude_deg = 58.21
+east_longitude_deg = -6.39
+elevation_m = 10.0
+class = "Sunrise"
+visibility = "SunriseEclipse"
+magnitude = 0.946
+obscuration = 0.880
+max_altitude_deg = 0.6
+max_azimuth_deg = 46.3
+maximum = { utc = "2003-05-31 03:47:48.9", altitude_deg = 0.6 }
+c2 = { utc = "2003-05-31 03:46:39.7", altitude_deg = 0.4 }
+c3 = { utc = "2003-05-31 03:48:59.9", altitude_deg = 0.7 }
+c4 = { utc = "2003-05-31 04:45:00.2", altitude_deg = 6.5 }
+
+[[location]]
+name = "Glasgow, Scotland"
+latitude_deg = 55.86
+east_longitude_deg = -4.25
+elevation_m = 40.0
+class = "Sunrise"
+visibility = "BelowHorizon"
+magnitude = 0.934
+obscuration = 0.878
+max_altitude_deg = -0.6
+max_azimuth_deg = 47.2
+maximum = { utc = "2003-05-31 03:43:31.4", altitude_deg = -0.6 }
+c4 = { utc = "2003-05-31 04:40:22.0", altitude_deg = 5.7 }
+
+[[location]]
+name = "Torshavn, Faroe Islands"
+latitude_deg = 62.01
+east_longitude_deg = -6.77
+elevation_m = 10.0
+class = "Sunrise"
+visibility = "SunriseEclipse"
+magnitude = 0.954
+obscuration = 0.882
+max_altitude_deg = 3.5
+max_azimuth_deg = 47.2
+maximum = { utc = "2003-05-31 03:52:52.3", altitude_deg = 3.5 }
+c2 = { utc = "2003-05-31 03:51:19.8", altitude_deg = 3.3 }
+c3 = { utc = "2003-05-31 03:54:26.7", altitude_deg = 3.6 }
+c4 = { utc = "2003-05-31 04:51:05.9", altitude_deg = 9.0 }

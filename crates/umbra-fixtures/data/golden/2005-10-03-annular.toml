@@ -1,0 +1,98 @@
+# ゴールデンフィクスチャ: 2005 Oct 03 annular 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2005-10-03-annular"
+kind = "Annular"
+greatest_utc = "2005-10-03 10:31:42.1"
+greatest_tt = "2005-10-03 10:32:46.8"
+gamma = 0.3306
+magnitude = 0.9576
+delta_t_seconds = 64.8
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2005Oct03Abeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=64.8s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=64.8s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Madrid, Spain"
+latitude_deg = 40.42
+east_longitude_deg = -3.7
+elevation_m = 650.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.973
+obscuration = 0.903
+max_altitude_deg = 28.5
+max_azimuth_deg = 124.6
+maximum = { utc = "2005-10-03 08:57:57.2", altitude_deg = 28.5 }
+c1 = { utc = "2005-10-03 07:40:12.5", altitude_deg = 15.3 }
+c2 = { utc = "2005-10-03 08:55:53.6", altitude_deg = 28.2 }
+c3 = { utc = "2005-10-03 09:00:02.6", altitude_deg = 28.8 }
+c4 = { utc = "2005-10-03 10:23:35.5", altitude_deg = 39.9 }
+
+[[location]]
+name = "Valencia, Spain"
+latitude_deg = 39.47
+east_longitude_deg = -0.38
+elevation_m = 15.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.963
+obscuration = 0.905
+max_altitude_deg = 31.7
+max_azimuth_deg = 128.0
+maximum = { utc = "2005-10-03 09:01:39.5", altitude_deg = 31.7 }
+c1 = { utc = "2005-10-03 07:42:04.1", altitude_deg = 18.4 }
+c2 = { utc = "2005-10-03 08:59:51.0", altitude_deg = 31.4 }
+c3 = { utc = "2005-10-03 09:03:29.7", altitude_deg = 32.0 }
+c4 = { utc = "2005-10-03 10:29:08.8", altitude_deg = 42.6 }
+
+[[location]]
+name = "Khartoum, Sudan"
+latitude_deg = 15.5
+east_longitude_deg = 32.56
+elevation_m = 380.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.849
+obscuration = 0.795
+max_altitude_deg = 66.2
+max_azimuth_deg = 215.6
+maximum = { utc = "2005-10-03 10:33:06.5", altitude_deg = 66.2 }
+c1 = { utc = "2005-10-03 08:50:21.4", altitude_deg = 67.1 }
+c4 = { utc = "2005-10-03 12:13:03.1", altitude_deg = 47.1 }
+
+[[location]]
+name = "London, United Kingdom"
+latitude_deg = 51.51
+east_longitude_deg = -0.13
+elevation_m = 11.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.663
+obscuration = 0.569
+max_altitude_deg = 23.9
+max_azimuth_deg = 133.0
+maximum = { utc = "2005-10-03 09:01:07.3", altitude_deg = 23.9 }
+c1 = { utc = "2005-10-03 07:48:56.3", altitude_deg = 14.7 }
+c4 = { utc = "2005-10-03 10:18:26.9", altitude_deg = 31.1 }
+
+[[location]]
+name = "Rome, Italy"
+latitude_deg = 41.9
+east_longitude_deg = 12.5
+elevation_m = 20.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.735
+obscuration = 0.655
+max_altitude_deg = 38.4
+max_azimuth_deg = 146.3
+maximum = { utc = "2005-10-03 09:15:27.2", altitude_deg = 38.4 }
+c1 = { utc = "2005-10-03 07:53:36.3", altitude_deg = 27.7 }
+c4 = { utc = "2005-10-03 10:43:05.2", altitude_deg = 43.9 }

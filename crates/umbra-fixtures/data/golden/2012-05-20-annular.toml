@@ -1,0 +1,99 @@
+# ゴールデンフィクスチャ: 2012 May 20 annular 日食。
+# 全球パラメータ = NASA 5MCSE / 地点別局地状況 = USNO Solar Eclipse Calculator API。
+# 数値事実のみ転記（ISSUE-029 / data-sources S4）。
+
+event_key = "2012-05-20-annular"
+kind = "Annular"
+greatest_utc = "2012-05-20 23:52:47.0"
+greatest_tt = "2012-05-20 23:53:53.6"
+gamma = 0.4828
+magnitude = 0.9439
+delta_t_seconds = 66.7
+
+[source]
+name = "NASA Five Millennium Catalog of Solar Eclipses (global) + USNO Solar Eclipse Calculator (local circumstances)"
+url = "https://eclipse.gsfc.nasa.gov/SEbeselm/SEbeselm2001/SE2012May20Abeselm.html ; https://aa.usno.navy.mil/api/eclipses/solar"
+retrieved = "2026-06-19"
+delta_t_convention = "Global UT/gamma/magnitude from NASA 5MCSE (Espenak-Meeus, dT=66.7s). Local circumstances from USNO Solar Eclipse Calculator (independent dT=66.8s). UTC/TT separated per accuracy.md S0; no fabricated TT for UT-only local times."
+k_convention = "Espenak two-value k (k_umbral=0.272281, k_penumbral=0.272488; NASA 5MCSE / conventions S9)."
+license_note = "Numerical facts only. NASA 5MCSE (eclipse.gsfc.nasa.gov, Espenak & Meeus) and USNO Solar Eclipse Calculator (aa.usno.navy.mil) are US Government public-domain works. No copyrighted page layout/styling transcribed (data-sources S0/S4)."
+
+[[location]]
+name = "Tokyo, Japan"
+latitude_deg = 35.68
+east_longitude_deg = 139.65
+elevation_m = 40.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.968
+obscuration = 0.883
+max_altitude_deg = 34.9
+max_azimuth_deg = 89.0
+maximum = { utc = "2012-05-20 22:34:28.2", altitude_deg = 34.9 }
+c1 = { utc = "2012-05-20 21:19:05.1", altitude_deg = 19.7 }
+c2 = { utc = "2012-05-20 22:31:58.3", altitude_deg = 34.4 }
+c3 = { utc = "2012-05-20 22:37:00.0", altitude_deg = 35.4 }
+c4 = { utc = "2012-05-21 00:02:30.9", altitude_deg = 52.7 }
+
+[[location]]
+name = "Redding, CA, USA"
+latitude_deg = 40.59
+east_longitude_deg = -122.39
+elevation_m = 150.0
+class = "Centerline"
+visibility = "FullyVisible"
+magnitude = 0.960
+obscuration = 0.877
+max_altitude_deg = 19.9
+max_azimuth_deg = 280.0
+maximum = { utc = "2012-05-21 01:28:37.3", altitude_deg = 19.9 }
+c1 = { utc = "2012-05-21 00:11:32.1", altitude_deg = 34.5 }
+c2 = { utc = "2012-05-21 01:26:21.3", altitude_deg = 20.4 }
+c3 = { utc = "2012-05-21 01:30:55.2", altitude_deg = 19.5 }
+c4 = { utc = "2012-05-21 02:36:28.7", altitude_deg = 7.5 }
+
+[[location]]
+name = "Albuquerque, NM, USA"
+latitude_deg = 35.08
+east_longitude_deg = -106.65
+elevation_m = 1620.0
+class = "Sunset"
+visibility = "SunsetEclipse"
+magnitude = 0.965
+obscuration = 0.870
+max_altitude_deg = 5.1
+max_azimuth_deg = 291.2
+maximum = { utc = "2012-05-21 01:35:51.3", altitude_deg = 5.1 }
+c1 = { utc = "2012-05-21 00:28:25.5", altitude_deg = 18.3 }
+c2 = { utc = "2012-05-21 01:33:39.9", altitude_deg = 5.6 }
+c3 = { utc = "2012-05-21 01:38:04.6", altitude_deg = 4.7 }
+
+[[location]]
+name = "Beijing, China"
+latitude_deg = 39.9
+east_longitude_deg = 116.4
+elevation_m = 50.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.671
+obscuration = 0.575
+max_altitude_deg = 16.9
+max_azimuth_deg = 77.5
+maximum = { utc = "2012-05-20 22:33:08.3", altitude_deg = 16.9 }
+c1 = { utc = "2012-05-20 21:31:27.9", altitude_deg = 5.6 }
+c4 = { utc = "2012-05-20 23:41:50.9", altitude_deg = 30.0 }
+
+[[location]]
+name = "San Francisco, CA, USA"
+latitude_deg = 37.77
+east_longitude_deg = -122.42
+elevation_m = 15.0
+class = "PartialZone"
+visibility = "FullyVisible"
+magnitude = 0.897
+obscuration = 0.842
+max_altitude_deg = 18.7
+max_azimuth_deg = 281.5
+maximum = { utc = "2012-05-21 01:32:39.7", altitude_deg = 18.7 }
+c1 = { utc = "2012-05-21 00:15:54.5", altitude_deg = 33.7 }
+c4 = { utc = "2012-05-21 02:39:55.1", altitude_deg = 5.9 }
