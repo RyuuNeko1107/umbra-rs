@@ -184,3 +184,105 @@ fn lon_lat(v: Vector3) -> (f64, f64) {
     let lat = v.z.atan2((v.x * v.x + v.y * v.y).sqrt());
     (lon, lat)
 }
+
+/// VSOP87A 源ファイル（J2000 黄道直交 X,Y,Z）。
+const VSOP87A_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../data/coefficient-source/vsop87/VSOP87A.ear"
+);
+
+/// VSOP87 力学的黄道・分点 J2000 → FK5(≈ICRS) 赤道 J2000 の固定回転（Bretagnon, VSOP87.doc）。
+/// 対角は obliquity ε0（cos=0.91748…, sin=0.39777…）、off-diagonal の微小項が分点バイアス。
+const VSOP87_ECL_TO_FK5_EQ: [[f64; 3]; 3] = [
+    [1.000_000_000_000, 0.000_000_440_360, -0.000_000_190_919],
+    [-0.000_000_479_966, 0.917_482_137_087, -0.397_776_982_902],
+    [0.000_000_000_000, 0.397_776_982_902, 0.917_482_137_087],
+];
+
+fn apply_matrix(m: &[[f64; 3]; 3], v: Vector3) -> Vector3 {
+    Vector3::new(
+        m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z,
+        m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z,
+        m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z,
+    )
+}
+
+/// VSOP87 級数 1 項（振幅 A, 位相 B, 振動数 C）。
+type AbcTerm = (f64, f64, f64);
+/// 1 セクション（variable 1=X/2=Y/3=Z, power, 項列）。
+type Vsop87aSection = (u8, u8, Vec<AbcTerm>);
+
+/// VSOP87A 源テキストを セクション列に素朴パースする（スパイク用）。
+fn parse_vsop87a(text: &str) -> Vec<Vsop87aSection> {
+    let mut out: Vec<Vsop87aSection> = Vec::new();
+    for line in text.lines() {
+        let tok: Vec<&str> = line.split_whitespace().collect();
+        if line.contains("VARIABLE") && line.contains("TERMS") {
+            let var: u8 = tok[tok.iter().position(|t| *t == "VARIABLE").unwrap() + 1]
+                .parse()
+                .unwrap();
+            let power: u8 = tok
+                .iter()
+                .find_map(|t| t.strip_prefix("*T**").and_then(|p| p.parse().ok()))
+                .unwrap();
+            out.push((var, power, Vec::new()));
+        } else if tok.len() >= 3 && tok[0].parse::<i64>().is_ok() {
+            let n = tok.len();
+            let (a, b, c) = (
+                tok[n - 3].parse().unwrap(),
+                tok[n - 2].parse().unwrap(),
+                tok[n - 1].parse().unwrap(),
+            );
+            out.last_mut().unwrap().2.push((a, b, c));
+        }
+    }
+    out
+}
+
+/// VSOP87A で地球日心 J2000 黄道直交 (X,Y,Z)\[AU\] を評価。T = ユリウス千年 from J2000 TDB。
+fn vsop87a_earth_xyz(sections: &[Vsop87aSection], jd_tdb: f64) -> Vector3 {
+    let t = (jd_tdb - 2_451_545.0) / 365_250.0;
+    let mut xyz = [0.0_f64; 3];
+    for (var, power, terms) in sections {
+        let s: f64 = terms.iter().map(|(a, b, c)| a * (b + c * t).cos()).sum();
+        xyz[usize::from(var - 1)] += t.powi(i32::from(*power)) * s;
+    }
+    Vector3::new(xyz[0], xyz[1], xyz[2])
+}
+
+/// 検証スパイク: VSOP87A（J2000 黄道）＋ VSOP87→FK5/ICRS 固定回転 で太陽地心方向を作り、DE440s と突合。
+/// of-date 歳差不整合が消え、定数オフセットも回転の分点バイアス項で吸収されて ≤0.05″ になるかを実証する。
+#[ignore = "spike: VSOP87A J2000 経路の太陽残差を実証（--ignored --nocapture）"]
+#[test]
+fn spike_vsop87a_j2000_sun_vs_de440s() {
+    let Ok(jpl) = JplEphemeris::from_spk_path(Path::new(DE440S_PATH)) else {
+        eprintln!("skip spike: de440s.bsp 不在");
+        return;
+    };
+    let text = std::fs::read_to_string(VSOP87A_PATH).expect("VSOP87A.ear 読込");
+    let sections = parse_vsop87a(&text);
+
+    let mut max_sun = 0.0_f64;
+    let mut at = 0.0_f64;
+    for years in [-100.0, -75.0, -50.0, -25.0, 0.0, 25.0, 50.0, 75.0, 100.0] {
+        let jd = 2_451_545.0 + years * 365.25;
+        // 地球日心 → 地心太陽 = 符号反転。J2000 黄道直交 → FK5/ICRS 赤道。
+        let sun_ecl_j2000 = vsop87a_earth_xyz(&sections, jd).scale(-1.0);
+        let sun_icrs = apply_matrix(&VSOP87_ECL_TO_FK5_EQ, sun_ecl_j2000);
+        let de = jpl
+            .state(Body::Sun, tdb(jd), Origin::Geocenter, EphemerisFrame::Icrs)
+            .unwrap()
+            .position;
+        let sep = angular_sep_arcsec(sun_icrs, de);
+        eprintln!("  VSOP87A Sun {years:+6.0}yr (jd {jd:.1}): residual = {sep:.5}\"");
+        if sep > max_sun {
+            max_sun = sep;
+            at = jd;
+        }
+    }
+    eprintln!("[VSOP87A J2000 spike] max Sun residual = {max_sun:.5}\" (jd {at:.1})");
+    assert!(
+        max_sun <= 0.05,
+        "VSOP87A 経路でも太陽残差 {max_sun:.5}\" が 0.05\" 超過（jd {at:.1}）"
+    );
+}
