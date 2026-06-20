@@ -8,6 +8,24 @@
   - **フル版 / Reference 用途＝Milestone 10 据置**（data-sources §2.3, accuracy.md §1 Reference）。全 body 対応・reader 実装選定（自前 vs 既存純Rust reader）・Reference バックエンド完成・最終ゲート（accuracy.md §3.3 M10）は M10。
 - 注: 起票時の「実装は M10」方針を、**最小版 M2 必須 / フル版 M10 据置**へ更新（B4(a)）。
 
+## 実装状況（完了・2026-06-20）
+
+**フル版 Reference バックエンド完了**（feature `jpl`・既定 off・DE データ非同梱）。自前 DAF/SPK パーサ＋
+type2 Chebyshev 評価＋`JplEphemeris`（`Ephemeris` 実装）を **3 スライス strict TDD**（テスト設計/
+実装/レビューをサブエージェント分離・各スライス cargo mutants）で実装。`xtask fetch-de440s`/
+`verify-de440s` で取得・SHA-256 検証（cc34384）。
+
+- **S1** `parse_spk_segments`（DAF 構造解析）— commit `3f73bbc`
+- **S2** `eval_type2`（SPK type2 Chebyshev 位置/速度）— commit `d1f91f2`
+- **S3** `JplEphemeris`＋`Ephemeris`（body 差・原点・metadata）— commit `6d9b202`
+
+**正当性ゲート（accuracy.md §3.3 M10）**: 自前 reader を **SPICE（spiceypy 8.1.2/CSPICE N0067）の
+`spkgeo`** と突合し、合成 Chebyshev（厳密値）＋実 DE440s で **位置 < 10 m・速度 < 1 mm/s 一致**を確認
+（Sun/EMB/Earth wrt SSB、Sun/Moon wrt 地心）。オラクル誤差 ≪ §2.1 各層配分目標を満たす。
+
+`from_spk_path` で利用者が任意取得の `.bsp` を読む（実行時ネットワーク禁止・非同梱方針 §6 維持）。
+`EphemerisFrame::EclipticOfDate` は ISSUE-035 変換経由のため本バックエンド未提供（ICRS 直接利用が主）。
+
 ## 目的
 JPL DE（既定 DE440）を読む `JplEphemeris` を feature `jpl` で実装し、`Ephemeris` trait の Reference バックエンド＝**差分テストの第一義オラクル**（accuracy.md §3.1）を提供する。解析暦（VSOP87D/ELP/MPP02）と同一のベッセル/接触パイプラインを通して差分を取り、暦由来誤差と幾何由来誤差を分離する（§4 層分解）。
 
