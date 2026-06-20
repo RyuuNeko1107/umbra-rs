@@ -45,34 +45,55 @@ pub(crate) fn shadow_axis_surface_point(
     elements: &InstantaneousBesselianElements,
     ellipsoid: &Ellipsoid,
 ) -> Result<GeoPoint, EclipseError> {
-    let x = elements.x;
-    let y = elements.y;
-    let (sin_d, cos_d) = elements.declination.0.sin_cos();
+    surface_point_for_fundamental(
+        elements.x,
+        elements.y,
+        elements.declination,
+        elements.mu,
+        ellipsoid,
+    )
+    .map(|(point, _zeta)| point)
+}
+
+/// 基本面交点 (ξ, η) を通る影軸方向の直線が WGS84 地表（太陽側 ζ>0）を貫く点と、その ζ を返す。
+///
+/// 影軸交点 (x,y) を渡せば中心線（[`shadow_axis_surface_point`]）、本影縁の点 (ξ,η) を渡せば限界線
+/// （M9.3・`EclipseEngine::path`）の地表点になる。ζ は呼び出し側が ζ補正本影半径 `L2'=l2−ζ·tan f2` 等に
+/// 使う。軸が地表を外す（実根なし）と `Err(Solver(RootNotBracketed))`。
+pub(crate) fn surface_point_for_fundamental(
+    xi: f64,
+    eta: f64,
+    declination: Radians,
+    mu: Radians,
+    ellipsoid: &Ellipsoid,
+) -> Result<(GeoPoint, f64), EclipseError> {
+    let (sin_d, cos_d) = declination.0.sin_cos();
     let omf = 1.0 - ellipsoid.f; // b/a
     let inv_omf2 = 1.0 / (omf * omf); // 1/(1−f)²
 
     // 逆回転（前方 R_x(d)·R_z の転置）で観測者地心成分を ζ の関数に:
-    //   px = ζ·cos d − y·sin d,  py = x,  pz = ζ·sin d + y·cos d
+    //   px = ζ·cos d − η·sin d,  py = ξ,  pz = ζ·sin d + η·cos d
     //   ρcos² = px² + py²,  ρsin = pz
     // h=0 の子午線楕円拘束（ellipsoid.rs 不変量）: ρcos² + (ρsin/(1−f))² = 1。
-    // 残差 r(ζ) = ρcos² + (ρsin/(1−f))² − 1。零点が軸の地表交点。
+    // 残差 r(ζ) = ρcos² + (ρsin/(1−f))² − 1。零点が直線の地表交点。
     let residual = |zeta: f64| -> f64 {
-        let px = zeta * cos_d - y * sin_d;
-        let pz = zeta * sin_d + y * cos_d;
-        let rho_cos2 = px * px + x * x;
+        let px = zeta * cos_d - eta * sin_d;
+        let pz = zeta * sin_d + eta * cos_d;
+        let rho_cos2 = px * px + xi * xi;
         rho_cos2 + pz * pz * inv_omf2 - 1.0
     };
 
     // 太陽側（最大 ζ>0）根のブラケットを降順粗走査で取り、Brent で精解する。
     // r は ζ² の係数 cos²d + sin²d/(1−f)² > 0 ゆえ下に凸（開口上向き）で、2 根の間で負・外で正
-    // なので、上端から下る最初の符号反転が大きい方の根 ζ₊（＝太陽側）。軸が地表を外す（実根なし）と
+    // なので、上端から下る最初の符号反転が大きい方の根 ζ₊（＝太陽側）。直線が地表を外す（実根なし）と
     // 符号反転が無くブラケット不成立 → `RootNotBracketed`。
     let (a, b) = descending_sign_change_bracket(&residual, ZETA_SCAN_MAX, ZETA_SCAN_STEPS)
         .ok_or(EclipseError::Solver(SolverError::RootNotBracketed))?;
     let zeta = brent_root(residual, a, b, ZETA_ROOT_TOL, ZETA_ROOT_MAX_ITER)?;
 
-    // 零点 ζ・基本面交点 (x,y) から測地座標を復元（ξ=x, η=y）。
-    fundamental_to_geodetic(x, y, zeta, elements.declination, elements.mu, ellipsoid)
+    // 零点 ζ・基本面交点 (ξ,η) から測地座標を復元。
+    let point = fundamental_to_geodetic(xi, eta, zeta, declination, mu, ellipsoid)?;
+    Ok((point, zeta))
 }
 
 /// 基本面座標 (ξ, η, ζ) と影軸の赤緯 d・時角 μ から測地座標（φ, λ_east）を復元する。
@@ -387,5 +408,126 @@ mod tests {
         );
         // 正規化後も前方往復は成立しなければならない。
         assert_forward_roundtrip(&p, &e, TOL_ROUNDTRIP);
+    }
+
+    // ---- 要件8: 二次方程式オラクルによる ζ₊ と測地座標の絶対値ピン（strict, 独立算術） ----
+    //
+    // 戦略: 残差 r(ζ)=(px²+ξ²)+pz²/omf²−1（px=ζcosd−η sind, pz=ζsind+η cosd）は ζ の二次式
+    //   A·ζ²+B·ζ+C で、A=cos²d+sin²d/omf², B=2η·sind·cosd·(1/omf²−1),
+    //   C=(η²sin²d+ξ²)+η²cos²d/omf²−1。`surface_point_for_fundamental` の戻り ζ は太陽側（最大）根
+    //   ζ₊=(−B+√(B²−4AC))/(2A)。テスト内でこの**閉形式**から ζ₊ と (φ,λ) を独立に組み、
+    //   関数の戻りと突き合わせる。前方往復オラクル（要件1-7）とは別系統で、px/pz/ρcos²/pz²/omf² の
+    //   各積・和の演算子が 1 つでも壊れれば ζ₊ または φ,λ がずれて落ちる。
+
+    /// ξ=0.30, η=0.20, d=0.40, μ=1.10, WGS84。全項（cosd・sind の積、1/omf² 重み、ξ² 項、
+    /// η の交差項 B）が非自明に効く構成。閉形式の ζ₊ と、それを使った px/pz/ρcos/ρsin/H から
+    /// 復元した φ,λ（度）を独立に組み、関数戻りと ζ≈1e-9・lat/lon≈1e-7 deg で一致させる。
+    #[test]
+    fn quadratic_oracle_pins_root_and_geodetic() {
+        let xi = 0.30_f64;
+        let eta = 0.20_f64;
+        let d = 0.40_f64;
+        let mu = 1.10_f64;
+
+        let (sin_d, cos_d) = d.sin_cos();
+        let omf = 1.0 - WGS84.f;
+        let inv_omf2 = 1.0 / (omf * omf);
+
+        // 二次係数（独立算術。contract の A,B,C をそのまま組む）。
+        let a = cos_d * cos_d + sin_d * sin_d * inv_omf2;
+        let b = 2.0 * eta * sin_d * cos_d * (inv_omf2 - 1.0);
+        let c =
+            (eta * eta * sin_d * sin_d + xi * xi) + (eta * eta * cos_d * cos_d) * inv_omf2 - 1.0;
+
+        let disc = b * b - 4.0 * a * c;
+        assert!(
+            disc > 0.0,
+            "選定 (ξ,η,d) は実根を持つ必要がある（軸が地表に当たる）: disc={disc}"
+        );
+        // 太陽側＝大きい方の根 ζ₊。A>0 なので (−B+√disc)/(2A) が大きい根。
+        let zeta_plus = (-b + disc.sqrt()) / (2.0 * a);
+        assert!(zeta_plus > 0.0, "ζ₊={zeta_plus} は太陽側 (>0) のはず");
+
+        // ζ₊ で残差が 0（点が確かに地表上）であることを独立に確認。
+        let px_chk = zeta_plus * cos_d - eta * sin_d;
+        let pz_chk = zeta_plus * sin_d + eta * cos_d;
+        let residual = (px_chk * px_chk + xi * xi) + pz_chk * pz_chk * inv_omf2 - 1.0;
+        assert!(
+            residual.abs() < 1e-12,
+            "ζ₊ で楕円体残差≈0 のはず: residual={residual}"
+        );
+
+        // 独立に測地座標を組む（contract の復元式）:
+        //   px=ζcosd−η sind, py=ξ, pz=ζsind+η cosd
+        //   ρcos=√(px²+py²), ρsin=pz, H=atan2(py,px)
+        //   λ_east=normalize_[-π,π)(H−μ), φ=atan2(ρsin, ρcos·omf²)
+        let px = zeta_plus * cos_d - eta * sin_d;
+        let py = xi;
+        let pz = zeta_plus * sin_d + eta * cos_d;
+        let rho_cos = (px * px + py * py).sqrt();
+        let rho_sin = pz;
+        let h = py.atan2(px);
+        let expected_lam = Radians::new(h - mu).normalized_signed().0;
+        let expected_phi = rho_sin.atan2(rho_cos * omf * omf);
+
+        // 関数を呼び、ζ と (φ,λ) を絶対値で突き合わせる。
+        let (point, zeta) = surface_point_for_fundamental(xi, eta, Radians(d), Radians(mu), &WGS84)
+            .expect("選定構成は実根を持つので Ok");
+
+        // ζ: 二次閉形式の太陽側根に一致（A·ζ²+B·ζ+C 各係数の演算子を縛る）。
+        assert!(
+            close(zeta, zeta_plus, 1e-9),
+            "ζ={zeta} expected ζ₊={zeta_plus}（二次オラクル）"
+        );
+        // φ: atan2(ρsin, ρcos·omf²) の独立復元に一致（pz・ρcos・omf² の積を縛る）。
+        let got_phi = point.lat.radians().0;
+        assert!(
+            close(got_phi, expected_phi, 1e-7),
+            "φ={got_phi} expected {expected_phi}（測地緯度復元）"
+        );
+        // λ_east: normalize(H−μ) の独立復元に一致（H=atan2(py,px) と −μ・正規化を縛る）。
+        let got_lam = point.lon.radians().0;
+        assert!(
+            close(got_lam, expected_lam, 1e-7),
+            "λ={got_lam} expected {expected_lam}（東経復元）"
+        );
+        // 度でも縛る（degrees アクセサ経路）。
+        assert!(
+            close(point.lat.degrees().0, expected_phi.to_degrees(), 1e-7),
+            "φ_deg mismatch"
+        );
+        assert!(
+            close(point.lon.degrees().0, expected_lam.to_degrees(), 1e-7),
+            "λ_deg mismatch"
+        );
+    }
+
+    /// 軸が地表を明確に外す構成（ξ=2.0, η=2.0 ⇒ B²−4AC<0, 実根なし）⇒
+    /// `Err(Solver(RootNotBracketed))`。二次オラクルで判別式が負であることも独立確認。
+    #[test]
+    fn quadratic_oracle_missing_line_returns_root_not_bracketed() {
+        let xi = 2.0_f64;
+        let eta = 2.0_f64;
+        let d = 0.40_f64;
+        let mu = 1.10_f64;
+
+        let (sin_d, cos_d) = d.sin_cos();
+        let omf = 1.0 - WGS84.f;
+        let inv_omf2 = 1.0 / (omf * omf);
+        let a = cos_d * cos_d + sin_d * sin_d * inv_omf2;
+        let b = 2.0 * eta * sin_d * cos_d * (inv_omf2 - 1.0);
+        let c =
+            (eta * eta * sin_d * sin_d + xi * xi) + (eta * eta * cos_d * cos_d) * inv_omf2 - 1.0;
+        let disc = b * b - 4.0 * a * c;
+        assert!(
+            disc < 0.0,
+            "選定 (ξ,η) は実根を持たない（軸が地表を外す）はず: disc={disc}"
+        );
+
+        let r = surface_point_for_fundamental(xi, eta, Radians(d), Radians(mu), &WGS84);
+        assert!(
+            matches!(r, Err(EclipseError::Solver(SolverError::RootNotBracketed))),
+            "expected Err(Solver(RootNotBracketed)), got {r:?}"
+        );
     }
 }

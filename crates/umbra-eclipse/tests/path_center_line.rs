@@ -12,7 +12,9 @@
 //!    `options.sample_interval_seconds` 刻みでサンプルし、各時刻で `bessel.at(t)` の瞬時要素から
 //!    影軸地表貫通点を求めて結んだ点列。軸が地球を外す時刻はスキップ。中心食では非空（≥2 点）。
 //! 3. 非中心（central_begin か central_end のいずれかが None）: `center_line = None`。
-//! 4. `northern_limit`/`southern_limit`/`partial_limit` は常に None、`samples` は常に空（後続スライス）。
+//! 4. `partial_limit` は常に None、`samples` は常に空（後続スライス）。`northern_limit`/`southern_limit`
+//!    は M9.3 以降、中心食かつ `include_limits` 既定(true) のとき Some（本ファイルは存在のみ縛り、
+//!    限界線の幾何性質は `path_limits.rs` で縛る）。非中心では限界線も None。
 //! 5. `bessel.at`/影軸貫通の `RootNotBracketed` 以外の Err は伝播。
 //!
 //! ## テスト戦略（strict / mutation-resistant / 負荷配分）
@@ -237,10 +239,12 @@ fn synthetic_central_axis_hits_earth_across_window() {
 
 /// 中心食合成: path() は center_line=Some・点列非空（≥2）・各点が妥当な緯度経度を返す。
 /// greatest_point は global.greatest.position と厳密一致（passthrough）。
-/// northern/southern_limit・partial_limit は None、samples は空（後続スライス）。
+/// M9.3 以降は include_limits 既定(true) で northern/southern_limit=Some（本テストは存在のみ縛り、
+/// 限界線の幾何性質は path_limits.rs で縛る）。partial_limit は None、samples は空（後続スライス）。
 ///
 /// 殺す変異: center_line を常に None にする・空点列を返す・サンプル間隔/区間の取り違えで <2 点になる・
-///   greatest_point を別ソースから取る/捏造する・限界線や samples を捏造する。
+///   greatest_point を別ソースから取る/捏造する・partial_limit や samples を捏造する・
+///   中心食でも限界線を None にする。
 #[test]
 fn central_eclipse_produces_nonempty_center_line() {
     let engine = standard_engine(bundled_time_data());
@@ -278,14 +282,15 @@ fn central_eclipse_produces_nonempty_center_line() {
         "greatest_point は global.greatest.position の passthrough"
     );
 
-    // 本スライスでは限界線・部分食域は None、samples は空。
+    // M9.3 以降: 中心食＋include_limits 既定(true) では北/南限界線は Some（中心線同様に生成）。
+    // 部分食域は依然 None、samples は依然空（後続スライス）。
     assert!(
-        path.northern_limit.is_none(),
-        "northern_limit は本スライスでは None"
+        path.northern_limit.is_some(),
+        "中心食＋include_limits 既定(true) では northern_limit=Some（M9.3）"
     );
     assert!(
-        path.southern_limit.is_none(),
-        "southern_limit は本スライスでは None"
+        path.southern_limit.is_some(),
+        "中心食＋include_limits 既定(true) では southern_limit=Some（M9.3）"
     );
     assert!(
         path.partial_limit.is_none(),
@@ -475,9 +480,16 @@ fn real_2017_eclipse_center_line_crosses_north_america() {
         "中心線は最大食点の近傍を通る（最近点 {min_deg}° < 3°）"
     );
 
-    // 本スライスでは限界線・部分食域 None、samples 空（実日食でも後続スライス分は未生成）。
-    assert!(path.northern_limit.is_none(), "northern_limit None");
-    assert!(path.southern_limit.is_none(), "southern_limit None");
+    // 実皆既＋include_limits 既定(true) では北/南限界線も Some（M9.3）。partial_limit は None、
+    // samples は空（後続スライス）。限界線の幾何性質は path_limits.rs で縛る。
+    assert!(
+        path.northern_limit.is_some(),
+        "皆既＋既定 で northern_limit=Some（M9.3）"
+    );
+    assert!(
+        path.southern_limit.is_some(),
+        "皆既＋既定 で southern_limit=Some（M9.3）"
+    );
     assert!(path.partial_limit.is_none(), "partial_limit None");
     assert!(
         path.samples.is_empty(),
