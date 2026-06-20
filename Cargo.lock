@@ -401,6 +401,7 @@ name = "umbra-eclipse"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror",
  "umbra-core",
  "umbra-ephemeris",
@@ -435,6 +436,7 @@ name = "umbra-geo"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
  "umbra-core",
 ]
 

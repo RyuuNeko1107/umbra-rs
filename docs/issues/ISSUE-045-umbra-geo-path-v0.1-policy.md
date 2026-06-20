@@ -7,7 +7,8 @@
 
 ## M9 実装状況
 - **M9.1 中心線トラック**（2026-06-21・strict）: `EclipseEngine::path()` を実装（旧 `Err(NotImplemented)` スタブから昇格）。中心食（全球 U1/U4 接触が両方 Some）で `center_line` を生成＝`[U1,U4]` を `PathOptions::sample_interval_seconds` 刻みでサンプルし、各時刻のベッセル要素（`BesselianSource::at`）から影軸地表貫通点（`axis_intercept::shadow_axis_surface_point`・WGS84）を結んだ `GeoLine`。軸が地球を外す端（`RootNotBracketed`）はスキップ。非中心は `center_line=None`。`greatest_point` は `global.greatest.position` passthrough。**北/南限界線・部分食域・`samples`（帯幅/継続）・GeoJSON は未実装**（後続スライス）。5 テスト（FAST 4＋SLOW 1: 実 2017-08-21 皆既で中心線が太平洋〜大西洋を延び北米を横断・最大食点近傍を通ることを実証）。mutation 12 中 8 caught・2 unviable・2 timeout（ループ終端変異＝ハング検出）・生存0。
-- **残（後続スライス）**: (2) 帯幅・中心食継続（`samples`・算法 §8.11/8.12＝**要一次資料確認**・最大食点の `GreatestEclipse.path_width`/`central_duration` も現状 None）、(3) 北/南限界線・部分食域（錐縁追跡）、(4) `EclipsePath::to_geojson()`（umbra-geo・日付変更線分割）。
+- **M9.2 GeoJSON 出力**（2026-06-21・strict）: `GeoPoint::geojson_geometry()`（Point・[経度,緯度]順）/ `GeoLine::geojson_geometry()`（LineString・日付変更線 |Δlon|>180 で MultiLineString 分割）を umbra-geo に、`EclipsePath::to_geojson() -> Result<String, serde_json::Error>`（FeatureCollection: greatest_point の Point＋center_line〔Some 時〕の折れ線・pretty＋末尾改行）を umbra-eclipse に実装。両 crate に `serde_json` を production 依存追加。15 テスト（umbra-geo 9＋umbra-eclipse 6）/ mutation 12 中 12 caught・生存0。北/南限界線・部分食域・samples は未出力（後続）。交点の ±180 補間は後続改良。
+- **残（後続スライス）**: (2) 帯幅・中心食継続（`samples`・算法 §8.11/8.12＝**要一次資料確認**・最大食点の `GreatestEclipse.path_width`/`central_duration` も現状 None）、(3) 北/南限界線・部分食域（錐縁追跡）、(4) 限界線/部分食域の GeoJSON feature 化＋交点 ±180 補間。
 
 ## 目的
 `umbra-geo` の経路 API（中心線・限界線・部分食域・GeoJSON）の **公開型と境界のみを v0.1 で確定**し、**本実装を Milestone 9 へ明示的に後回し**する方針を文書化する（レビュー minor 確定事項 / milestone0-review §Minor「045 umbra-geo/path はv0.1スコープ外だが結果型が bessel多項式(022)必須 → v0.1は path未実装方針を明文化」）。

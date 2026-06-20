@@ -30,6 +30,16 @@ impl GeoPoint {
             EastLongitude::from_degrees(lon_deg),
         ))
     }
+
+    /// GeoJSON Point ジオメトリ（`{"type":"Point","coordinates":[経度, 緯度]}`・M9.2）。
+    ///
+    /// 座標順は GeoJSON RFC 7946 の **[経度, 緯度]**（lon, lat の順）。値は度（公開入出力は度・conventions §3）。
+    pub fn geojson_geometry(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "Point",
+            "coordinates": [self.lon.degrees().0, self.lat.degrees().0],
+        })
+    }
 }
 
 /// `GeoPoint` の JSON 表現（ISSUE-031 S31b・A7: 数値の単位はフィールド名で明示）。
@@ -57,6 +67,38 @@ impl GeoLine {
     /// 構成点から折れ線を構築する（空も可）。
     pub fn new(points: Vec<GeoPoint>) -> Self {
         Self { points }
+    }
+
+    /// GeoJSON 折れ線ジオメトリ（M9.2）。日付変更線（±180°）を跨ぐ場合は `MultiLineString` に分割し、
+    /// 跨ぎが無ければ `LineString`。座標は [経度, 緯度] 順（RFC 7946）。
+    ///
+    /// 跨ぎ判定: 連続 2 点の経度差 `|Δlon| > 180°` をその位置での跨ぎとみなしセグメントを切る（交点の
+    /// ±180 への補間はしない＝後続改良）。点 0/1 個の退行は空/単一座標の `LineString`（panic しない）。
+    pub fn geojson_geometry(&self) -> serde_json::Value {
+        // [経度, 緯度] 列を跨ぎ位置（|Δlon| > 180）でセグメントに分割する。
+        let mut segments: Vec<Vec<[f64; 2]>> = Vec::new();
+        let mut current: Vec<[f64; 2]> = Vec::new();
+        let mut prev_lon: Option<f64> = None;
+        for p in &self.points {
+            let lon = p.lon.degrees().0;
+            let lat = p.lat.degrees().0;
+            if let Some(prev) = prev_lon {
+                if (lon - prev).abs() > 180.0 {
+                    segments.push(std::mem::take(&mut current));
+                }
+            }
+            current.push([lon, lat]);
+            prev_lon = Some(lon);
+        }
+        segments.push(current);
+
+        if segments.len() > 1 {
+            serde_json::json!({ "type": "MultiLineString", "coordinates": segments })
+        } else {
+            // 跨ぎ無し（1 セグメント）。0/1 点なら空/単一座標の LineString。
+            let coordinates = segments.into_iter().next().unwrap_or_default();
+            serde_json::json!({ "type": "LineString", "coordinates": coordinates })
+        }
     }
 }
 

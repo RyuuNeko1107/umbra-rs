@@ -28,3 +28,5 @@ umbra-ephemeris = { path = "../umbra-ephemeris", default-features = false }
 umbra-geo = { path = "../umbra-geo" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"], optional = true }
+# 経路 GeoJSON 出力（`EclipsePath::to_geojson`・M9.2 FeatureCollection 組立）。
+serde_json = "1"

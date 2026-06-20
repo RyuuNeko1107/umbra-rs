@@ -38,6 +38,36 @@ pub struct EclipsePath {
     pub samples: Vec<PathSample>,
 }
 
+impl EclipsePath {
+    /// 経路を GeoJSON `FeatureCollection`（pretty・末尾改行）に直列化する（M9.2）。
+    ///
+    /// `greatest_point` を Point feature（`properties.role="greatest"`）、`center_line` が `Some` なら
+    /// 折れ線 feature（`properties.role="center_line"`・LineString/MultiLineString は
+    /// [`GeoLine::geojson_geometry`]）として含む。**北/南限界線・部分食域・`samples` は本スライスでは
+    /// 出力しない**（後続スライス）。座標順は [経度, 緯度]（RFC 7946）。
+    pub fn to_geojson(&self) -> Result<String, serde_json::Error> {
+        let mut features = vec![serde_json::json!({
+            "type": "Feature",
+            "geometry": self.greatest_point.geojson_geometry(),
+            "properties": { "role": "greatest" },
+        })];
+        if let Some(center) = &self.center_line {
+            features.push(serde_json::json!({
+                "type": "Feature",
+                "geometry": center.geojson_geometry(),
+                "properties": { "role": "center_line" },
+            }));
+        }
+        let collection = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": features,
+        });
+        let mut out = serde_json::to_string_pretty(&collection)?;
+        out.push('\n');
+        Ok(out)
+    }
+}
+
 /// 経路上の 1 サンプル点（時刻・中心点・継続・太陽高度・帯幅・種別）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PathSample {
