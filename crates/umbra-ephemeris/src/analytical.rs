@@ -95,18 +95,25 @@ impl Ephemeris for AnalyticalEphemeris {
         }
     }
 
-    /// バックエンドのメタデータ（`CalculationMetadata` へ転記）。最大残差は M10（DE 差分）で確定。
+    /// バックエンドのメタデータ（`CalculationMetadata` へ転記）。達成残差は M10 で DE440 確定。
     fn metadata(&self) -> EphemerisMetadata {
         EphemerisMetadata {
-            model: "VSOP87D + ELP2000-82B".to_string(),
-            version: "VSOP87D earth (full) + ELP2000-82B (full); see generated artifacts".to_string(),
-            source: "VSOP87 (IMCCE / Bretagnon & Francou) + ELP2000-82B (IMCCE / Chapront-Touzé & Chapront)"
+            // 太陽 ICRS = VSOP87A(J2000)＋VSOP87→ICRS 回転、黄道of date = VSOP87D。
+            // 月 = ELP2000-82B full ＋ W1 永年 DE440 再フィット。
+            model: "VSOP87D/A (Sun) + ELP2000-82B (Moon)".to_string(),
+            version: "Sun: VSOP87A J2000 + VSOP87→ICRS fixed rotation (geocentric ICRS), VSOP87D \
+                      ecliptic-of-date; DE440 ≤0.04″. Moon: ELP2000-82B full + W1 secular DE440 \
+                      refit; DE440 ≤0.27″ (W1 only; periodic/latitude floor ~0.13″ awaits ELP/MPP02). \
+                      M10 confirmed 1900–2100 (n=2435)"
+                .to_string(),
+            source: "VSOP87 versions D & A (IMCCE / Bretagnon & Francou 1988) + ELP2000-82B \
+                     (IMCCE / Chapront-Touzé & Chapront 1983/1988); W1 refit fitted to JPL DE440 (DE440s SPK)"
                 .to_string(),
             license: "IMCCE published scientific data (attribution); not a GPL derivative"
                 .to_string(),
             supported: self.supported_range(),
-            // 達成残差は未測定（M10 の DE 差分で確定）。
-            max_residual_arcsec: f64::NAN,
+            // DE440 比の最大幾何残差（実測, 秒角）= 月 ~0.27″（太陽は ~0.04″）。accuracy.md §2.4。
+            max_residual_arcsec: 0.27,
         }
     }
 }
