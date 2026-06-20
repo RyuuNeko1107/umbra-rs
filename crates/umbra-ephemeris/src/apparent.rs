@@ -19,7 +19,7 @@
 
 use crate::ephemeris::{Body, Ephemeris, EphemerisError, EphemerisFrame, Origin};
 use crate::frames::ecliptic_to_gcrs_matrix;
-use crate::moon::moon_geocentric_j2000;
+use crate::moon::moon_geocentric_j2000_de440;
 use umbra_core::constants::{ASTRONOMICAL_UNIT_KM, J2000_JD};
 use umbra_core::{JulianDate2, TdbInstant, TtInstant, UnitVector3, Vector3};
 
@@ -37,7 +37,7 @@ pub fn sun_geocentric_gcrs(time_tt: TtInstant) -> Vector3 {
 /// 行列は観測日でなく J2000 固定）。
 pub fn moon_geocentric_gcrs(time_tt: TtInstant) -> Vector3 {
     let tdb = TdbInstant::from_jd2(time_tt.jd2());
-    let ecl_j2000 = moon_geocentric_j2000(tdb);
+    let ecl_j2000 = moon_geocentric_j2000_de440(tdb);
     let m = ecliptic_to_gcrs_matrix(TtInstant::from_jd2(JulianDate2::new(J2000_JD, 0.0)));
     m.mul_vec(ecl_j2000)
 }
@@ -380,11 +380,12 @@ mod tests {
 
     // 月: moon_gcrs = ecliptic_to_gcrs_matrix(J2000) · (月 J2000 黄道)。行列は常に J2000。
 
-    /// (b) 合成同一性: 戻り値 = J2000 の行列 · (月 J2000 黄道)。行列を観測日で取る誤りを殺す。
+    /// (b) 合成同一性: 戻り値 = J2000 の行列 · (DE440 補正後 月 J2000 黄道)。
+    /// 行列を観測日で取る誤り・補正の取り残しを殺す。
     #[test]
     fn moon_gcrs_equals_j2000_matrix_times_ecliptic() {
         for &jd in &[J2000_JD, 2469807.0] {
-            let expected = matrix_at_j2000().mul_vec(moon_geocentric_j2000(tdb(jd)));
+            let expected = matrix_at_j2000().mul_vec(moon_geocentric_j2000_de440(tdb(jd)));
             let got = moon_geocentric_gcrs(tt(jd));
             assert!(
                 vec_close(got, expected, 1e-6),
@@ -393,11 +394,11 @@ mod tests {
         }
     }
 
-    /// (a) ノルム保存: |moon_gcrs| == |月 J2000 黄道|。
+    /// (a) ノルム保存: |moon_gcrs| == |月 J2000 黄道（補正は z 回転で等長）|。
     #[test]
     fn moon_gcrs_preserves_norm() {
         for &jd in &[J2000_JD, 2469807.0] {
-            let ecl_norm = moon_geocentric_j2000(tdb(jd)).norm();
+            let ecl_norm = moon_geocentric_j2000_de440(tdb(jd)).norm();
             let gcrs_norm = moon_geocentric_gcrs(tt(jd)).norm();
             assert!(
                 close(gcrs_norm, ecl_norm, ecl_norm * 1e-6),
@@ -678,7 +679,12 @@ mod tests {
     //   v   = [-9.93866806674108765e-5, -1.67390893828670883e-5, -7.25658131851178186e-6]（共通）
     //   s   = 9.83327681910549090e-1（= earth_heliocentric_lbr(tdb).2, AU）
     //   bm1 = 9.99999994894716249e-1
-    //   pnat(MOON) = [-7.24548996157033720e-1, -6.62772556607322594e-1, -1.89106558257581575e-1]
+    //   pnat(MOON) = [-7.24549387016863777333e-1, -6.62772176355169384543e-1,
+    //                 -1.89106393395144400937e-1]
+    //     ↑ DE440 補正後の月位置（moon_geocentric_j2000_de440: ELP2000-82B + W1 永年差を DE440 へ
+    //       寄せる黄経シフト）で再生成（2026-06-20, ISSUE-014）。旧 純 ELP の pnat(MOON) =
+    //       [-7.24548996157033720e-1, -6.62772556607322594e-1, -1.89106558257581575e-1] から
+    //       約 0.10″ 移動（v/s/bm1/SUN は不変）。
     //   pnat(SUN)  = [ 1.80138360453855839e-1, -9.02474896575278129e-1, -3.91266190903888311e-1]
     //     ↑ VSOP87A 幾何太陽（黄道 J2000 + VSOP87→ICRS 固定回転）で再生成（2026-06-20, M10）。
     //       旧 of-date 経路の pnat(SUN) = [1.80138755190583838e-1, -9.02474816600209229e-1,
@@ -692,11 +698,12 @@ mod tests {
         -0.391_273_428_855_267,
     ];
     /// erfa.ab の単位方向期待値（月, J2000）。pyerfa 出力を逐語転記（桁保持のため allow）。
+    /// DE440 補正後の月位置で再生成（2026-06-20, ISSUE-014）。
     #[allow(clippy::excessive_precision)]
     const MOON_AB_DIR_J2000: [f64; 3] = [
-        -7.245_871_723_897_979_73e-1,
-        -6.627_333_073_004_310_07e-1,
-        -1.890_978_397_623_566_68e-1,
+        -7.245_875_631_939_450_17e-1,
+        -6.627_329_270_596_681_31e-1,
+        -1.890_976_749_079_309_46e-1,
     ];
 
     /// 単位方向を要素ごとに期待値と比較。
@@ -894,6 +901,7 @@ mod tests {
     // pyerfa 2.0.1.5: C2I = erfa.c2i06a(2451545.0, 0.0)[行優先]; v = C2I @ ab; v/|v|。
     //   ab = SUN_AB_DIR_J2000 / MOON_AB_DIR_J2000（S3 検証済み aberrated 単位方向）。
     //   SUN は VSOP87A 幾何太陽の新 SUN_AB_DIR_J2000 で再生成（2026-06-20, M10）。
+    //   MOON は DE440 補正後の月位置の新 MOON_AB_DIR_J2000 で再生成（2026-06-20, ISSUE-014）。
     /// CIRS 見かけ単位方向の期待値（太陽, J2000）。VSOP87A 幾何太陽で再生成（2026-06-20, M10）。
     #[allow(clippy::excessive_precision)]
     const SUN_APPARENT_CIRS_DIR_J2000: [f64; 3] = [
@@ -902,11 +910,12 @@ mod tests {
         -0.391_253_005_932_773_73,
     ];
     /// CIRS 見かけ単位方向の期待値（月, J2000）。
+    /// DE440 補正後の月位置で再生成（2026-06-20, ISSUE-014）。
     #[allow(clippy::excessive_precision)]
     const MOON_APPARENT_CIRS_DIR_J2000: [f64; 3] = [
-        -7.245_922_740_951_216_13e-1,
-        -6.627_385_950_564_382_84e-1,
-        -1.890_597_549_566_767_62e-1,
+        -7.245_926_648_948_225_47e-1,
+        -6.627_382_148_110_547_71e-1,
+        -1.890_595_901_023_689_46e-1,
     ];
 
     // end-to-end の tol は cio.rs の c2i06a 行列許容 1e-9（実装章動 R06 直接評価 vs erfa nut06a

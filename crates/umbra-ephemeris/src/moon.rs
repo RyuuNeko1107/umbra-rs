@@ -124,6 +124,23 @@ fn poly(coeffs: &[f64], t: f64) -> f64 {
     coeffs.iter().rev().fold(0.0, |acc, &c| acc * t + c)
 }
 
+/// 月平均黄経 W1 の DE440 永年差補正（rad, t=世紀。ISSUE-014/034）。
+///
+/// ELP2000-82B は LLR-fit のため DE440 と永年差（月平均黄経の rate/潮汐加速度）を持ち、
+/// 地心方向で 1900–2100 に最大 ~1.69″ 乖離する（うち黄経永年が支配）。清浄な ELP/MPP02
+/// 原データが入手不可（一次配布元 cyrano-se.obspm.fr 停止・GPL 再実装は混入禁止）のため、
+/// **W1 の永年項を DE440 差分で最小二乗再フィット**したクリーンな簡易 DE-fit を適用する
+/// （MPP02 が fundamental arguments を DE に合わせるのと同方針）。係数は `−(Δλ フィット a,b,c)`
+/// （`tests/de_diff.rs` の `moon_w1_refit_diagnostic`・DE440s 1900–2100 n=2435・2026-06-20）。
+fn w1_de440_correction(t: f64) -> f64 {
+    // Δλ(t) ≈ a + b·t + c·t²（rad）を打ち消す補正 = −(a, b, c)。2 次で十分（診断の 3 次 LSQ で
+    // cubic ~−0.004″/century³＝無視可・残差床は周期/緯度律速を確認）。補正後 DE440 比 ~0.27″。
+    const A: f64 = -5.719_661e-7; // −(+0.118″) 定数
+    const B: f64 = -1.888_604e-6; // −(+0.390″/century) rate
+    const C: f64 = -4.626_826e-6; // −(+0.954″/century²) 潮汐加速度差
+    A + B * t + C * t * t
+}
+
 /// 時刻 `t`（世紀 TDB）における ELP2000-82B 基本引数を評価する。
 pub(crate) fn moon_arguments(t: f64) -> MoonArguments {
     let del = delaunay_coeffs();
@@ -342,6 +359,8 @@ pub fn moon_geocentric_j2000(time_tdb: TdbInstant) -> Vector3 {
     }
 
     // 組立: 経度 V = Σ/rad + W1(t)、緯度 U = Σ/rad、距離 R = Σ·a0/ath。
+    // 本関数は **純 ELP2000-82B**（原 Fortran オラクル検証用）。DE440 W1 補正は製品層
+    // [`moon_geocentric_j2000_de440`] が黄道 z 軸回転で適用する。
     let v = r[0] / RAD + args.w1;
     let u = r[1] / RAD;
     let rr = r[2] * A0 / ATH;
@@ -366,6 +385,21 @@ pub fn moon_geocentric_j2000(time_tdb: TdbInstant) -> Vector3 {
         pwqw * x1 + qw2 * x2 - qw * x3,
         -pw * x1 + qw * x2 + (pw2 + qw2 - 1.0) * x3,
     )
+}
+
+/// 月の地心直交（J2000 黄道, km）に **DE440 W1 永年補正**を適用した製品月位置。
+///
+/// 純 ELP2000-82B の [`moon_geocentric_j2000`]（原 Fortran オラクル検証用）に、月平均黄経の
+/// DE440 永年差を打ち消す黄経シフト `w1_de440_correction(t)` を**黄道 z 軸まわりの回転**として
+/// 適用する（Laskar 回転との非可換項 ~0.0002″ は床 ≪ で無視）。見かけ/状態パイプライン
+/// （[`crate::apparent::moon_geocentric_gcrs`]）はこの製品位置を使う。1900–2100 DE440 比
+/// 残差 ~1.69″→~0.27″（黄経永年除去。緯度・周期床は MPP02 入手まで残存・ISSUE-014/034）。
+pub fn moon_geocentric_j2000_de440(time_tdb: TdbInstant) -> Vector3 {
+    let t = time_tdb.jd2().julian_centuries_since_j2000();
+    let p = moon_geocentric_j2000(time_tdb);
+    // 黄経 +δ シフト = z 軸回転（δ = w1_de440_correction(t)）。
+    let (sin_d, cos_d) = w1_de440_correction(t).sin_cos();
+    Vector3::new(p.x * cos_d - p.y * sin_d, p.x * sin_d + p.y * cos_d, p.z)
 }
 
 #[cfg(test)]

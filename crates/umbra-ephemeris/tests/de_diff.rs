@@ -9,11 +9,14 @@
 #![cfg(feature = "jpl")]
 // サンプル添字 i（<= 数千）を f64 化する。値は厳密に表現可能なため精度損失なし。
 #![allow(clippy::cast_precision_loss)]
+// 月 W1 診断の Gauss 消去は行列を添字走査する（範囲ループが自然）。
+#![allow(clippy::needless_range_loop)]
 
 use std::path::Path;
 
 use umbra_core::{JulianDate2, TdbInstant, TtInstant, Vector3};
 use umbra_ephemeris::frames::ecliptic_to_gcrs_matrix;
+use umbra_ephemeris::moon::moon_geocentric_j2000;
 use umbra_ephemeris::sun::sun_geocentric_ecliptic_of_date;
 use umbra_ephemeris::{AnalyticalEphemeris, Body, Ephemeris, EphemerisFrame, JplEphemeris, Origin};
 
@@ -96,11 +99,12 @@ fn sun_vs_de440s_geocentric_direction() {
 
 /// 月の地心方向（ICRS 幾何）を DE440s と突合（ISSUE-014）。
 ///
-/// 目標 ≤ 0.1″ だが、現状 ELP2000-82B（LLR-fit, full）は DE440 と永年項が乖離して **~1.69″** 未達。
-/// 月のフレーム経路は J2000 固定で clean（残差は純粋にモデル差）。ISSUE-014 が要求する
-/// **ELP/MPP02 DE-fit**（ISSUE-034）導入まで `#[ignore]`。
-/// `cargo test --features jpl -- --ignored --nocapture` で現状残差を測定できる。
-#[ignore = "ELP2000-82B は DE-fit でなく ~1.69″ 未達。ISSUE-014 ELP/MPP02（ISSUE-034）で解消予定"]
+/// ELP2000-82B（LLR-fit）は DE440 と月平均黄経 W1 の永年差を持ち補正前 ~1.69″ 乖離する。清浄な
+/// ELP/MPP02 原データが入手不可（cyrano-se.obspm.fr 停止・GPL ytliu0 禁止）のため、**W1 永年項を
+/// DE440 へ最小二乗再フィット**した簡易 DE-fit（`moon::moon_geocentric_j2000_de440`）を適用し
+/// **~0.27″** へ低減（月バジェット 0.40″・accuracy.md §2.1 を達成）。残差床は黄経の周期 Poisson
+/// 増幅項＋緯度系統差 ~0.13″（3 次 LSQ で cubic 無視可を確認＝周期/緯度律速）で、≤0.1″ の理想は
+/// MPP02 入手まで残課題（ISSUE-014/034）。本ゲートは達成水準 ≤0.30″ で回帰を守る。
 #[test]
 fn moon_vs_de440s_geocentric_direction() {
     let Some(jpl) = load_jpl() else { return };
@@ -108,8 +112,8 @@ fn moon_vs_de440s_geocentric_direction() {
     let (max_moon, at) = max_direction_residual(&jpl, &ana, Body::Moon);
     eprintln!("[DE440s Moon diff 1900-2100, n={N_SAMPLES}] max = {max_moon:.5}\" (jd {at:.1})");
     assert!(
-        max_moon <= 0.1,
-        "月 地心方向残差 {max_moon:.5}\" が目標 0.1\" を超過（jd {at:.1}）"
+        max_moon <= 0.30,
+        "月 地心方向残差 {max_moon:.5}\" が回帰閾値 0.30\" を超過（jd {at:.1}・DE440 再フィット床は ~0.27″）"
     );
 }
 
@@ -166,6 +170,120 @@ fn lon_lat(v: Vector3) -> (f64, f64) {
     let lon = v.y.atan2(v.x);
     let lat = v.z.atan2((v.x * v.x + v.y * v.y).sqrt());
     (lon, lat)
+}
+
+/// 月残差を J2000 黄道で Δλ·cosβ / Δβ に分解し、Δλ(t) を 2 次最小二乗フィット（診断・常時 ignore）。
+///
+/// ELP2000-82B（LLR-fit）の月平均黄経 W1 と DE440 の永年差を、t（世紀）の 2 次多項式
+/// `Δλ(t) ≈ a + b·t + c·t²` として抽出する。フィット係数 = W1 補正候補（補正は w1 に −(a,b,c)）。
+/// 多項式除去後の RMS = 周期項の床（再フィットで到達できる下限）。Δβ は緯度（W3/node）系統差。
+#[ignore = "diagnostic: 月 W1 再フィット係数の抽出（--ignored --nocapture）"]
+#[test]
+fn moon_w1_refit_diagnostic() {
+    let Ok(jpl) = JplEphemeris::from_spk_path(Path::new(DE440S_PATH)) else {
+        eprintln!("skip moon_w1_refit_diagnostic: de440s.bsp 不在");
+        return;
+    };
+    // DE ICRS → J2000 黄道（月フレームと同じ J2000 行列の転置）。
+    let m_inv = ecliptic_to_gcrs_matrix(TtInstant::from_jd2(JulianDate2::new(2_451_545.0, 0.0)))
+        .transpose();
+
+    // Δλ vs t(世紀) の 3 次 LSQ 正規方程式（Σ t^k, k=0..6 と Σ Δλ·t^k, k=0..3）。
+    let mut s = [0.0_f64; 7]; // Σ t^0..t^6
+    let mut b = [0.0_f64; 4]; // Σ Δλ·t^0..t^3
+    let mut max_dlat = 0.0_f64;
+    let n = 2435_usize;
+    let step = (END_JD - START_JD) / (n as f64);
+    let mut samples: Vec<(f64, f64)> = Vec::with_capacity(n + 1); // (t, Δλ)
+    for i in 0..=n {
+        let jd = START_JD + step * (i as f64);
+        let t_cent = (jd - 2_451_545.0) / 36_525.0; // ELP 時間 = ユリウス世紀
+        let moon_ana = moon_geocentric_j2000(tdb(jd));
+        let moon_de = m_inv.mul_vec(
+            jpl.state(Body::Moon, tdb(jd), Origin::Geocenter, EphemerisFrame::Icrs)
+                .unwrap()
+                .position,
+        );
+        let (la, ba) = lon_lat(moon_ana);
+        let (ld, bd) = lon_lat(moon_de);
+        let mut dlon = la - ld;
+        while dlon > std::f64::consts::PI {
+            dlon -= std::f64::consts::TAU;
+        }
+        while dlon < -std::f64::consts::PI {
+            dlon += std::f64::consts::TAU;
+        }
+        let dlon_track = dlon * ba.cos(); // 黄経残差（cosβ 補正・rad）
+        let mut tp = 1.0;
+        for sk in s.iter_mut() {
+            *sk += tp;
+            tp *= t_cent;
+        }
+        let mut tq = 1.0;
+        for bk in b.iter_mut() {
+            *bk += dlon_track * tq;
+            tq *= t_cent;
+        }
+        samples.push((t_cent, dlon_track));
+        let dlat = (ba - bd).abs();
+        if dlat > max_dlat {
+            max_dlat = dlat;
+        }
+    }
+    // 4×4 正規方程式 M[i][j]=s[i+j], M·x=b を部分ピボット Gauss 消去で解く。
+    let mut m = [[0.0_f64; 5]; 4]; // 拡大係数行列 [M | b]
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().take(4).enumerate() {
+            *cell = s[i + j];
+        }
+        row[4] = b[i];
+    }
+    for c in 0..4 {
+        let piv = (c..4)
+            .max_by(|&a, &b| m[a][c].abs().total_cmp(&m[b][c].abs()))
+            .unwrap();
+        m.swap(c, piv);
+        for r in (c + 1)..4 {
+            let f = m[r][c] / m[c][c];
+            for k in c..5 {
+                m[r][k] -= f * m[c][k];
+            }
+        }
+    }
+    let mut x = [0.0_f64; 4];
+    for r in (0..4).rev() {
+        let mut acc = m[r][4];
+        for k in (r + 1)..4 {
+            acc -= m[r][k] * x[k];
+        }
+        x[r] = acc / m[r][r];
+    }
+    let [a, bb, c, dcoef] = x;
+    // 多項式除去後の RMS（周期項の床, rad → 秒角）。
+    let mut sse = 0.0_f64;
+    for (t, dl) in &samples {
+        let fit = a + bb * t + c * t * t + dcoef * t * t * t;
+        sse += (dl - fit) * (dl - fit);
+    }
+    let rms_floor = (sse / (samples.len() as f64)).sqrt() * ARCSEC_PER_RAD;
+
+    eprintln!("[Moon W1 refit fit, t=世紀] Δλ(t) ≈ a + b·t + c·t² + d·t³ [rad]:");
+    eprintln!("  a = {a:.6e}  b = {bb:.6e}  c = {c:.6e}  d = {dcoef:.6e}");
+    eprintln!(
+        "  ({:+.5}\" + {:+.5}\"/c·t + {:+.5}\"/c²·t² + {:+.5}\"/c³·t³)",
+        a * ARCSEC_PER_RAD,
+        bb * ARCSEC_PER_RAD,
+        c * ARCSEC_PER_RAD,
+        dcoef * ARCSEC_PER_RAD
+    );
+    eprintln!(
+        "  周期項の床 RMS(Δλ−fit) = {rms_floor:.5}\"  max|Δβ| = {:.5}\"",
+        max_dlat * ARCSEC_PER_RAD
+    );
+    eprintln!(
+        "  → W1 補正 = −(a,b,c,d): A={:.6e} B={:.6e} C={:.6e} D={:.6e} [rad]",
+        -a, -bb, -c, -dcoef
+    );
 }
 
 /// VSOP87A 源ファイル（J2000 黄道直交 X,Y,Z）。
