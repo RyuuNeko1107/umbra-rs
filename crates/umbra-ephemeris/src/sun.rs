@@ -10,11 +10,13 @@
 
 use std::sync::OnceLock;
 use umbra_core::constants::{ASTRONOMICAL_UNIT_KM, JULIAN_MILLENNIUM_DAYS};
-use umbra_core::{Radians, TdbInstant, Vector3};
+use umbra_core::{Matrix3, Radians, TdbInstant, Vector3};
 
-/// packed VSOP87D 地球係数（ISSUE-033 生成物、flat little-endian f64）。
+/// packed VSOP87D 地球係数（ISSUE-033 生成物、flat little-endian f64・黄道 of date 球面 L,B,R）。
 /// レイアウト: `[n_sections, <各セクション = [variable, power, n_terms, <各項 amp,phase,freq>]>...]`。
-const PACKED: &[u8] = include_bytes!("../../../generated/vsop87/vsop87d_earth.bin");
+const PACKED_D: &[u8] = include_bytes!("../../../generated/vsop87/vsop87d_earth.bin");
+/// packed VSOP87A 地球係数（黄道 J2000 直交 X,Y,Z。M10 太陽フレーム修正・ISSUE-013/035）。同レイアウト。
+const PACKED_A: &[u8] = include_bytes!("../../../generated/vsop87/vsop87a_earth.bin");
 
 /// VSOP87 級数 1 項: `amplitude·cos(phase + frequency·T)`。
 struct Term {
@@ -38,39 +40,48 @@ fn nint(value: f64) -> usize {
     value.round() as usize
 }
 
-/// packed を 1 度だけ復号する。
+/// packed バイト列（flat LE f64）をセクション列へ復号する（D/A 共通レイアウト）。
+fn decode(packed: &[u8]) -> Vec<Section> {
+    let values: Vec<f64> = packed
+        .chunks_exact(8)
+        .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("packed length multiple of 8")))
+        .collect();
+    let n_sections = nint(values[0]);
+    let mut idx = 1;
+    let mut sections = Vec::with_capacity(n_sections);
+    for _ in 0..n_sections {
+        let variable = u8::try_from(nint(values[idx])).expect("variable fits u8");
+        let power = u8::try_from(nint(values[idx + 1])).expect("power fits u8");
+        let n_terms = nint(values[idx + 2]);
+        idx += 3;
+        let mut terms = Vec::with_capacity(n_terms);
+        for _ in 0..n_terms {
+            terms.push(Term {
+                amplitude: values[idx],
+                phase: values[idx + 1],
+                frequency: values[idx + 2],
+            });
+            idx += 3;
+        }
+        sections.push(Section {
+            variable,
+            power,
+            terms,
+        });
+    }
+    sections
+}
+
+/// VSOP87D（黄道 of date 球面 L,B,R）を 1 度だけ復号する。
 fn model() -> &'static [Section] {
     static MODEL: OnceLock<Vec<Section>> = OnceLock::new();
-    MODEL.get_or_init(|| {
-        let values: Vec<f64> = PACKED
-            .chunks_exact(8)
-            .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("packed length multiple of 8")))
-            .collect();
-        let n_sections = nint(values[0]);
-        let mut idx = 1;
-        let mut sections = Vec::with_capacity(n_sections);
-        for _ in 0..n_sections {
-            let variable = u8::try_from(nint(values[idx])).expect("variable fits u8");
-            let power = u8::try_from(nint(values[idx + 1])).expect("power fits u8");
-            let n_terms = nint(values[idx + 2]);
-            idx += 3;
-            let mut terms = Vec::with_capacity(n_terms);
-            for _ in 0..n_terms {
-                terms.push(Term {
-                    amplitude: values[idx],
-                    phase: values[idx + 1],
-                    frequency: values[idx + 2],
-                });
-                idx += 3;
-            }
-            sections.push(Section {
-                variable,
-                power,
-                terms,
-            });
-        }
-        sections
-    })
+    MODEL.get_or_init(|| decode(PACKED_D))
+}
+
+/// VSOP87A（黄道 J2000 直交 X,Y,Z）を 1 度だけ復号する。
+fn model_a() -> &'static [Section] {
+    static MODEL_A: OnceLock<Vec<Section>> = OnceLock::new();
+    MODEL_A.get_or_init(|| decode(PACKED_A))
 }
 
 /// 地球の日心黄道座標 `(L, B, R)`（VSOP87D, 平均分点 of date）。
@@ -102,6 +113,43 @@ pub fn sun_geocentric_ecliptic_of_date(time_tdb: TdbInstant) -> Vector3 {
     let (sin_b, cos_b) = b.0.sin_cos();
     // 地球日心直交（黄道 of date）→ 符号反転で太陽地心。
     Vector3::new(-(r * cos_b * cos_l), -(r * cos_b * sin_l), -(r * sin_b))
+}
+
+/// 地球の日心黄道 **J2000** 直交座標 `(X, Y, Z)` \[AU\]（VSOP87A）。TDB 引数。
+/// VSOP87A は変数 1=X, 2=Y, 3=Z・分点/黄道 J2000・直交（球面変換不要）。
+pub fn earth_heliocentric_xyz_j2000(time_tdb: TdbInstant) -> Vector3 {
+    let t = time_tdb.jd2().julian_millennia_since_j2000();
+    let mut xyz = [0.0_f64; 3];
+    for section in model_a() {
+        let series_sum: f64 = section
+            .terms
+            .iter()
+            .map(|term| term.amplitude * (term.phase + term.frequency * t).cos())
+            .sum();
+        xyz[usize::from(section.variable - 1)] += t.powi(i32::from(section.power)) * series_sum;
+    }
+    Vector3::new(xyz[0], xyz[1], xyz[2])
+}
+
+/// VSOP87 力学的黄道・分点 J2000 → FK5(≈ICRS) 赤道 J2000 の固定回転（Bretagnon, VSOP87.doc）。
+/// 対角は J2000 平均黄道傾斜 ε0（cos=0.917482…, sin=0.397777…）、off-diagonal の微小項が
+/// 分点バイアス（VSOP87 力学的分点 → FK5/ICRS）。DE440s 突合で太陽 ≤0.03″（ISSUE-013/035）。
+const VSOP87_ECL_J2000_TO_ICRS: Matrix3 = Matrix3::new([
+    [1.000_000_000_000, 0.000_000_440_360, -0.000_000_190_919],
+    [-0.000_000_479_966, 0.917_482_137_087, -0.397_776_982_902],
+    [0.000_000_000_000, 0.397_776_982_902, 0.917_482_137_087],
+]);
+
+/// 太陽の地心位置（ICRS 直交, km）= VSOP87→ICRS 回転 · (−地球日心 J2000 直交 · AU)。
+/// 補正前の幾何的地心位置（光行時間・光行差・章動は ISSUE-015）。TDB 引数。
+///
+/// 黄道 of date 経路（VSOP87D + of-date 行列）は VSOP87 力学的分点と IAU2006 分点の歳差レート
+/// 不整合で 1900–2100 に 0.37″ の系統誤差を生む（M10 DE 差分で実測）。本経路は J2000 固定フレーム
+/// で評価し VSOP87→ICRS 固定回転のみを通すため、DE440s 突合で ≤0.03″（ISSUE-013/035）。
+pub fn sun_geocentric_icrs(time_tdb: TdbInstant) -> Vector3 {
+    let earth_ecl_km = earth_heliocentric_xyz_j2000(time_tdb).scale(ASTRONOMICAL_UNIT_KM);
+    // 地心太陽 = −(地球日心)。J2000 黄道直交 → ICRS 赤道。
+    VSOP87_ECL_J2000_TO_ICRS.mul_vec(earth_ecl_km.scale(-1.0))
 }
 
 /// 地球の日心速度（黄道 of date 直交, km/s）。VSOP87D 級数の**項別解析微分**
@@ -235,6 +283,39 @@ mod tests {
                 (r - exp_r).abs(),
                 TOL
             );
+        }
+    }
+
+    // ==================================================================
+    // 1A. earth_heliocentric_xyz_j2000 vs vsop87.chk（版A・黄道 J2000 直交）
+    //    VSOP87A EARTH の X,Y,Z[au] を chk 値と TOL 以内照合（評価器の独立オラクル）。
+    //    出典: data/coefficient-source/vsop87/vsop87.chk の `VSOP87A EARTH JD... x y z` 行
+    //    （chk:401/405/409/413 を逐語転記。J2000/1900/1800/1700 の 4 エポックで T^1..T^5 と
+    //    千年スケールを励起＝版D テストと同方針）。
+    // ==================================================================
+    #[test]
+    fn earth_xyz_j2000_matches_vsop87a_chk() {
+        // (JD_TDB, x_au, y_au, z_au)。
+        let cases = [
+            (2451545.0, -0.1771354586, 0.9672416237, -0.0000039000),
+            (2415020.0, -0.1883079649, 0.9650688844, 0.0002150325),
+            (2378495.0, -0.1993918002, 0.9627974368, 0.0004307602),
+            (2341970.0, -0.2104654652, 0.9603579954, 0.0006472929),
+        ];
+        for (jd, x, y, z) in cases {
+            let v = earth_heliocentric_xyz_j2000(tdb(jd));
+            assert!(close(v.x, x, TOL), "X at JD{jd}: {} vs chk {x}", v.x);
+            assert!(close(v.y, y, TOL), "Y at JD{jd}: {} vs chk {y}", v.y);
+            assert!(close(v.z, z, TOL), "Z at JD{jd}: {} vs chk {z}", v.z);
+        }
+    }
+
+    /// 太陽地心 ICRS の大きさは地球-太陽距離（~1 au を km 化）。回転は等長なので |s| は不変。
+    #[test]
+    fn sun_geocentric_icrs_has_one_au_magnitude() {
+        for jd in [2451545.0, 2415020.0, 2469807.0] {
+            let au = sun_geocentric_icrs(tdb(jd)).norm() / ASTRONOMICAL_UNIT_KM;
+            assert!((0.98..1.02).contains(&au), "|sun_icrs| at JD{jd} = {au} au");
         }
     }
 

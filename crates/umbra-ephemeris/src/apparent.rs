@@ -20,16 +20,16 @@
 use crate::ephemeris::{Body, Ephemeris, EphemerisError, EphemerisFrame, Origin};
 use crate::frames::ecliptic_to_gcrs_matrix;
 use crate::moon::moon_geocentric_j2000;
-use crate::sun::sun_geocentric_ecliptic_of_date;
 use umbra_core::constants::{ASTRONOMICAL_UNIT_KM, J2000_JD};
 use umbra_core::{JulianDate2, TdbInstant, TtInstant, UnitVector3, Vector3};
 
-/// 太陽の幾何地心位置（GCRS, km）。補正前（光行時間・光行差は後続）。TT 入力。
-/// VSOP87D（黄道 of date, AU）を **観測日**の黄道→GCRS 行列で回転し km 化する。
+/// 太陽の幾何地心位置（GCRS≈ICRS, km）。補正前（光行時間・光行差は後続）。TT 入力。
+/// VSOP87A（黄道 J2000 直交）を VSOP87→ICRS 固定回転で GCRS へ載せる（月と同じ J2000 固定フレーム
+/// 経路）。黄道 of date 経路（VSOP87D + of-date 行列）の歳差レート不整合 0.37″ を避け、DE440s 突合で
+/// 太陽 ≤0.03″（M10・ISSUE-013/035。[`crate::sun::sun_geocentric_icrs`]）。
 pub fn sun_geocentric_gcrs(time_tt: TtInstant) -> Vector3 {
     let tdb = TdbInstant::from_jd2(time_tt.jd2());
-    let ecl_km = sun_geocentric_ecliptic_of_date(tdb).scale(ASTRONOMICAL_UNIT_KM);
-    ecliptic_to_gcrs_matrix(time_tt).mul_vec(ecl_km)
+    crate::sun::sun_geocentric_icrs(tdb)
 }
 
 /// 月の幾何地心位置（GCRS, km）。補正前。TT 入力。
@@ -73,6 +73,9 @@ fn light_time_correct(
 ) -> LightTimeCorrected {
     let c = umbra_core::constants::SPEED_OF_LIGHT_KM_S;
     let tdb = TdbInstant::from_jd2(time_tt.jd2());
+    // 速度は VSOP87D 旧 of-date 経路のまま（位置は VSOP87A J2000 へ移行済み）。速度の of-date
+    // 歳差不整合 ~0.37″ は v/c≈1e-4 倍で最終方向 ~0.04mas（≪予算 0.20″）のため許容。完全な
+    // 整合は VSOP87A J2000 速度（数値微分）＋ VSOP87→ICRS 回転（ISSUE-013/035 フォローアップ）。
     let v_e_gcrs = ecliptic_to_gcrs_matrix(time_tt).mul_vec(
         crate::sun::earth_heliocentric_velocity_ecliptic_of_date(tdb),
     );
@@ -304,6 +307,7 @@ pub fn apparent_cirs<E: Ephemeris>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sun::{earth_heliocentric_xyz_j2000, sun_geocentric_icrs};
 
     /// 観測時刻 TtInstant を 1要素 JD（小数日 0）から構築。
     fn tt(jd: f64) -> TtInstant {
@@ -330,32 +334,33 @@ mod tests {
         ecliptic_to_gcrs_matrix(tt(J2000_JD))
     }
 
-    // 太陽: sun_gcrs = ecliptic_to_gcrs_matrix(time_tt) · (黄道ベクトル×AU)。回転はノルム不変。
+    // 太陽: sun_gcrs = sun::sun_geocentric_icrs（VSOP87A J2000 + VSOP87→ICRS 固定回転）。
+    // 旧 of-date 経路（ecliptic_to_gcrs_matrix(tt)·VSOP87D）は M10 で 0.37″ の歳差不整合のため不採用。
 
-    /// (b) 合成同一性: 戻り値 = 観測日の行列 · (黄道×AU)。行列日・スケール・順序の取り違えを殺す。
+    /// (b) 委譲同一性: 戻り値 = `sun::sun_geocentric_icrs(tdb)`（apparent 層は薄いラッパ）。
+    /// 経路取り違え（旧 of-date 行列に戻す）・TT/TDB 取り違えを殺す。
     #[test]
-    fn sun_gcrs_equals_observation_date_matrix_times_ecliptic() {
+    fn sun_gcrs_delegates_to_vsop87a_icrs() {
         for &jd in &[J2000_JD, 2469807.0] {
-            let ecl_km = sun_geocentric_ecliptic_of_date(tdb(jd)).scale(ASTRONOMICAL_UNIT_KM);
-            let expected = ecliptic_to_gcrs_matrix(tt(jd)).mul_vec(ecl_km);
             let got = sun_geocentric_gcrs(tt(jd));
+            let expected = sun_geocentric_icrs(tdb(jd));
             assert!(
-                vec_close(got, expected, 1e-3),
+                vec_close(got, expected, 1e-9),
                 "sun_gcrs(jd={jd}) = {got:?}, expected {expected:?}"
             );
         }
     }
 
-    /// (a) ノルム保存: |sun_gcrs| == |黄道×AU|。
+    /// (a) ノルム保存: |sun_gcrs| == |地球日心 J2000 直交×AU|（VSOP87→ICRS 回転は等長）。
     #[test]
     fn sun_gcrs_preserves_norm() {
         for &jd in &[J2000_JD, 2469807.0] {
-            let ecl_norm = sun_geocentric_ecliptic_of_date(tdb(jd))
+            let ecl_norm = earth_heliocentric_xyz_j2000(tdb(jd))
                 .scale(ASTRONOMICAL_UNIT_KM)
                 .norm();
             let gcrs_norm = sun_geocentric_gcrs(tt(jd)).norm();
             assert!(
-                close(gcrs_norm, ecl_norm, ecl_norm * 1e-6),
+                close(gcrs_norm, ecl_norm, ecl_norm * 1e-9),
                 "sun norm(jd={jd}): gcrs={gcrs_norm}, ecliptic={ecl_norm}"
             );
         }
@@ -673,14 +678,18 @@ mod tests {
     //   v   = [-9.93866806674108765e-5, -1.67390893828670883e-5, -7.25658131851178186e-6]（共通）
     //   s   = 9.83327681910549090e-1（= earth_heliocentric_lbr(tdb).2, AU）
     //   bm1 = 9.99999994894716249e-1
-    //   pnat(SUN)  = [ 1.80138755190583838e-1, -9.02474816600209229e-1, -3.91266193633957426e-1]
     //   pnat(MOON) = [-7.24548996157033720e-1, -6.62772556607322594e-1, -1.89106558257581575e-1]
+    //   pnat(SUN)  = [ 1.80138360453855839e-1, -9.02474896575278129e-1, -3.91266190903888311e-1]
+    //     ↑ VSOP87A 幾何太陽（黄道 J2000 + VSOP87→ICRS 固定回転）で再生成（2026-06-20, M10）。
+    //       旧 of-date 経路の pnat(SUN) = [1.80138755190583838e-1, -9.02474816600209229e-1,
+    //       -3.91266193633957426e-1] から 0.37″ の歳差不整合解消分だけ移動（v/s/bm1/MOON は不変）。
     /// erfa.ab の単位方向期待値（太陽, J2000）。pyerfa 出力を逐語転記（桁保持のため allow）。
+    /// VSOP87A 幾何太陽で再生成（2026-06-20, M10）。
     #[allow(clippy::excessive_precision)]
     const SUN_AB_DIR_J2000: [f64; 3] = [
-        1.800_393_599_401_254_32e-1,
-        -9.024_915_127_553_109_21e-1,
-        -3.912_734_316_012_022_04e-1,
+        0.180_038_965_196_113_48,
+        -0.902_491_592_693_779_7,
+        -0.391_273_428_855_267,
     ];
     /// erfa.ab の単位方向期待値（月, J2000）。pyerfa 出力を逐語転記（桁保持のため allow）。
     #[allow(clippy::excessive_precision)]
@@ -884,12 +893,13 @@ mod tests {
 
     // pyerfa 2.0.1.5: C2I = erfa.c2i06a(2451545.0, 0.0)[行優先]; v = C2I @ ab; v/|v|。
     //   ab = SUN_AB_DIR_J2000 / MOON_AB_DIR_J2000（S3 検証済み aberrated 単位方向）。
-    /// CIRS 見かけ単位方向の期待値（太陽, J2000）。
+    //   SUN は VSOP87A 幾何太陽の新 SUN_AB_DIR_J2000 で再生成（2026-06-20, M10）。
+    /// CIRS 見かけ単位方向の期待値（太陽, J2000）。VSOP87A 幾何太陽で再生成（2026-06-20, M10）。
     #[allow(clippy::excessive_precision)]
     const SUN_APPARENT_CIRS_DIR_J2000: [f64; 3] = [
-        1.800_288_076_667_243_83e-1,
-        -9.025_024_717_971_028_56e-1,
-        -3.912_530_086_915_844_70e-1,
+        0.180_028_412_922_785_82,
+        -0.902_502_551_735_490_7,
+        -0.391_253_005_932_773_73,
     ];
     /// CIRS 見かけ単位方向の期待値（月, J2000）。
     #[allow(clippy::excessive_precision)]
