@@ -26,6 +26,8 @@ pub use eop::bundled_eop;
 pub use ephemeris::{
     Body, Ephemeris, EphemerisError, EphemerisFrame, EphemerisMetadata, Origin, StateVector,
 };
+#[cfg(feature = "jpl")]
+pub use jpl::backend::JplEphemeris;
 pub use mock::MockEphemeris;
 #[cfg(feature = "bundled-data")]
 pub use time_data::bundled_time_data;

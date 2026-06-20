@@ -5,7 +5,8 @@
 //!
 //! - [`daf`]: DAF/SPK の構造解析（ファイルレコード＋セグメント記述子）。S1。
 //! - [`eval`]: SPK type 2 Chebyshev 評価（セグメント native 位置/速度）。S2。
-//! - 後続: `JplEphemeris`＋`Ephemeris` 実装（S3）。
+//! - [`backend`]: `JplEphemeris`＋`Ephemeris` 実装（body 差・原点・metadata）。S3。
 
+pub mod backend;
 pub(crate) mod daf;
 pub(crate) mod eval;
