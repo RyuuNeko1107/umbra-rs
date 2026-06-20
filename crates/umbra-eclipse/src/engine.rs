@@ -24,7 +24,9 @@ use umbra_core::{
     TimeInterval, TimeRange, TimeScales, TtInstant, UtcInstant,
 };
 use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
+use umbra_geo::GeoLine;
 
+use crate::axis_intercept::shadow_axis_surface_point;
 use crate::bessel_poly::{BesselFitError, BesselianPolynomial};
 use crate::besselian::InstantaneousBesselianElements;
 use crate::calc_metadata::CalculationMetadata;
@@ -524,13 +526,41 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
         Ok(None)
     }
 
-    /// v0.1 未実装（経路は umbra-geo・M9）。panic でなく `Err(NotImplemented)`（PATH/045）。
+    /// 日食経路を生成する（M9 第1スライス＝中心線トラック）。
+    ///
+    /// **中心食**（全球 U1/U4 接触＝`central_begin`/`central_end` が両方 `Some`）では、`[U1.time_tt,
+    /// U4.time_tt]` を `options.sample_interval_seconds` 刻みでサンプルし、各時刻のベッセル要素
+    /// （`bessel.at`）から影軸の地表貫通点（[`shadow_axis_surface_point`]）を結んだ中心線 [`GeoLine`] を
+    /// `center_line` に返す。軸が地球を外す端の時刻（`RootNotBracketed`）はスキップする。**非中心**
+    /// （部分/非中心食）では `center_line = None`。`greatest_point` は常に `global.greatest.position`。
+    ///
+    /// 本スライスでは北/南限界線・部分食域・経路サンプル（`samples`）は未生成（`None` / 空）。これらは
+    /// 帯幅・中心食継続式（算法 §8.11/8.12・要一次資料確認）や限界線追跡を要するため後続スライス（M9）で
+    /// 実装する。`bessel.at` / 影軸貫通の `RootNotBracketed` 以外の `Err` は伝播する。
     pub fn path(
         &self,
-        _eclipse: &SolarEclipse,
-        _options: PathOptions,
+        eclipse: &SolarEclipse,
+        options: PathOptions,
     ) -> Result<EclipsePath, EclipseError> {
-        Err(EclipseError::NotImplemented)
+        let greatest_point = eclipse.global.greatest.position;
+        // 中心食（U1/U4 両方 Some）でのみ中心線を追跡。片方でも None なら中心線なし。
+        let center_line = match (&eclipse.global.central_begin, &eclipse.global.central_end) {
+            (Some(u1), Some(u4)) => Some(trace_center_line(
+                &eclipse.bessel,
+                u1.time_tt,
+                u4.time_tt,
+                options.sample_interval_seconds,
+            )?),
+            _ => None,
+        };
+        Ok(EclipsePath {
+            center_line,
+            northern_limit: None,
+            southern_limit: None,
+            partial_limit: None,
+            greatest_point,
+            samples: Vec::new(),
+        })
     }
 }
 
@@ -549,6 +579,42 @@ fn next_visible_is_observable(visibility: Visibility) -> bool {
             | Visibility::SunriseEclipse
             | Visibility::SunsetEclipse
     )
+}
+
+/// 中心食の中心線（影軸地表貫通点列）を `[start_tt, end_tt]` を `interval_seconds` 刻みでサンプルして
+/// 追跡する（M9 第1スライス・[`EclipseEngine::path`] から呼ぶ）。
+///
+/// 各サンプル時刻で `bessel.at` の瞬時要素から [`shadow_axis_surface_point`]（影軸∩WGS84 地表）を求め
+/// 点列にする。軸が地球を外す端の時刻（`RootNotBracketed`）はスキップし、それ以外の `Err` は伝播する。
+/// 始点・終点を必ず含む（端は span にクランプ）。`interval_seconds` が非正なら始点のみ（無限ループ回避）。
+///
+/// 前提: `start_tt ≤ end_tt`（中心食接触 U1≤U4 は全球 solver の構成上時系列順）。逆順を渡した場合は
+/// `span<0` ゆえ始点のみを返す（panic/無限ループしない無害な縮退）。
+fn trace_center_line(
+    bessel: &BesselianPolynomial,
+    start_tt: TtInstant,
+    end_tt: TtInstant,
+    interval_seconds: f64,
+) -> Result<GeoLine, EclipseError> {
+    let ellipsoid = Ellipsoid::WGS84;
+    let span_seconds = end_tt.jd2().days_since(start_tt.jd2()) * SECONDS_PER_DAY;
+    let mut points = Vec::new();
+    let mut t_sec = 0.0_f64;
+    loop {
+        let t = TtInstant::from_jd2(start_tt.jd2().add_days(t_sec / SECONDS_PER_DAY));
+        match shadow_axis_surface_point(&bessel.at(t)?, &ellipsoid) {
+            Ok(point) => points.push(point),
+            // 軸が地表を外す端（U1/U4 近傍の接点）はスキップ。
+            Err(EclipseError::Solver(SolverError::RootNotBracketed)) => {}
+            Err(e) => return Err(e),
+        }
+        // 終点に達したら終了。非正間隔は始点のみで打ち切り（無限ループ回避）。
+        if t_sec >= span_seconds || interval_seconds <= 0.0 {
+            break;
+        }
+        t_sec = (t_sec + interval_seconds).min(span_seconds);
+    }
+    Ok(GeoLine::new(points))
 }
 
 /// 現在の壁時計 UTC を `UtcInstant` で返す（`generated_at` 用）。std 時計 → UNIX 秒 → UTC-JD。

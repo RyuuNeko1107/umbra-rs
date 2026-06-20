@@ -5,6 +5,10 @@
 - milestone: M9 経路（v0.1 では型・境界のみ。本実装は Milestone 9）
 - モード(tdd-workflow): standard（v0.1 では公開型シグネチャと未実装スタブの契約のみを固定する。`SolarEclipse.bessel`（`BesselianPolynomial`＝ISSUE-022）は v0.1 で必須だが、`path()`/中心線/限界線/GeoJSON の数式本体は Milestone 9 のため、型境界の前方互換性確保が要点で standard。本実装時に strict へ昇格）
 
+## M9 実装状況
+- **M9.1 中心線トラック**（2026-06-21・strict）: `EclipseEngine::path()` を実装（旧 `Err(NotImplemented)` スタブから昇格）。中心食（全球 U1/U4 接触が両方 Some）で `center_line` を生成＝`[U1,U4]` を `PathOptions::sample_interval_seconds` 刻みでサンプルし、各時刻のベッセル要素（`BesselianSource::at`）から影軸地表貫通点（`axis_intercept::shadow_axis_surface_point`・WGS84）を結んだ `GeoLine`。軸が地球を外す端（`RootNotBracketed`）はスキップ。非中心は `center_line=None`。`greatest_point` は `global.greatest.position` passthrough。**北/南限界線・部分食域・`samples`（帯幅/継続）・GeoJSON は未実装**（後続スライス）。5 テスト（FAST 4＋SLOW 1: 実 2017-08-21 皆既で中心線が太平洋〜大西洋を延び北米を横断・最大食点近傍を通ることを実証）。mutation 12 中 8 caught・2 unviable・2 timeout（ループ終端変異＝ハング検出）・生存0。
+- **残（後続スライス）**: (2) 帯幅・中心食継続（`samples`・算法 §8.11/8.12＝**要一次資料確認**・最大食点の `GreatestEclipse.path_width`/`central_duration` も現状 None）、(3) 北/南限界線・部分食域（錐縁追跡）、(4) `EclipsePath::to_geojson()`（umbra-geo・日付変更線分割）。
+
 ## 目的
 `umbra-geo` の経路 API（中心線・限界線・部分食域・GeoJSON）の **公開型と境界のみを v0.1 で確定**し、**本実装を Milestone 9 へ明示的に後回し**する方針を文書化する（レビュー minor 確定事項 / milestone0-review §Minor「045 umbra-geo/path はv0.1スコープ外だが結果型が bessel多項式(022)必須 → v0.1は path未実装方針を明文化」）。
 - v0.1 完成条件（search・種別・最大食時刻・C1/最大/C4・食分食面積・50地点誤差レポート）に **`path()` は含まれない**。一方、`SolarEclipse.bessel: BesselianPolynomial`（api-draft §3.4）は v0.1 でも必須フィールドであり、ISSUE-022 が供給する。
