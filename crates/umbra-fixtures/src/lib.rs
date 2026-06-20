@@ -26,9 +26,10 @@ pub use loader::golden_eclipses;
 pub use report::{
     aggregate_global, aggregate_local, compare_global, compare_local, render_differential_json,
     render_differential_text, render_json, render_stratified_json, render_stratified_text,
-    render_text, report_against_golden, report_differential, report_stratified, DifferentialReport,
+    render_sweep_json, render_sweep_text, render_text, report_against_golden, report_differential,
+    report_stratified, summarize_sweep, CatalogCounts, CompletenessReport, DifferentialReport,
     ErrorReport, ErrorStats, GlobalErrors, GlobalReport, GoldenComputer, GoldenReport,
-    LayeredError, LocalErrors, LocalReport, ToleranceProfile,
+    LayeredError, LocalErrors, LocalReport, RangeStats, SweepSummary, ToleranceProfile,
 };
 pub use types::{GoldenContact, GoldenEclipse, GoldenLocation, LocationClass, OracleSource};
 

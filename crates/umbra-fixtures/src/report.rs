@@ -867,17 +867,18 @@ pub struct ErrorReport {
     pub pass_fail: Vec<(String, bool)>,
 }
 
-/// enum キーの層別ペアを「Debug 名（文字列）→ [`ErrorStats`]」の対として JSON 直列化する。
+/// enum キーのペアを「Debug 名（文字列）→ 値」の対として JSON 直列化するアダプタ。
 ///
-/// `SolarEclipseKind`/`LocationClass` 自体に serde 依存を持ち込まずに JSON 化するためのアダプタ。
-fn serialize_debug_keyed<K, S>(pairs: &[(K, ErrorStats)], serializer: S) -> Result<S::Ok, S::Error>
+/// `SolarEclipseKind`/`LocationClass` 自体に serde 依存（feature `serde`）を前提せずに JSON 化する
+/// （値 `V` は `ErrorStats`（層別）・`usize`（件数）等の任意の `Serialize`）。
+fn serialize_debug_keyed<K, V, S>(pairs: &[(K, V)], serializer: S) -> Result<S::Ok, S::Error>
 where
     K: std::fmt::Debug,
+    V: serde::Serialize,
     S: serde::Serializer,
 {
     use serde::Serialize;
-    let mapped: Vec<(String, &ErrorStats)> =
-        pairs.iter().map(|(k, v)| (format!("{k:?}"), v)).collect();
+    let mapped: Vec<(String, &V)> = pairs.iter().map(|(k, v)| (format!("{k:?}"), v)).collect();
     mapped.serialize(serializer)
 }
 
@@ -1065,6 +1066,198 @@ pub fn render_stratified_text(report: &ErrorReport) -> String {
 /// [`ErrorReport`] を機械可読 JSON（pretty・末尾改行）に整形する（CI/履歴比較用）。
 pub fn render_stratified_json(report: &ErrorReport) -> Result<String, serde_json::Error> {
     let mut out = serde_json::to_string_pretty(report)?;
+    out.push('\n');
+    Ok(out)
+}
+
+// ============================================================
+// 全食スイープ（1900-2100 自己カタログ集計＋完備性突合・accuracy.md §3.4）
+// ============================================================
+
+/// 素の値の範囲統計（min/max/mean・**絶対値化しない**）。空は n=0・全 0.0（NaN を出さない）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct RangeStats {
+    /// 標本数。
+    pub n: usize,
+    /// 最小値（空は 0.0）。
+    pub min: f64,
+    /// 最大値（空は 0.0）。
+    pub max: f64,
+    /// 算術平均（空は 0.0）。
+    pub mean: f64,
+}
+
+impl RangeStats {
+    /// 値列から min/max/mean を作る（**絶対値化しない**＝呼び出し側で必要なら絶対値化して渡す）。
+    #[allow(clippy::cast_precision_loss)]
+    fn from_values(values: &[f64]) -> Self {
+        let n = values.len();
+        if n == 0 {
+            return Self {
+                n: 0,
+                min: 0.0,
+                max: 0.0,
+                mean: 0.0,
+            };
+        }
+        let mut min = values[0];
+        let mut max = values[0];
+        let mut sum = 0.0;
+        // 入力は有限前提（NaN なし）。`f64::min`/`max` を使い `<`/`>` 比較演算子を持たない
+        // ことで、タイ時に同値を再代入するだけの等価変異（`<`↔`<=` 等）を構造的に排除する。
+        for &v in values {
+            min = min.min(v);
+            max = max.max(v);
+            sum += v;
+        }
+        Self {
+            n,
+            min,
+            max,
+            mean: sum / n as f64,
+        }
+    }
+}
+
+/// NASA 5MCSE の 4 区分件数（非中心は中心種別へ畳む＝NASA カタログ慣習）。
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+pub struct CatalogCounts {
+    /// 皆既（`Total` + `NonCentralTotal`）。
+    pub total: usize,
+    /// 金環（`Annular` + `NonCentralAnnular`）。
+    pub annular: usize,
+    /// ハイブリッド（`Hybrid`）。
+    pub hybrid: usize,
+    /// 部分（`Partial`）。
+    pub partial: usize,
+}
+
+/// 完備性突合（検出 4 区分 vs 期待 4 区分・全一致で `all_match`）。
+///
+/// 期待件数（NASA 5MCSE 等の既知総数）に対し検出件数が一致するかで、**偽陰性（取りこぼし）**を
+/// 集計レベルで検出する（D6・accuracy.md §3.4）。慣習差（中心/非中心・ハイブリッド境界）があるため、
+/// 不一致は即異常ではなく**要調査シグナル**として扱う（呼び出し側で判断）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct CompletenessReport {
+    /// 検出件数（NASA 4 区分へ畳んだもの）。
+    pub detected: CatalogCounts,
+    /// 期待件数（オラクル・引数そのまま）。
+    pub expected: CatalogCounts,
+    /// 全 4 区分が一致するか。
+    pub all_match: bool,
+}
+
+/// 全食スイープの自己カタログ集計＋完備性突合（accuracy.md §3.4）。
+///
+/// 検出食群（`search` の出力等）から、種別件数（raw・[`serialize_debug_keyed`] で JSON 化）、
+/// `|gamma|`・最大食食分の範囲統計、NASA 4 区分への完備性突合を作る。**search の偽陰性ゼロ・マージンの
+/// 実余裕統計（D6・coarse-scan 内部）はエンジン計装を要し本スコープ外**（後続課題・accuracy.md §3.4）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct SweepSummary {
+    /// 検出食総数。
+    pub total: usize,
+    /// raw エンジン種別の件数（出現種別のみ・Debug 文字列昇順）。非中心も畳まず別カウント。
+    #[serde(serialize_with = "serialize_debug_keyed")]
+    pub by_kind: Vec<(SolarEclipseKind, usize)>,
+    /// `|gamma|`（影軸の地心最小距離の絶対値, Re）の範囲統計。
+    pub gamma_abs: RangeStats,
+    /// 最大食食分の範囲統計（素の値）。
+    pub magnitude: RangeStats,
+    /// NASA 4 区分の完備性突合。
+    pub completeness: CompletenessReport,
+}
+
+/// 検出食群を自己カタログ集計し、期待件数（オラクル）と完備性突合する（純）。
+///
+/// `total`＝件数、`by_kind`＝raw 種別件数（出現のみ・Debug 文字列昇順）、`gamma_abs`＝`|gamma|` の
+/// min/max/mean、`magnitude`＝最大食食分の min/max/mean、`completeness`＝NASA 4 区分（非中心は中心へ
+/// 畳む）の検出 vs `expected`。空入力は total=0・by_kind 空・範囲 0・detected 全 0（`all_match` は
+/// `expected` が全 0 なら true）。
+pub fn summarize_sweep(eclipses: &[SolarEclipse], expected: CatalogCounts) -> SweepSummary {
+    let mut kind_counts: BTreeMap<String, (SolarEclipseKind, usize)> = BTreeMap::new();
+    let mut gammas: Vec<f64> = Vec::with_capacity(eclipses.len());
+    let mut magnitudes: Vec<f64> = Vec::with_capacity(eclipses.len());
+    let mut detected = CatalogCounts {
+        total: 0,
+        annular: 0,
+        hybrid: 0,
+        partial: 0,
+    };
+
+    for eclipse in eclipses {
+        let kind = eclipse.kind;
+        kind_counts
+            .entry(format!("{kind:?}"))
+            .or_insert((kind, 0))
+            .1 += 1;
+        gammas.push(eclipse.global.gamma.abs());
+        magnitudes.push(eclipse.global.greatest.magnitude.0);
+        // NASA 4 区分へ畳む（非中心は中心種別へ）。`SolarEclipseKind` は #[non_exhaustive]。
+        match kind {
+            SolarEclipseKind::Total | SolarEclipseKind::NonCentralTotal => detected.total += 1,
+            SolarEclipseKind::Annular | SolarEclipseKind::NonCentralAnnular => {
+                detected.annular += 1
+            }
+            SolarEclipseKind::Hybrid => detected.hybrid += 1,
+            SolarEclipseKind::Partial => detected.partial += 1,
+            _ => {} // 将来追加され得る種別はどの区分にも畳まない（要再検討シグナル）。
+        }
+    }
+
+    let by_kind = kind_counts.into_values().collect();
+    let gamma_abs = RangeStats::from_values(&gammas);
+    let magnitude = RangeStats::from_values(&magnitudes);
+    let all_match = detected == expected;
+
+    SweepSummary {
+        total: eclipses.len(),
+        by_kind,
+        gamma_abs,
+        magnitude,
+        completeness: CompletenessReport {
+            detected,
+            expected,
+            all_match,
+        },
+    }
+}
+
+/// [`RangeStats`] を 1 行に整形する（`render_sweep_text` 用）。
+fn range_line(label: &str, stats: &RangeStats) -> String {
+    format!(
+        "{label}: n={} min={:.4} max={:.4} mean={:.4}\n",
+        stats.n, stats.min, stats.max, stats.mean
+    )
+}
+
+/// [`SweepSummary`] を人間可読サマリ（複数行テキスト）に整形する（全項目を漏れなく表示）。
+pub fn render_sweep_text(summary: &SweepSummary) -> String {
+    let mut out = String::new();
+    out.push_str("=== sweep summary (self-catalog + completeness) ===\n");
+    out.push_str(&format!("total eclipses: {}\n", summary.total));
+    out.push_str("by_kind:\n");
+    for (kind, count) in &summary.by_kind {
+        out.push_str(&format!("  {kind:?}: {count}\n"));
+    }
+    out.push_str(&range_line("gamma_abs", &summary.gamma_abs));
+    out.push_str(&range_line("magnitude", &summary.magnitude));
+    let c = &summary.completeness;
+    out.push_str("completeness (NASA 4-category, NonCentral folded):\n");
+    out.push_str(&format!(
+        "  detected: total={} annular={} hybrid={} partial={}\n",
+        c.detected.total, c.detected.annular, c.detected.hybrid, c.detected.partial,
+    ));
+    out.push_str(&format!(
+        "  expected: total={} annular={} hybrid={} partial={}\n",
+        c.expected.total, c.expected.annular, c.expected.hybrid, c.expected.partial,
+    ));
+    out.push_str(&format!("  all_match: {}\n", c.all_match));
+    out
+}
+
+/// [`SweepSummary`] を機械可読 JSON（pretty・末尾改行）に整形する（CI/履歴比較用）。
+pub fn render_sweep_json(summary: &SweepSummary) -> Result<String, serde_json::Error> {
+    let mut out = serde_json::to_string_pretty(summary)?;
     out.push('\n');
     Ok(out)
 }
