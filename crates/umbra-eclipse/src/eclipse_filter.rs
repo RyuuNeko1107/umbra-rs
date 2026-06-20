@@ -32,7 +32,8 @@ const MOON_SUN_SIZE_RATIO_K: f64 = 0.272_507_6;
 /// 偽陰性ゼロのマージン \[rad\]（D6 の (2)+(3) 項; 月地平視差 (1) は別途加算）。合の角距離は最大食付近の
 /// 真の最小値より大きくなりうる（月相対角速度 ~0.5°/h × 合↔最大食ずれ ~0.2h ≲ 0.1°）＋概算暦誤差 ~0.05°
 /// を保守側に広げて 0.5°≈0.0087 rad。偽陰性ゼロ側＝広めに固定（conventions §11, 誤差を隠さない）。
-const SAFETY_MARGIN_RAD: f64 = 0.008_7;
+/// D6 マージン実余裕統計（`filter_margins`）が `ECLIPSE_FILTER_SAFETY_MARGIN_RAD` として公開する。
+pub(crate) const SAFETY_MARGIN_RAD: f64 = 0.008_7;
 
 /// 棄却/採用の理由（デバッグ・テスト用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +55,8 @@ pub(crate) struct EclipsePossibility {
     pub min_separation: Radians,
     /// 太陽視半径 + 月視半径（概算, rad）。
     pub sum_semidiameters: Radians,
+    /// 食限（マージン抜き）= s_sun + s_moon + π_moon \[rad\]（D6 マージン実余裕統計の基準・`filter_margins`）。
+    pub bare_limit: Radians,
     /// 影軸-地球中心 概算距離（Re 無次元, 情報用）。
     pub approx_gamma: f64,
     /// 棄却/採用の理由。
@@ -85,7 +88,9 @@ pub(crate) fn assess_eclipse_possibility(conjunction: &Conjunction) -> EclipsePo
     let approx_gamma = sun.cross(moon).norm() / ((moon - sun).norm() * re_km);
 
     // Meeus Ch.54 食限（保守側）。separation がこの限界未満なら地球上のどこかで（部分）食。
-    let limit = sum_semidiameters + parallax_moon + SAFETY_MARGIN_RAD;
+    // bare_limit = マージン抜き食限（D6 マージン実余裕統計の基準）。limit = bare_limit + 保守マージン。
+    let bare_limit = sum_semidiameters + parallax_moon;
+    let limit = bare_limit + SAFETY_MARGIN_RAD;
     let possible = conjunction.separation.0 < limit;
     let reason = if possible {
         PossibilityReason::PossibleEclipse
@@ -98,6 +103,7 @@ pub(crate) fn assess_eclipse_possibility(conjunction: &Conjunction) -> EclipsePo
         conjunction: *conjunction,
         min_separation: conjunction.separation,
         sum_semidiameters: Radians(sum_semidiameters),
+        bare_limit: Radians(bare_limit),
         approx_gamma,
         reason,
     }

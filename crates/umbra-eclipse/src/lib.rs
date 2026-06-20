@@ -14,6 +14,7 @@ pub mod conjunction;
 pub mod eclipse_filter;
 pub mod engine;
 pub mod error;
+pub mod filter_margins;
 pub mod fundamental;
 pub mod global;
 pub mod global_contacts;
@@ -38,6 +39,10 @@ pub use calc_metadata::CalculationMetadata;
 pub use config::{AccuracyProfile, EngineConfig, LunarRadiusModel, SolarRadiusModel};
 pub use engine::{standard_engine, EclipseEngine, StandardEngine, UtcRange};
 pub use error::EclipseError;
+pub use filter_margins::{
+    aggregate_filter_margins, scan_filter_margins, FilterMarginStats, MarginSample,
+    ECLIPSE_FILTER_SAFETY_MARGIN_RAD,
+};
 pub use fundamental::{fundamental_plane_basis, FundamentalPlaneBasis};
 pub use global::{classify, SolarEclipseKind};
 pub use horizontal::{Horizontal, RefractionModel, Visibility};

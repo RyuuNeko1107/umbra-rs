@@ -14,9 +14,10 @@
 - **全食スイープ 自己カタログ集計＋完備性突合 純コア**（strict 全工程）: `summarize_sweep`（umbra-fixtures）＝`total`＋`by_kind`（raw 種別件数・非中心は畳まず・Debug 昇順）＋`gamma_abs`/`magnitude`（`RangeStats` min/max/mean）＋`completeness`（NASA 4 区分＝非中心は中心へ畳む検出 vs 期待・`all_match`）＋`render_sweep_{text,json}`。19 テスト / mutation 28 中 26 caught・2 unviable・生存0（`RangeStats` の min/max は `f64::min`/`max` 化で `<`/`>` の等価変異を構造排除）。
 - **`xtask sweep` 実走ランナー**（strict 全工程）: `parse_range`（`--from/--to` 年・既定 1900-2100）＋`parse_expected_counts`（`--expected-*`・既定0）＋`sweep_report`（summarize_sweep＋render）＋`run_sweep`（解析暦 `standard_engine` で範囲 search→集計→印字）。完備性 expected は CLI フラグ供給＝オラクル件数は利用者が出典付き指定（ハードコードしない・参考 NASA 5MCSE 2001-2100=全224件）・既定カタログのみ。FAST 15＋SLOW 1（実エンジンで 2024-04-08 皆既を狭窓 search→集計・total≥1/Total 検出・98s）。mutation（parse/sweep_report）13 中 10 caught・3 unviable・生存0。
 
-## 完了状況（2026-06-20）
-v0.1 検証層 ISSUE-030 は **機能完成**（プリミティブ／ゴールデン比較／CLI validate／DE 差分・層分解 純コア＋xtask differential／層別 ErrorReport／全食スイープ 純コア＋xtask sweep）。
-**唯一の残課題**: search 偽陰性ゼロのマージン**実余裕統計**（D6・accuracy.md §3.4/§検索戦略）は coarse-scan 内部の計装（採用マージン vs 実余裕）を要し engine 側の対応が必要なため**繰延**（本 issue のスコープ外として明記）。集計レベルの完備性突合（`summarize_sweep` の NASA 4 区分）で取りこぼしは検知可能。
+- **D6 偽陰性ゼロ・マージン実余裕統計**（strict 全工程）: `umbra_eclipse::scan_filter_margins`／`aggregate_filter_margins`／`FilterMarginStats`／`MarginSample`／`ECLIPSE_FILTER_SAFETY_MARGIN_RAD`。candidate→合→フィルタ（engine.search 前段と同一経路・Besselian/分類省く軽量）を範囲全体で回し、採用候補のマージン実消費 `max(0, separation − bare_limit)` と実余裕 `margin − 実消費` を統計化。`eclipse_filter` の `SAFETY_MARGIN_RAD` を `pub(crate)` 化＋`EclipsePossibility.bare_limit` 追加。16 テスト（FAST 14＋SLOW 2）/ mutation 8 中 6 caught・2 unviable・生存0。**実測（1972-2100・1583朔）: 採用 414、実余裕最小 0.000032 rad（マージン 0.0087 の 0.4%）＝マージンほぼ枯渇寸前で保持、縮小不可**（accuracy.md §3.4）。
+
+## 完了状況（2026-06-21・完全クローズ）
+v0.1 検証層 ISSUE-030 は **完了**（プリミティブ／ゴールデン比較／CLI validate／DE 差分・層分解 純コア＋xtask differential／層別 ErrorReport／全食スイープ 純コア＋xtask sweep／**D6 マージン実余裕統計**）。当初 §公開IF スケッチからの確定逸脱（6物理層→暦層/幾何層の 2 バケット・accuracy.md §4.1）は記録済み。残課題なし。
 
 ## 目的
 ゴールデン20（ISSUE-029）および 1900〜2100 全日食比較に対し、**pass/fail だけでなく誤差統計を生成**するレポータを実装する（accuracy.md §3.4/§4）。
