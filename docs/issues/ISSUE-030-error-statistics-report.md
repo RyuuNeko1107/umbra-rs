@@ -4,6 +4,13 @@
 - 依存: ISSUE-029（ゴールデン20）, ISSUE-024〜028（局地出力）, ISSUE-036（JPL DE 差分・第一義オラクル）, ISSUE-001
 - モード(tdd-workflow): strict（検証基盤。pass/fail だけでなく誤差統計と層分解（accuracy.md §4）を出す設計。誤差を隠さない＝レビューゲートの正本のため strict）
 
+## 実装状況（2026-06-20）
+- **S30a プリミティブ**: `ErrorStats`（max/mean/p95・R-7）/ `ToleranceProfile`（standard/reference）— 実装済み。
+- **S30b/c/d ゴールデン比較**: `compare_global`/`compare_local`/`aggregate_*`/`GoldenComputer`/`report_against_golden`/`render_text`/`render_json` — 実装済み。
+- **S30f CLI 統合**: `xtask validate`（実エンジンで同梱ゴールデン照合・text/json）— 実装済み。
+- **DE 差分・誤差層分解**（本コミット・strict 全工程）: `LayeredError`/`DifferentialReport`/`report_differential`/`render_differential_{text,json}` — 実装済み（mutation 31 中 29 caught・2 unviable・生存0）。**層分解は 2 バケット（暦層 ephemeris / 幾何・数値層 geometry）へ集約**＝6 物理層スケッチ（§公開IF）からの確定逸脱を accuracy.md §4.1 に記録。
+- **残（後続スライス）**: (1) DE 実エンジン結線ハーネス（`JplGoldenComputer`＋ xtask differential サブコマンド・feature `jpl`・SLOW）で `report_differential` を実 DE440 で駆動、(2) 1900〜2100 全食スイープ harness（有無/種別/最大食時刻/gamma/食分の一括比較・§3.4）、(3) 年代別/食種別/地点条件別の層別集計（§公開IF `ErrorReport`）。
+
 ## 目的
 ゴールデン20（ISSUE-029）および 1900〜2100 全日食比較に対し、**pass/fail だけでなく誤差統計を生成**するレポータを実装する（accuracy.md §3.4/§4）。
 - 統計項目: **最大 / 平均絶対 / 95%ile**、さらに**年代別 / 食種別 / 地点条件別**に層別（accuracy.md §3.4）。

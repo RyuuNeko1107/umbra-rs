@@ -203,6 +203,23 @@
 
 JPL DE 差分（§3.1）で暦誤差を切り出し、残りを幾何/数値層へ帰属させる。
 
+### 4.1 実装した層分解の粒度（ISSUE-030 `report_differential`・2026-06-20）
+
+上記 6 物理層は理想だが、**shadow_geometry / polynomial_fit / contact_solver の個別分離はエンジン内部の
+計装を要し ISSUE-030 のスコープ外**である。`umbra-fixtures::report_differential`（DE 差分・誤差層分解）は、
+**同一のベッセル/接触パイプラインに解析暦と JPL DE を通す 2 エンジン差分法**で清浄に切り出せる粒度＝
+**2 バケットへ集約**して実装した（ISSUE-030 §38-45 スケッチからの確定逸脱・本節に記録）:
+
+- **暦層 `ephemeris` = analytical − DE**（同一パイプライン → 差は暦のみ）。§2.1 の太陽/月位置誤差に対応。
+- **幾何/数値層 `geometry` = DE − golden オラクル**（DE 入力 → 残差は影幾何＋多項式＋接触 solver＋慣習差の統合）。
+- **総合 `total` = analytical − golden**。各 metric・各サンプルで **符号付き `total ≡ ephemeris + geometry`**。
+
+各 metric（全球: 最大食時刻/食分、地点: 最大食接触時刻/C1〜C4 接触/食分/食面積/高度）を 3 層に分解する。
+**誤差を隠さない原則**（conventions §11）は「内部の影/多項式/接触層を個別測定せず幾何層に統合表示する」と
+明記して担保する。なお**太陽/月の生の方向残差**（太陽 0.040″ / 月 0.268″・§3.3）は `umbra-ephemeris` の
+DE 差分（`tests/de_diff.rs`）が暦層で別途確定済みで、本レポートはそれを**日食 metric への寄与**として
+再表現する位置づけ。合否判定（`ToleranceProfile`）は持たない純粋な誤差層分解（原因層の特定が目的）。
+
 ---
 
 ## 5. ΔT / UT1 / EOP データ

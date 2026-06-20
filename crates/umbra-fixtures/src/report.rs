@@ -511,6 +511,331 @@ pub fn render_json(report: &GoldenReport) -> Result<String, serde_json::Error> {
     Ok(out)
 }
 
+// ============================================================
+// DE 差分・誤差層分解（accuracy.md §4 — 同一パイプライン 2 エンジン差分法）
+// ============================================================
+
+/// 1 metric の DE 差分・誤差層分解（accuracy.md §4 / §3.1-1）。
+///
+/// 同一のベッセル/接触パイプラインに**解析暦（analytical）**と **JPL DE（de）**を通し、metric の
+/// 誤差を暦層と幾何/数値層へ帰属する。各層は computed−reference の符号付き誤差列を [`ErrorStats`]
+/// で絶対値統計化する:
+/// - `ephemeris`: analytical − DE（同一パイプライン → 差は**暦のみ**）。
+/// - `geometry`: DE − golden オラクル（DE 入力 → 残差は**幾何/数値＋慣習差**）。
+/// - `total`: analytical − golden（実測総誤差）。各サンプルで **符号付き total ≡ ephemeris + geometry**
+///   （同じ 3 実数 a,d,g から (a−d)+(d−g)=a−g）。
+///
+/// **設計（ISSUE-030 §38-45 スケッチからの確定逸脱・accuracy.md §4 に記録）**: issue が描く 6 物理層
+/// （time/sun/moon/shadow/poly/contact の個別）は**エンジン内部の計装が必要で 030 のスコープ外**。
+/// 同一パイプライン 2 エンジン差分で**清浄に切り出せる粒度は暦層 vs 幾何/数値層の 2 バケット**に限る
+/// ため、ここへ集約する。誤差を隠さない原則（conventions §11）は「内部層を個別測定せず統合表示する」
+/// と明記して担保する。sun/月の**生の方向残差**（0.040″/0.268″）は `umbra-ephemeris` の DE 差分
+/// （`tests/de_diff.rs`・accuracy.md §3.3）が暦層で別途担保しており、本レポートはそれを**日食 metric
+/// への寄与**として再表現する位置づけ。
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct LayeredError {
+    /// 暦層: analytical − DE（同一パイプライン → 暦差のみ）。
+    pub ephemeris: ErrorStats,
+    /// 幾何/数値層: DE − golden オラクル（DE 入力 → 幾何/数値＋慣習差）。
+    pub geometry: ErrorStats,
+    /// 総合: analytical − golden（実測総誤差・恒等性 ephemeris⊕geometry の確認）。
+    pub total: ErrorStats,
+}
+
+/// 1 metric の 3 層誤差列を貯める累積器（符号付き = computed − reference）。
+#[derive(Default)]
+struct LayerAccumulator {
+    eph: Vec<f64>,
+    geo: Vec<f64>,
+    tot: Vec<f64>,
+}
+
+impl LayerAccumulator {
+    /// スカラ metric（食分・食面積・高度）: a,d,g の 3 値から 3 層を導出して push。
+    fn push_scalar(&mut self, a: f64, d: f64, g: f64) {
+        self.eph.push(a - d);
+        self.geo.push(d - g);
+        self.tot.push(a - g);
+    }
+
+    /// 時刻 metric: 各層の差（秒）を**直接** push する（2 要素 days_since で桁落ち回避済みの値を渡す）。
+    fn push_diffs(&mut self, eph: f64, geo: f64, tot: f64) {
+        self.eph.push(eph);
+        self.geo.push(geo);
+        self.tot.push(tot);
+    }
+
+    /// 3 層を [`ErrorStats`]（絶対値統計）へ確定する。空列でも `units` を保持する。
+    fn finish(&self, units: &'static str) -> LayeredError {
+        LayeredError {
+            ephemeris: ErrorStats::from_errors(&self.eph, units),
+            geometry: ErrorStats::from_errors(&self.geo, units),
+            total: ErrorStats::from_errors(&self.tot, units),
+        }
+    }
+}
+
+/// computed−computed の時刻差（秒）。golden が TT を持てば **TT 差**、無ければ **UTC 差**で測る。
+///
+/// golden 比較（[`contact_time_error_seconds`]）と**同じ時刻表現**を使うことで、各サンプルの
+/// 符号付き恒等性 `(a−d)+(d−g)=a−g` を厳密に保つ（TT/UTC が層間で食い違うと恒等性が崩れる）。
+/// 2 要素 [`umbra_core::JulianDate2::days_since`] で JD≈2.45e6 の桁落ちを回避する。
+fn computed_pair_time_error_seconds(
+    a_utc: UtcInstant,
+    a_tt: TtInstant,
+    d_utc: UtcInstant,
+    d_tt: TtInstant,
+    golden_has_tt: bool,
+) -> f64 {
+    if golden_has_tt {
+        a_tt.jd2().days_since(d_tt.jd2()) * SECONDS_PER_DAY
+    } else {
+        a_utc.jd2().days_since(d_utc.jd2()) * SECONDS_PER_DAY
+    }
+}
+
+/// DE 差分・層分解レポート（全球＋地点別 metric 毎の [`LayeredError`] ＋被覆カウント）。
+///
+/// 各 metric は ephemeris（暦層）/ geometry（幾何/数値層）/ total（総合）の 3 層に分解される
+/// （[`LayeredError`]）。合否（pass/fail）は持たない**純粋な誤差層分解**（誤差を隠さない・原因層の
+/// 特定が目的）。合否判定は [`report_against_golden`] / [`ToleranceProfile`] の領分。
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct DifferentialReport {
+    /// 全球最大食時刻の層分解（単位 `"s"`）。
+    pub global_greatest_seconds: LayeredError,
+    /// 全球食分の層分解（無次元・単位 `""`）。
+    pub global_magnitude: LayeredError,
+    /// 地点最大食接触時刻の層分解（単位 `"s"`）。
+    pub local_maximum_seconds: LayeredError,
+    /// 地点 C1〜C4 接触時刻の層分解（3 者 Some の接触のみ・単位 `"s"`）。
+    pub local_contact_seconds: LayeredError,
+    /// 地点食分の層分解（無次元・単位 `""`）。
+    pub local_magnitude: LayeredError,
+    /// 地点食面積の層分解（無次元・単位 `""`）。
+    pub local_obscuration: LayeredError,
+    /// 地点最大食高度の層分解（単位 `"deg"`）。
+    pub local_max_altitude_deg: LayeredError,
+    /// analytical も DE も食を返した（=層分解できた）golden 数。
+    pub eclipses_compared: usize,
+    /// analytical / DE のどちらか（または両方）が `None` を返した golden 数。
+    pub eclipses_missing: usize,
+    /// 比較した地点の総数（層分解できた食の地点合計）。
+    pub locations_compared: usize,
+}
+
+/// 解析暦 computer と DE computer を同一 golden へ適用し、metric 毎に誤差を 3 層へ分解する（純）。
+///
+/// 各 golden について `analytical.eclipse_on` と `de.eclipse_on` を**両方**呼ぶ（どちらの `Err` も
+/// 即伝播）。**両方 `Some`** の時のみ層分解対象とし、地点ごとに `local_at` を解いて metric を集める。
+/// どちらかが `None` なら `eclipses_missing` に計上し、その食の地点は評価しない。各 metric は
+/// ephemeris=analytical−DE / geometry=DE−golden / total=analytical−golden（[`LayerAccumulator`]）。
+/// 接触秒は c1..c4 のうち **analytical・DE・golden の 3 者すべてが `Some`** の接触のみ寄与（時系列順）。
+/// 空 golden は全層空統計・カウント 0・`Ok`（vacuous）。
+pub fn report_differential<A: GoldenComputer, D: GoldenComputer>(
+    analytical: &A,
+    de: &D,
+    golden: &[GoldenEclipse],
+) -> Result<DifferentialReport, EclipseError> {
+    let mut global_greatest = LayerAccumulator::default();
+    let mut global_magnitude = LayerAccumulator::default();
+    let mut local_maximum = LayerAccumulator::default();
+    let mut local_contacts = LayerAccumulator::default();
+    let mut local_magnitude = LayerAccumulator::default();
+    let mut local_obscuration = LayerAccumulator::default();
+    let mut local_altitude = LayerAccumulator::default();
+    let mut eclipses_compared = 0usize;
+    let mut eclipses_missing = 0usize;
+    let mut locations_compared = 0usize;
+
+    for g in golden {
+        // 両エンジンを必ず呼ぶ（どちらの Err も伝播）。両方 Some の時のみ層分解する。
+        let a_eclipse = analytical.eclipse_on(g)?;
+        let d_eclipse = de.eclipse_on(g)?;
+        let (Some(a_eclipse), Some(d_eclipse)) = (a_eclipse, d_eclipse) else {
+            eclipses_missing += 1;
+            continue;
+        };
+        eclipses_compared += 1;
+
+        // --- 全球 ---
+        let total_global = compare_global(&a_eclipse, g);
+        let geo_global = compare_global(&d_eclipse, g);
+        let a_greatest = &a_eclipse.global.greatest;
+        let d_greatest = &d_eclipse.global.greatest;
+        global_greatest.push_diffs(
+            computed_pair_time_error_seconds(
+                a_greatest.time_utc,
+                a_greatest.time_tt,
+                d_greatest.time_utc,
+                d_greatest.time_tt,
+                g.greatest_time_tt.is_some(),
+            ),
+            geo_global.greatest_seconds,
+            total_global.greatest_seconds,
+        );
+        // 食分は ephemeris = a−d（両エンジン出力・換算不要）、geometry/total は compare_global
+        // （golden をエンジン規約へ換算済み）を流用＝恒等性が保たれる。
+        global_magnitude.push_diffs(
+            a_greatest.magnitude.0 - d_greatest.magnitude.0,
+            geo_global.magnitude,
+            total_global.magnitude,
+        );
+
+        // --- 地点別 ---
+        for location in &g.locations {
+            locations_compared += 1;
+            let a_local = analytical.local_at(&a_eclipse, location)?;
+            let d_local = de.local_at(&d_eclipse, location)?;
+            let total_local = compare_local(&a_local, location);
+            let geo_local = compare_local(&d_local, location);
+
+            // 最大食接触時刻。
+            local_maximum.push_diffs(
+                computed_pair_time_error_seconds(
+                    a_local.contacts.maximum.time_utc,
+                    a_local.contacts.maximum.time_tt,
+                    d_local.contacts.maximum.time_utc,
+                    d_local.contacts.maximum.time_tt,
+                    location.maximum.time_tt.is_some(),
+                ),
+                geo_local.maximum_seconds,
+                total_local.maximum_seconds,
+            );
+            // スカラ metric（食分/食面積/高度）。golden は compare_local と同じ raw 値で素通し。
+            local_magnitude.push_scalar(
+                a_local.magnitude.0,
+                d_local.magnitude.0,
+                location.magnitude,
+            );
+            local_obscuration.push_scalar(
+                a_local.obscuration.0,
+                d_local.obscuration.0,
+                location.obscuration,
+            );
+            local_altitude.push_scalar(
+                a_local.maximum_altitude.0,
+                d_local.maximum_altitude.0,
+                location.max_altitude_deg,
+            );
+
+            // C1〜C4 接触: analytical・DE・golden の 3 者すべて Some の接触のみ層分解に寄与（時系列順）。
+            let triples = [
+                (
+                    a_local.contacts.c1.as_ref(),
+                    d_local.contacts.c1.as_ref(),
+                    location.c1.as_ref(),
+                ),
+                (
+                    a_local.contacts.c2.as_ref(),
+                    d_local.contacts.c2.as_ref(),
+                    location.c2.as_ref(),
+                ),
+                (
+                    a_local.contacts.c3.as_ref(),
+                    d_local.contacts.c3.as_ref(),
+                    location.c3.as_ref(),
+                ),
+                (
+                    a_local.contacts.c4.as_ref(),
+                    d_local.contacts.c4.as_ref(),
+                    location.c4.as_ref(),
+                ),
+            ];
+            for (a_contact, d_contact, g_contact) in triples {
+                let (Some(a_c), Some(d_c), Some(g_c)) = (a_contact, d_contact, g_contact) else {
+                    continue;
+                };
+                local_contacts.push_diffs(
+                    computed_pair_time_error_seconds(
+                        a_c.time_utc,
+                        a_c.time_tt,
+                        d_c.time_utc,
+                        d_c.time_tt,
+                        g_c.time_tt.is_some(),
+                    ),
+                    contact_time_error_seconds(
+                        d_c.time_utc,
+                        d_c.time_tt,
+                        g_c.time_utc,
+                        g_c.time_tt,
+                    ),
+                    contact_time_error_seconds(
+                        a_c.time_utc,
+                        a_c.time_tt,
+                        g_c.time_utc,
+                        g_c.time_tt,
+                    ),
+                );
+            }
+        }
+    }
+
+    Ok(DifferentialReport {
+        global_greatest_seconds: global_greatest.finish("s"),
+        global_magnitude: global_magnitude.finish(""),
+        local_maximum_seconds: local_maximum.finish("s"),
+        local_contact_seconds: local_contacts.finish("s"),
+        local_magnitude: local_magnitude.finish(""),
+        local_obscuration: local_obscuration.finish(""),
+        local_max_altitude_deg: local_altitude.finish("deg"),
+        eclipses_compared,
+        eclipses_missing,
+        locations_compared,
+    })
+}
+
+/// 1 metric の [`LayeredError`] を 3 層ブロック（ephemeris/geometry/total）に整形する（`render_text` 用）。
+fn layered_block(label: &str, layered: &LayeredError) -> String {
+    let mut out = format!("{label}:\n");
+    out.push_str(&stats_line("ephemeris", &layered.ephemeris));
+    out.push_str(&stats_line("geometry", &layered.geometry));
+    out.push_str(&stats_line("total", &layered.total));
+    out
+}
+
+/// [`DifferentialReport`] を人間可読サマリ（複数行テキスト）に整形する（誤差を隠さない: 全層を表示）。
+///
+/// 被覆カウント（層分解できた食/取りこぼし/比較地点）と、全 metric の 3 層（ephemeris/geometry/total）
+/// の n/max/mean/p95＋単位を出す。pass/fail は持たない（純粋な誤差層分解）。
+pub fn render_differential_text(report: &DifferentialReport) -> String {
+    let mut out = String::new();
+    out.push_str("=== DE differential layered report ===\n");
+    out.push_str(&format!(
+        "eclipses: {} compared, {} missing | locations compared: {}\n",
+        report.eclipses_compared, report.eclipses_missing, report.locations_compared,
+    ));
+    out.push_str(&layered_block(
+        "global_greatest_seconds",
+        &report.global_greatest_seconds,
+    ));
+    out.push_str(&layered_block("global_magnitude", &report.global_magnitude));
+    out.push_str(&layered_block(
+        "local_maximum_seconds",
+        &report.local_maximum_seconds,
+    ));
+    out.push_str(&layered_block(
+        "local_contact_seconds",
+        &report.local_contact_seconds,
+    ));
+    out.push_str(&layered_block("local_magnitude", &report.local_magnitude));
+    out.push_str(&layered_block(
+        "local_obscuration",
+        &report.local_obscuration,
+    ));
+    out.push_str(&layered_block(
+        "local_max_altitude_deg",
+        &report.local_max_altitude_deg,
+    ));
+    out
+}
+
+/// [`DifferentialReport`] を機械可読 JSON（pretty・末尾改行）に整形する（CI/履歴比較用）。
+pub fn render_differential_json(report: &DifferentialReport) -> Result<String, serde_json::Error> {
+    let mut out = serde_json::to_string_pretty(report)?;
+    out.push('\n');
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::percentile_r7_sorted;
