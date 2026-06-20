@@ -18,7 +18,9 @@ thiserror = "2"
 # validate サブコマンド（ISSUE-030 S30f）: ゴールデン照合を実エンジンで実走しレポート出力。
 # umbra-fixtures（検証専用）の依存は dev ツールである xtask に限定（本番 CLI は非依存・architecture §1）。
 umbra-eclipse = { path = "../umbra-eclipse" }
-umbra-ephemeris = { path = "../umbra-ephemeris", features = ["bundled-data"] }
+# differential サブコマンド（ISSUE-030 DE差分・層分解）は JPL DE Reference バックエンドを使うため
+# `jpl` feature を有効化（追加依存なしの純Rust SPK reader）。de440s.bsp は非同梱・実行時に解決。
+umbra-ephemeris = { path = "../umbra-ephemeris", features = ["bundled-data", "jpl"] }
 umbra-fixtures = { path = "../umbra-fixtures" }
 serde_json = "1"
 

@@ -8,6 +8,7 @@
 
 pub mod checksum;
 pub mod dataset;
+pub mod differential;
 pub mod elp;
 pub mod eop;
 pub mod error;
@@ -32,6 +33,8 @@ SUBCOMMANDS:
     verify-data             EOP/閏秒/ΔT の valid_to 期限・checksum を検査
     check-licenses          cargo-deny + データ provenance/NOTICE 整合を検査
     validate                ゴールデン照合を実エンジンで実走し誤差レポートを出力（ISSUE-030）
+                            [--accuracy <standard|reference>] [--format <text|json>]
+    differential            解析暦×JPL DE の 2 エンジンで誤差を層分解（暦層/幾何層）出力（ISSUE-030・SLOW）
                             [--accuracy <standard|reference>] [--format <text|json>]
     fetch-de440s            JPL DE440s SPK を NAIF から data/spk/ へ取得し SHA-256 照合（ISSUE-036・非同梱）
     verify-de440s           取得済み data/spk/de440s.bsp の SHA-256 整合を検査（DL 不要）";
@@ -151,6 +154,7 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
             "check-licenses — cargo-deny + provenance 整合は CI ゲートで実装".to_string(),
         )),
         "validate" => validate::run_validate(args),
+        "differential" => differential::run_differential(args),
         "fetch-de440s" => spk::fetch_de440s(),
         "verify-de440s" => spk::verify_de440s(),
         other => Err(XtaskError::UnknownSubcommand(other.to_string())),
