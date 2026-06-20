@@ -185,6 +185,10 @@
   ため、W1 永年項を DE440 差分で最小二乗再フィットした簡易 DE-fit で 0.268″ へ低減（月 budget 0.40″ 達成）。
   残差床（黄経の周期 Poisson 増幅項＋緯度系統差 ~0.13″）は ELP2000-82B の限界で、**≤0.1″ の理想は
   ELP/MPP02 入手まで残課題**（ISSUE-014/034）。
+  - **データ入手 再検証（2026-06-21）**: 一次データ（`ELP_MAIN.S1/2/3`・`ELP_PERT.S1/2/3`）は依然
+    `ftp://cyrano-se.obspm.fr/pub/2_lunar_solutions/2_elpmpp02` のみが配布元で**停止のまま**。ミラー候補
+    `MarcvdSluys/ELP-MPP02`（EUPL-1.2）は**データ非同梱**で同 FTP からの手動取得を要求、`ytliu0/ElpMpp02`
+    は **GPL-3.0（混入禁止）**。→ 非GPL の清浄一次データは現状入手不能を再確認（ブロック継続）。
 
 #### M10 DE確定 結果 — 日食 metric 層分解（2026-06-20・`xtask differential`・ISSUE-030）
 
