@@ -12,7 +12,9 @@
 
 use std::path::Path;
 
-use umbra_core::{JulianDate2, TdbInstant, Vector3};
+use umbra_core::{JulianDate2, TdbInstant, TtInstant, Vector3};
+use umbra_ephemeris::frames::ecliptic_to_gcrs_matrix;
+use umbra_ephemeris::sun::sun_geocentric_ecliptic_of_date;
 use umbra_ephemeris::{AnalyticalEphemeris, Body, Ephemeris, EphemerisFrame, JplEphemeris, Origin};
 
 /// 実 DE440s（リポジトリ root の data/spk）。CARGO_MANIFEST_DIR は crates/umbra-ephemeris。
@@ -126,4 +128,59 @@ fn analytical_vs_de440s_geocentric_direction() {
         max_moon <= 0.1,
         "月 地心方向残差 {max_moon:.5}\" が目標 0.1\" を超過（jd {at_moon:.1}）"
     );
+}
+
+/// 太陽残差の黄経Δλ・黄緯Δβ 分解（診断・常時 ignore）。
+///
+/// VSOP87D 黄道of date 位置と、DE440s ICRS を `ecliptic_to_gcrs_matrix(tt)ᵀ` で黄道of dateへ
+/// 戻したものを λ=atan2(y,x), β=asin(z/|r|) で比較。`Δλ·cosβ`（黄経残差）と `Δβ` を秒角で各
+/// エポックに表示する。J2000 floor（≈0.07″）が黄経の定数オフセット（VSOP87→ICRS 分点バイアス
+/// 未適用）か、黄緯（傾斜）か、両端の線形増大（歳差レート不一致）かを切り分ける。
+#[ignore = "diagnostic: 太陽残差の黄経/黄緯分解（cargo test --features jpl -- --ignored --nocapture）"]
+#[test]
+fn sun_residual_ecliptic_decomposition() {
+    let Ok(jpl) = JplEphemeris::from_spk_path(Path::new(DE440S_PATH)) else {
+        eprintln!("skip sun_residual_ecliptic_decomposition: de440s.bsp 不在");
+        return;
+    };
+
+    // J2000 を中心に ±25/50/75/100 年（年≈365.25 日）。
+    let j2000 = 2_451_545.0_f64;
+    for years in [-100.0, -75.0, -50.0, -25.0, 0.0, 25.0, 50.0, 75.0, 100.0] {
+        let jd = j2000 + years * 365.25;
+        let t = tdb(jd);
+        let tt = TtInstant::from_jd2(JulianDate2::from_jd(jd));
+
+        // 解析: VSOP87D 黄道of date（AU・方向のみ使用）。
+        let ana_ecl = sun_geocentric_ecliptic_of_date(t);
+        // DE: ICRS → 黄道of date（同 IAU2006 行列の転置）。
+        let de_icrs = jpl
+            .state(Body::Sun, t, Origin::Geocenter, EphemerisFrame::Icrs)
+            .unwrap()
+            .position;
+        let de_ecl = ecliptic_to_gcrs_matrix(tt).transpose().mul_vec(de_icrs);
+
+        let (la, ba) = lon_lat(ana_ecl);
+        let (ld, bd) = lon_lat(de_ecl);
+        let mut dlon = la - ld;
+        // [-π,π] に折り返す。
+        while dlon > std::f64::consts::PI {
+            dlon -= std::f64::consts::TAU;
+        }
+        while dlon < -std::f64::consts::PI {
+            dlon += std::f64::consts::TAU;
+        }
+        let dlon_arcsec = dlon * ba.cos() * ARCSEC_PER_RAD;
+        let dlat_arcsec = (ba - bd) * ARCSEC_PER_RAD;
+        eprintln!(
+            "  Sun {years:+6.0}yr (jd {jd:.1}): Δλ·cosβ = {dlon_arcsec:+.5}\"  Δβ = {dlat_arcsec:+.5}\""
+        );
+    }
+}
+
+/// 直交（黄道）→ 黄経 λ\[rad\]・黄緯 β\[rad\]。
+fn lon_lat(v: Vector3) -> (f64, f64) {
+    let lon = v.y.atan2(v.x);
+    let lat = v.z.atan2((v.x * v.x + v.y * v.y).sqrt());
+    (lon, lat)
 }
