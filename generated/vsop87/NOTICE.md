@@ -6,7 +6,7 @@ verify with `cargo xtask verify-generated --dataset vsop87`.
 
 name = vsop87-earth
 version = VSOP87D
-source = IMCCE VSOP87D.ear (Earth, version D); Bretagnon & Francou (1988), A&A 202, 309
+source = IMCCE VSOP87D.ear (Earth, version D, ecliptic of date spherical L,B,R); Bretagnon & Francou (1988), A&A 202, 309
 license = IMCCE scientific data (attribution); regenerated from primary, GPL not used
 valid_from = 1900-01-01
 valid_to = 2100-01-01

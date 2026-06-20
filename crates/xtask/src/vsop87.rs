@@ -18,12 +18,16 @@ pub const N_POWERS: usize = 6;
 
 /// 原データ配置（`cargo xtask` をリポジトリルートから実行する前提。`docs/accuracy.md` §5）。
 const SOURCE_DIR: &str = "data/coefficient-source/vsop87";
-/// 原データファイル名（版D・地球）。
-const SOURCE_FILE: &str = "VSOP87D.ear";
+/// 原データファイル名（版D・地球＝黄道 of date 球面 L,B,R）。
+const SOURCE_FILE_D: &str = "VSOP87D.ear";
+/// packed 係数ファイル名（版D）。
+const PACKED_NAME_D: &str = "vsop87d_earth.bin";
+/// 原データファイル名（版A・地球＝黄道 J2000 直交 X,Y,Z。M10 太陽フレーム修正・ISSUE-013/035）。
+const SOURCE_FILE_A: &str = "VSOP87A.ear";
+/// packed 係数ファイル名（版A）。
+const PACKED_NAME_A: &str = "vsop87a_earth.bin";
 /// 生成物の出力先。
 const GENERATED_DIR: &str = "generated/vsop87";
-/// packed 係数ファイル名。
-const PACKED_NAME: &str = "vsop87d_earth.bin";
 
 /// VSOP87 級数 1 項: `amplitude·cos(phase + frequency·T)`。
 #[derive(Clone, Debug, PartialEq)]
@@ -62,12 +66,13 @@ fn is_header(line: &str) -> bool {
     line.contains("VARIABLE") && line.contains("TERMS")
 }
 
-/// セクション見出しを `(variable, power, declared_terms)` にパースし、版D・地球を検査する（B4(c)）。
-fn parse_header(line: &str) -> Result<(u8, u8, usize), XtaskError> {
+/// セクション見出しを `(variable, power, declared_terms)` にパースし、版（`version_letter`）・
+/// 地球を検査する（B4(c)）。版D=黄道 of date 球面 L,B,R、版A=黄道 J2000 直交 X,Y,Z。
+fn parse_header(line: &str, version_letter: char) -> Result<(u8, u8, usize), XtaskError> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let malformed = |m: &str| XtaskError::MalformedSource(format!("VSOP87 header: {m}: {line:?}"));
 
-    // 版D・地球の検査（EMB/他版/他天体の取り違えは 6.4″/月の系統誤差・PROVENANCE.md §B4(c)）。
+    // 版・地球の検査（EMB/他版/他天体の取り違えは 6.4″/月の系統誤差・PROVENANCE.md §B4(c)）。
     let version_idx = tokens
         .iter()
         .position(|t| *t == "VERSION")
@@ -75,8 +80,8 @@ fn parse_header(line: &str) -> Result<(u8, u8, usize), XtaskError> {
     let version = tokens
         .get(version_idx + 1)
         .ok_or_else(|| malformed("missing version id"))?;
-    if !version.starts_with('D') {
-        return Err(malformed("not VSOP87 version D"));
+    if !version.starts_with(version_letter) {
+        return Err(malformed(&format!("not VSOP87 version {version_letter}")));
     }
     let body = tokens
         .get(version_idx + 2)
@@ -132,9 +137,9 @@ fn parse_term_line(line: &str) -> Option<Vsop87Term> {
     })
 }
 
-/// `VSOP87D.ear` テキストをパースする。版D・地球であることを検査し（B4(c)）、各セクション見出しの
-/// 宣言項数と実際の項数が食い違えば [`XtaskError::MalformedSource`]。
-pub fn parse_earth(text: &str) -> Result<Vsop87Earth, XtaskError> {
+/// `VSOP87<version>.ear` テキストをパースする。版・地球であることを検査し（B4(c)）、各セクション
+/// 見出しの宣言項数と実際の項数が食い違えば [`XtaskError::MalformedSource`]。
+pub fn parse_earth(text: &str, version_letter: char) -> Result<Vsop87Earth, XtaskError> {
     let mut series: Vec<Vsop87Series> = Vec::new();
     let mut current: Option<(u8, u8, usize, Vec<Vsop87Term>)> = None;
     let finish = |sec: (u8, u8, usize, Vec<Vsop87Term>)| -> Result<Vsop87Series, XtaskError> {
@@ -156,7 +161,7 @@ pub fn parse_earth(text: &str) -> Result<Vsop87Earth, XtaskError> {
             if let Some(sec) = current.take() {
                 series.push(finish(sec)?);
             }
-            let (variable, power, declared) = parse_header(line)?;
+            let (variable, power, declared) = parse_header(line, version_letter)?;
             current = Some((variable, power, declared, Vec::new()));
         } else if let Some(term) = parse_term_line(line) {
             match current.as_mut() {
@@ -272,15 +277,25 @@ pub fn unpack_earth(bytes: &[u8]) -> Result<Vsop87Earth, XtaskError> {
 }
 
 /// 原データテキストから packed バイト列と [`DataSetMetadata`] を構成する（純関数・決定的）。
-pub fn build_artifact(text: &str) -> Result<(Vec<u8>, DataSetMetadata), XtaskError> {
-    let model = parse_earth(text)?;
+/// `version_letter`='D'（黄道 of date 球面 L,B,R）or 'A'（黄道 J2000 直交 X,Y,Z）。
+pub fn build_artifact(
+    text: &str,
+    version_letter: char,
+) -> Result<(Vec<u8>, DataSetMetadata), XtaskError> {
+    let model = parse_earth(text, version_letter)?;
     let bytes = pack_earth(&model);
     let checksum = sha256_hex(&bytes);
+    let frame = if version_letter == 'A' {
+        "version A, ecliptic J2000 rectangular X,Y,Z"
+    } else {
+        "version D, ecliptic of date spherical L,B,R"
+    };
     let metadata = DataSetMetadata {
         name: "vsop87-earth".to_string(),
-        version: "VSOP87D".to_string(),
-        source: "IMCCE VSOP87D.ear (Earth, version D); Bretagnon & Francou (1988), A&A 202, 309"
-            .to_string(),
+        version: format!("VSOP87{version_letter}"),
+        source: format!(
+            "IMCCE VSOP87{version_letter}.ear (Earth, {frame}); Bretagnon & Francou (1988), A&A 202, 309"
+        ),
         license: "IMCCE scientific data (attribution); regenerated from primary, GPL not used"
             .to_string(),
         valid_from: "1900-01-01".to_string(),
@@ -304,10 +319,16 @@ fn render_metadata(m: &DataSetMetadata) -> String {
     )
 }
 
-/// 一次原データを読み、packed 係数・metadata・NOTICE を `generated/vsop87/` へ書き出す。
-pub fn generate_to_disk() -> Result<DataSetMetadata, XtaskError> {
-    let text = read_source(SOURCE_FILE)?;
-    let (bytes, metadata) = build_artifact(&text)?;
+/// 1 版（D or A）の packed 係数・metadata・NOTICE を `generated/vsop87/` へ書き出す。
+fn generate_one(
+    source_file: &str,
+    packed_name: &str,
+    version_letter: char,
+    meta_name: &str,
+    notice_name: &str,
+) -> Result<DataSetMetadata, XtaskError> {
+    let text = read_source(source_file)?;
+    let (bytes, metadata) = build_artifact(&text, version_letter)?;
     fs::create_dir_all(GENERATED_DIR).map_err(|source| XtaskError::Io {
         path: GENERATED_DIR.to_string(),
         source,
@@ -316,14 +337,14 @@ pub fn generate_to_disk() -> Result<DataSetMetadata, XtaskError> {
         let path = format!("{GENERATED_DIR}/{name}");
         fs::write(&path, content).map_err(|source| XtaskError::Io { path, source })
     };
-    write(PACKED_NAME, &bytes)?;
-    write("metadata.txt", render_metadata(&metadata).as_bytes())?;
+    write(packed_name, &bytes)?;
+    write(meta_name, render_metadata(&metadata).as_bytes())?;
     write(
-        "NOTICE.md",
+        notice_name,
         format!(
-            "# Generated VSOP87D Earth coefficients\n\n\
+            "# Generated VSOP87{version_letter} Earth coefficients\n\n\
              Generated by `cargo xtask generate-coefficients --dataset vsop87` from\n\
-             `{SOURCE_DIR}/{SOURCE_FILE}` (see PROVENANCE.md). Do not edit by hand; regenerate and\n\
+             `{SOURCE_DIR}/{source_file}` (see PROVENANCE.md). Do not edit by hand; regenerate and\n\
              verify with `cargo xtask verify-generated --dataset vsop87`.\n\n{}\n",
             render_metadata(&metadata)
         )
@@ -332,16 +353,47 @@ pub fn generate_to_disk() -> Result<DataSetMetadata, XtaskError> {
     Ok(metadata)
 }
 
-/// コミット済み packed 係数が一次原データから決定的に再生成できることを検証する。
-pub fn verify_against_disk() -> Result<(), XtaskError> {
-    let text = read_source(SOURCE_FILE)?;
-    let (regenerated, _) = build_artifact(&text)?;
-    let committed_path = format!("{GENERATED_DIR}/{PACKED_NAME}");
+/// 一次原データを読み、版D（黄道 of date L,B,R）と版A（黄道 J2000 X,Y,Z）の packed 係数・
+/// metadata・NOTICE を `generated/vsop87/` へ書き出す。版A は M10 太陽フレーム修正（ISSUE-013/035）。
+pub fn generate_to_disk() -> Result<DataSetMetadata, XtaskError> {
+    let d = generate_one(
+        SOURCE_FILE_D,
+        PACKED_NAME_D,
+        'D',
+        "metadata.txt",
+        "NOTICE.md",
+    )?;
+    let a = generate_one(
+        SOURCE_FILE_A,
+        PACKED_NAME_A,
+        'A',
+        "metadata_a.txt",
+        "NOTICE_a.md",
+    )?;
+    println!("  vsop87a (checksum {})", a.checksum);
+    Ok(d)
+}
+
+/// 1 版のコミット済み packed が一次原データから決定的に再生成できることを検証する。
+fn verify_one(
+    source_file: &str,
+    packed_name: &str,
+    version_letter: char,
+) -> Result<(), XtaskError> {
+    let text = read_source(source_file)?;
+    let (regenerated, _) = build_artifact(&text, version_letter)?;
+    let committed_path = format!("{GENERATED_DIR}/{packed_name}");
     let committed = fs::read(&committed_path).map_err(|source| XtaskError::Io {
         path: committed_path,
         source,
     })?;
     crate::compare_checksum("vsop87", &sha256_hex(&committed), &regenerated)
+}
+
+/// コミット済み packed 係数（版D・版A）が一次原データから決定的に再生成できることを検証する。
+pub fn verify_against_disk() -> Result<(), XtaskError> {
+    verify_one(SOURCE_FILE_D, PACKED_NAME_D, 'D')?;
+    verify_one(SOURCE_FILE_A, PACKED_NAME_A, 'A')
 }
 
 #[cfg(test)]
@@ -359,6 +411,8 @@ mod tests {
     // 版D・地球, Bretagnon & Francou 1988）。
     // ------------------------------------------------------------------
     const VSOP87D_EAR: &str = include_str!("../../../data/coefficient-source/vsop87/VSOP87D.ear");
+    /// 版A（黄道 J2000 直交 X,Y,Z・M10 太陽フレーム修正）。出典は同 PROVENANCE.md。
+    const VSOP87A_EAR: &str = include_str!("../../../data/coefficient-source/vsop87/VSOP87A.ear");
 
     /// 地球の宣言項数表（PROVENANCE.md §系列の構造）。
     /// 各要素 = (variable, power, declared_terms)。出現順 = L T0..T5, B T0..T4, R T0..T5。
@@ -405,7 +459,7 @@ mod tests {
     // ==================================================================
     #[test]
     fn parse_earth_has_17_sections_in_declared_order_with_declared_counts() {
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         assert_eq!(earth.series.len(), 17, "L 6 + B 5 + R 6 = 17 sections");
         assert_eq!(
             earth.series.len(),
@@ -431,7 +485,7 @@ mod tests {
     /// 先頭セクションの不変条件を独立に確認（順序付けの起点）。
     #[test]
     fn parse_earth_first_section_is_l_t0() {
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         let first = &earth.series[0];
         assert_eq!(first.variable, 1, "first section variable = L(1)");
         assert_eq!(first.power, 0, "first section power = T^0");
@@ -449,7 +503,7 @@ mod tests {
     /// 末尾 3 トークン = A=1.75347045673, B=0.0, C=0.0。
     #[test]
     fn l_t0_first_term_spot_value() {
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         assert_term(&earth.series[0].terms[0], 1.75347045673, 0.0, 0.0);
     }
 
@@ -458,7 +512,7 @@ mod tests {
     /// 直前の S=-0.00748171065, K=-0.03256824823 を誤って拾わないことを保証する。
     #[test]
     fn l_t0_second_term_spot_value() {
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         assert_term(
             &earth.series[0].terms[1],
             0.03341656456,
@@ -473,7 +527,7 @@ mod tests {
     /// R セクション（variable=3, power=0）の起点を独立に検証する。
     #[test]
     fn r_t0_first_term_spot_value() {
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         // R T0 = series[11]（L 6 + B 5 = 11 セクションの次）。
         let r_t0 = &earth.series[11];
         assert_eq!(r_t0.variable, 3, "series[11] is R(3)");
@@ -506,7 +560,7 @@ mod tests {
     #[test]
     fn parse_earth_accepts_synthetic_version_d_earth() {
         let text = synthetic_section("D4", "EARTH", 1, 1);
-        let earth = parse_earth(&text).expect("version D + EARTH synthetic parses");
+        let earth = parse_earth(&text, 'D').expect("version D + EARTH synthetic parses");
         assert_eq!(earth.series.len(), 1);
         assert_eq!(earth.series[0].variable, 1);
         assert_eq!(earth.series[0].power, 0);
@@ -518,7 +572,7 @@ mod tests {
     #[test]
     fn parse_earth_rejects_non_version_d() {
         let text = synthetic_section("A", "EARTH", 1, 1);
-        let err = parse_earth(&text).expect_err("version A must be rejected");
+        let err = parse_earth(&text, 'D').expect_err("version A must be rejected");
         assert!(
             matches!(err, XtaskError::MalformedSource(_)),
             "expected MalformedSource for non-D version, got {err:?}"
@@ -530,7 +584,7 @@ mod tests {
     #[test]
     fn parse_earth_rejects_non_earth_body() {
         let text = synthetic_section("D4", "VENUS", 1, 1);
-        let err = parse_earth(&text).expect_err("VENUS body must be rejected");
+        let err = parse_earth(&text, 'D').expect_err("VENUS body must be rejected");
         assert!(
             matches!(err, XtaskError::MalformedSource(_)),
             "expected MalformedSource for non-EARTH body, got {err:?}"
@@ -544,7 +598,7 @@ mod tests {
     fn parse_earth_rejects_term_count_mismatch() {
         // 宣言 3、実 2 行。
         let text = synthetic_section("D4", "EARTH", 3, 2);
-        let err = parse_earth(&text).expect_err("declared 3 but 2 rows must error");
+        let err = parse_earth(&text, 'D').expect_err("declared 3 but 2 rows must error");
         assert!(
             matches!(err, XtaskError::MalformedSource(_)),
             "expected MalformedSource for term-count mismatch, got {err:?}"
@@ -556,7 +610,7 @@ mod tests {
     // ==================================================================
     #[test]
     fn pack_unpack_round_trips_full_model() {
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         let restored = unpack_earth(&pack_earth(&earth)).expect("packed model round-trips");
         assert_eq!(restored, earth, "round-tripped model must equal original");
     }
@@ -569,7 +623,7 @@ mod tests {
     // ==================================================================
     #[test]
     fn pack_earth_is_deterministic_and_has_exact_length() {
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         let a = pack_earth(&earth);
         let b = pack_earth(&earth);
         assert_eq!(a, b, "pack_earth must be deterministic");
@@ -589,9 +643,9 @@ mod tests {
     // ==================================================================
     #[test]
     fn build_artifact_checksum_and_metadata_are_consistent() {
-        let (bytes, metadata) = build_artifact(VSOP87D_EAR).expect("artifact builds");
+        let (bytes, metadata) = build_artifact(VSOP87D_EAR, 'D').expect("artifact builds");
         // packed バイトは pack_earth と同一（純関数の決定性）。
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         assert_eq!(bytes, pack_earth(&earth), "artifact bytes == pack_earth");
         // checksum は packed バイトの SHA-256。
         assert_eq!(
@@ -621,8 +675,8 @@ mod tests {
     /// build_artifact は決定的（同一入力 → 同一バイト・同一 checksum）。
     #[test]
     fn build_artifact_is_deterministic() {
-        let (bytes_a, meta_a) = build_artifact(VSOP87D_EAR).expect("artifact builds");
-        let (bytes_b, meta_b) = build_artifact(VSOP87D_EAR).expect("artifact builds");
+        let (bytes_a, meta_a) = build_artifact(VSOP87D_EAR, 'D').expect("artifact builds");
+        let (bytes_b, meta_b) = build_artifact(VSOP87D_EAR, 'D').expect("artifact builds");
         assert_eq!(bytes_a, bytes_b, "bytes deterministic");
         assert_eq!(meta_a.checksum, meta_b.checksum, "checksum deterministic");
     }
@@ -729,7 +783,7 @@ mod tests {
     /// render_metadata は全フィールドを行として出力する（本体→"" 変異を殺す）。
     #[test]
     fn render_metadata_includes_all_fields() {
-        let (_, metadata) = build_artifact(VSOP87D_EAR).unwrap();
+        let (_, metadata) = build_artifact(VSOP87D_EAR, 'D').unwrap();
         let rendered = render_metadata(&metadata);
         assert!(rendered.contains("name = vsop87-earth"), "{rendered}");
         assert!(rendered.contains("version = VSOP87D"), "{rendered}");
@@ -742,10 +796,90 @@ mod tests {
     /// 最終セクション R T5（series[16]）の構造を独立に確認（順序付けの終端）。
     #[test]
     fn last_section_is_r_t5() {
-        let earth = parse_earth(VSOP87D_EAR).expect("real VSOP87D.ear parses");
+        let earth = parse_earth(VSOP87D_EAR, 'D').expect("real VSOP87D.ear parses");
         let last = earth.series.last().unwrap();
         assert_eq!(last.variable, 3, "last section variable = R(3)");
         assert_eq!(last.power, 5, "last section power = T^5");
         assert_eq!(last.terms.len(), 3, "R T5 = 3 terms");
+    }
+
+    // ==================================================================
+    // 版A（黄道 J2000 直交 X,Y,Z）— M10 太陽フレーム修正（ISSUE-013/035）。
+    //   構造は版D と同形式（A,B,C 項）。版判別・XYZ 18 セクション・round-trip を検証。
+    //   VSOP87A.ear ヘッダ宣言項数（PROVENANCE.md）:
+    //     X(1): 843,491,204,18,15,6  Y(2): 854,496,202,17,15,6  Z(3): 178,120,53,12,6,2
+    // ==================================================================
+
+    /// 版A・地球の宣言項数表（出現順 X T0..T5, Y T0..T5, Z T0..T5 = 18 セクション）。
+    const DECLARED_SECTIONS_A: &[(u8, u8, usize)] = &[
+        (1, 0, 843),
+        (1, 1, 491),
+        (1, 2, 204),
+        (1, 3, 18),
+        (1, 4, 15),
+        (1, 5, 6),
+        (2, 0, 854),
+        (2, 1, 496),
+        (2, 2, 202),
+        (2, 3, 17),
+        (2, 4, 15),
+        (2, 5, 6),
+        (3, 0, 178),
+        (3, 1, 120),
+        (3, 2, 53),
+        (3, 3, 12),
+        (3, 4, 6),
+        (3, 5, 2),
+    ];
+
+    /// 版A は 18 セクション、各 (variable, power, terms.len()) が宣言値と出現順で一致。
+    #[test]
+    fn parse_earth_version_a_has_18_sections_in_declared_order() {
+        let earth = parse_earth(VSOP87A_EAR, 'A').expect("real VSOP87A.ear parses");
+        assert_eq!(earth.series.len(), 18, "X 6 + Y 6 + Z 6 = 18 sections");
+        for (got, &(var, pow, n)) in earth.series.iter().zip(DECLARED_SECTIONS_A) {
+            assert_eq!(got.variable, var, "variable order");
+            assert_eq!(got.power, pow, "power order");
+            assert_eq!(got.terms.len(), n, "term count (var={var}, T**{pow})");
+        }
+    }
+
+    /// 版A の packed round-trip（parse → pack → unpack が元と完全一致）。
+    #[test]
+    fn version_a_packed_roundtrips() {
+        let earth = parse_earth(VSOP87A_EAR, 'A').expect("real VSOP87A.ear parses");
+        let bytes = pack_earth(&earth);
+        let restored = unpack_earth(&bytes).expect("unpack");
+        assert_eq!(restored, earth, "round-trip identity");
+    }
+
+    /// 版A の build_artifact メタデータ（version=VSOP87A・source に version A 明記）。
+    #[test]
+    fn build_artifact_version_a_metadata() {
+        let (bytes, metadata) = build_artifact(VSOP87A_EAR, 'A').expect("artifact builds");
+        assert_eq!(metadata.version, "VSOP87A");
+        assert!(
+            metadata.source.contains("VSOP87A.ear") && metadata.source.contains("version A"),
+            "source names version A: {:?}",
+            metadata.source
+        );
+        assert_eq!(
+            metadata.checksum,
+            sha256_hex(&bytes),
+            "checksum matches bytes"
+        );
+    }
+
+    /// 版判別: 版D を 'A' で、版A を 'D' で読むと MalformedSource（取り違え検出）。
+    #[test]
+    fn version_letter_mismatch_is_rejected() {
+        assert!(matches!(
+            parse_earth(VSOP87D_EAR, 'A'),
+            Err(XtaskError::MalformedSource(_))
+        ));
+        assert!(matches!(
+            parse_earth(VSOP87A_EAR, 'D'),
+            Err(XtaskError::MalformedSource(_))
+        ));
     }
 }
