@@ -39,7 +39,7 @@ pub enum AccuracyArg {
 }
 
 /// `args` から `flag` の値を取り出す（無指定→`None`、値欠落→[`XtaskError::MissingArgument`]）。
-fn flag_value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>, XtaskError> {
+pub fn flag_value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>, XtaskError> {
     match args.iter().position(|arg| arg == flag) {
         None => Ok(None),
         Some(index) => args

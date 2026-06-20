@@ -15,6 +15,7 @@ pub mod error;
 pub mod nutation;
 pub mod packed;
 pub mod spk;
+pub mod sweep;
 pub mod validate;
 pub mod vsop87;
 
@@ -36,6 +37,9 @@ SUBCOMMANDS:
                             [--accuracy <standard|reference>] [--format <text|json>]
     differential            解析暦×JPL DE の 2 エンジンで誤差を層分解（暦層/幾何層）出力（ISSUE-030・SLOW）
                             [--accuracy <standard|reference>] [--format <text|json>]
+    sweep                   全食スイープ（自己カタログ集計＋NASA4区分完備性突合）出力（ISSUE-030・SLOW）
+                            [--from <year>] [--to <year>] [--format <text|json>]
+                            [--expected-total/annular/hybrid/partial <N>]
     fetch-de440s            JPL DE440s SPK を NAIF から data/spk/ へ取得し SHA-256 照合（ISSUE-036・非同梱）
     verify-de440s           取得済み data/spk/de440s.bsp の SHA-256 整合を検査（DL 不要）";
 
@@ -155,6 +159,7 @@ pub fn run(args: &[String]) -> Result<(), XtaskError> {
         )),
         "validate" => validate::run_validate(args),
         "differential" => differential::run_differential(args),
+        "sweep" => sweep::run_sweep(args),
         "fetch-de440s" => spk::fetch_de440s(),
         "verify-de440s" => spk::verify_de440s(),
         other => Err(XtaskError::UnknownSubcommand(other.to_string())),
