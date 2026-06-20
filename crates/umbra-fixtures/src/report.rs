@@ -8,10 +8,12 @@
 //! 設計規律（conventions §11 / accuracy.md §4）: 統計は**誤差を隠さない**。pass 判定が通っても
 //! 数値（max/mean/p95）は必ず保持する。許容を pass のために拡大しない。
 
+use std::collections::BTreeMap;
+
 use umbra_core::{TtInstant, UtcInstant};
 use umbra_eclipse::{EclipseError, LocalCircumstances, SolarEclipse, SolarEclipseKind};
 
-use crate::types::{GoldenEclipse, GoldenLocation};
+use crate::types::{GoldenEclipse, GoldenLocation, LocationClass};
 
 /// 1 日の秒数（JD 差 → 秒の換算）。
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -831,6 +833,237 @@ pub fn render_differential_text(report: &DifferentialReport) -> String {
 
 /// [`DifferentialReport`] を機械可読 JSON（pretty・末尾改行）に整形する（CI/履歴比較用）。
 pub fn render_differential_json(report: &DifferentialReport) -> Result<String, serde_json::Error> {
+    let mut out = serde_json::to_string_pretty(report)?;
+    out.push('\n');
+    Ok(out)
+}
+
+// ============================================================
+// 層別誤差統計（accuracy.md §3.4 — 年代別/食種別/地点条件別）
+// ============================================================
+
+/// 年代・食種・地点条件で層別した誤差統計レポート（accuracy.md §3.4・ゴールデン照合＝第二義オラクル）。
+///
+/// [`report_against_golden`]（全球＋地点の集計）を補完し、誤差を**年代別/食種別/地点条件別**に層別する。
+/// 層別する単一 metric は **局地最大食接触時刻誤差（秒, computed−golden を絶対値統計化）**＝精度の主指標
+/// （±1〜2 s, accuracy.md §2.1）。`by_metric` は層別せず全 metric の全体統計を並べ、`pass_fail` は
+/// [`ToleranceProfile`] 判定。DE 差分（暦層/幾何層の分解）は別レポート [`DifferentialReport`] の領分。
+///
+/// `by_kind`/`by_location_class` は enum をキーに持つが、JSON では Debug 名（`"Total"` 等）の文字列キー
+/// へ写像する（[`serialize_debug_keyed`]・`SolarEclipseKind` に serde 依存を足さないため）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct ErrorReport {
+    /// 全 metric の全体統計（層別なし・固定 7 件・固定順）。
+    pub by_metric: Vec<(String, ErrorStats)>,
+    /// 年代別の局地最大食秒統計（ラベル `"1900-1950"` 等・start 昇順・データのあるバケットのみ）。
+    pub by_era: Vec<(String, ErrorStats)>,
+    /// 食種別の局地最大食秒統計（出現種別のみ・Debug 文字列昇順）。
+    #[serde(serialize_with = "serialize_debug_keyed")]
+    pub by_kind: Vec<(SolarEclipseKind, ErrorStats)>,
+    /// 地点条件別の局地最大食秒統計（出現 class のみ・Debug 文字列昇順）。
+    #[serde(serialize_with = "serialize_debug_keyed")]
+    pub by_location_class: Vec<(LocationClass, ErrorStats)>,
+    /// metric 別の合否（[`ToleranceProfile`] 判定・固定 7 件・固定順）。
+    pub pass_fail: Vec<(String, bool)>,
+}
+
+/// enum キーの層別ペアを「Debug 名（文字列）→ [`ErrorStats`]」の対として JSON 直列化する。
+///
+/// `SolarEclipseKind`/`LocationClass` 自体に serde 依存を持ち込まずに JSON 化するためのアダプタ。
+fn serialize_debug_keyed<K, S>(pairs: &[(K, ErrorStats)], serializer: S) -> Result<S::Ok, S::Error>
+where
+    K: std::fmt::Debug,
+    S: serde::Serializer,
+{
+    use serde::Serialize;
+    let mapped: Vec<(String, &ErrorStats)> =
+        pairs.iter().map(|(k, v)| (format!("{k:?}"), v)).collect();
+    mapped.serialize(serializer)
+}
+
+/// `greatest_time_utc` の西暦年から 50 年バケットの起点を返す（`[start, start+50)`・半開区間）。
+///
+/// `start = 1900 + 50·⌊(year−1900)/50⌋`（負年は `div_euclid` で正しく floor 方向へ丸める）。
+fn era_bucket_start(greatest_time_utc: UtcInstant) -> i32 {
+    let year = greatest_time_utc.to_gregorian().0;
+    1900 + 50 * (year - 1900).div_euclid(50)
+}
+
+/// `computer` でゴールデンを照合し、誤差を**年代別/食種別/地点条件別**に層別した統計を返す（純）。
+///
+/// 各 golden を `eclipse_on`（`None`＝取りこぼしはスキップ。`Err` は即伝播）。`Some` なら全球比較
+/// （[`compare_global`]）と、各地点 `local_at` → [`compare_local`] を収集する。`by_metric` は全 metric の
+/// 全体統計（固定 7 件）、層別 3 種（年代/食種/地点条件）はいずれも **局地最大食接触時刻誤差（秒）** を
+/// 層別する。`pass_fail` は各 metric の [`ToleranceProfile`] 判定。空入力は by_metric 空統計・層別空 Vec・
+/// pass_fail 全 true（vacuous）。
+pub fn report_stratified<C: GoldenComputer>(
+    computer: &C,
+    golden: &[GoldenEclipse],
+    profile: &ToleranceProfile,
+) -> Result<ErrorReport, EclipseError> {
+    // 全体 metric の誤差列（符号付き = computed − golden）。
+    let mut greatest = Vec::new();
+    let mut global_magnitude = Vec::new();
+    let mut local_maximum = Vec::new();
+    let mut local_contacts = Vec::new();
+    let mut local_magnitude = Vec::new();
+    let mut local_obscuration = Vec::new();
+    let mut local_altitude = Vec::new();
+    // 層別の単一 metric（局地最大食秒）。キー昇順を BTreeMap で保証する。
+    let mut era: BTreeMap<i32, Vec<f64>> = BTreeMap::new();
+    let mut kind: BTreeMap<String, (SolarEclipseKind, Vec<f64>)> = BTreeMap::new();
+    let mut class: BTreeMap<String, (LocationClass, Vec<f64>)> = BTreeMap::new();
+
+    for g in golden {
+        let Some(eclipse) = computer.eclipse_on(g)? else {
+            continue; // 取りこぼし（None）は統計に含めない。
+        };
+        let global_errors = compare_global(&eclipse, g);
+        greatest.push(global_errors.greatest_seconds);
+        global_magnitude.push(global_errors.magnitude);
+        let era_start = era_bucket_start(g.greatest_time_utc);
+        for location in &g.locations {
+            let local = computer.local_at(&eclipse, location)?;
+            let local_errors = compare_local(&local, location);
+            // 全体 metric。
+            local_maximum.push(local_errors.maximum_seconds);
+            local_contacts.extend(local_errors.contact_seconds.iter().copied());
+            local_magnitude.push(local_errors.magnitude);
+            local_obscuration.push(local_errors.obscuration);
+            local_altitude.push(local_errors.max_altitude_deg);
+            // 層別 metric = 局地最大食秒。年代/食種/地点条件の 3 キーへ同じ値を入れる。
+            era.entry(era_start)
+                .or_default()
+                .push(local_errors.maximum_seconds);
+            kind.entry(format!("{:?}", g.kind_expected))
+                .or_insert_with(|| (g.kind_expected, Vec::new()))
+                .1
+                .push(local_errors.maximum_seconds);
+            class
+                .entry(format!("{:?}", location.location_class))
+                .or_insert_with(|| (location.location_class, Vec::new()))
+                .1
+                .push(local_errors.maximum_seconds);
+        }
+    }
+
+    // 全体 metric 統計（by_metric と pass_fail で共有）。
+    let s_greatest = ErrorStats::from_errors(&greatest, "s");
+    let s_global_magnitude = ErrorStats::from_errors(&global_magnitude, "");
+    let s_local_maximum = ErrorStats::from_errors(&local_maximum, "s");
+    let s_local_contacts = ErrorStats::from_errors(&local_contacts, "s");
+    let s_local_magnitude = ErrorStats::from_errors(&local_magnitude, "");
+    let s_local_obscuration = ErrorStats::from_errors(&local_obscuration, "");
+    let s_local_altitude = ErrorStats::from_errors(&local_altitude, "deg");
+
+    let by_metric = vec![
+        ("global_greatest_seconds".to_string(), s_greatest.clone()),
+        ("global_magnitude".to_string(), s_global_magnitude.clone()),
+        ("local_maximum_seconds".to_string(), s_local_maximum.clone()),
+        (
+            "local_contact_seconds".to_string(),
+            s_local_contacts.clone(),
+        ),
+        ("local_magnitude".to_string(), s_local_magnitude.clone()),
+        ("local_obscuration".to_string(), s_local_obscuration.clone()),
+        (
+            "local_max_altitude_deg".to_string(),
+            s_local_altitude.clone(),
+        ),
+    ];
+
+    // 層別（BTreeMap のキー昇順＝start 昇順 / Debug 文字列昇順）。層別 metric は秒。
+    let by_era = era
+        .into_iter()
+        .map(|(start, errors)| {
+            (
+                format!("{start}-{}", start + 50),
+                ErrorStats::from_errors(&errors, "s"),
+            )
+        })
+        .collect();
+    let by_kind = kind
+        .into_values()
+        .map(|(k, errors)| (k, ErrorStats::from_errors(&errors, "s")))
+        .collect();
+    let by_location_class = class
+        .into_values()
+        .map(|(c, errors)| (c, ErrorStats::from_errors(&errors, "s")))
+        .collect();
+
+    // 合否（各 metric を対応する許容フィールドと比較・誤差を隠さない）。
+    let pass_fail = vec![
+        (
+            "global_greatest_seconds".to_string(),
+            s_greatest.within(profile.maximum_seconds),
+        ),
+        (
+            "global_magnitude".to_string(),
+            s_global_magnitude.within(profile.magnitude),
+        ),
+        (
+            "local_maximum_seconds".to_string(),
+            s_local_maximum.within(profile.maximum_seconds),
+        ),
+        (
+            "local_contact_seconds".to_string(),
+            s_local_contacts.within(profile.contact_seconds),
+        ),
+        (
+            "local_magnitude".to_string(),
+            s_local_magnitude.within(profile.magnitude),
+        ),
+        (
+            "local_obscuration".to_string(),
+            s_local_obscuration.within(profile.obscuration),
+        ),
+        (
+            "local_max_altitude_deg".to_string(),
+            s_local_altitude.within(profile.altitude_degrees),
+        ),
+    ];
+
+    Ok(ErrorReport {
+        by_metric,
+        by_era,
+        by_kind,
+        by_location_class,
+        pass_fail,
+    })
+}
+
+/// [`ErrorReport`] を人間可読サマリ（複数行テキスト）に整形する（誤差を隠さない: 全層を表示）。
+///
+/// by_metric（全 metric 統計）・by_era/by_kind/by_location_class（局地最大食秒の層別）・pass_fail を
+/// 漏れなく出す。層別の各行は n/max/mean/p95＋単位。
+pub fn render_stratified_text(report: &ErrorReport) -> String {
+    let mut out = String::new();
+    out.push_str("=== Stratified error report ===\n");
+    out.push_str("by_metric:\n");
+    for (name, stats) in &report.by_metric {
+        out.push_str(&stats_line(name, stats));
+    }
+    out.push_str("by_era (local_maximum_seconds):\n");
+    for (label, stats) in &report.by_era {
+        out.push_str(&stats_line(label, stats));
+    }
+    out.push_str("by_kind (local_maximum_seconds):\n");
+    for (k, stats) in &report.by_kind {
+        out.push_str(&stats_line(&format!("{k:?}"), stats));
+    }
+    out.push_str("by_location_class (local_maximum_seconds):\n");
+    for (c, stats) in &report.by_location_class {
+        out.push_str(&stats_line(&format!("{c:?}"), stats));
+    }
+    out.push_str("pass_fail:\n");
+    for (name, pass) in &report.pass_fail {
+        out.push_str(&format!("  {name}: {pass}\n"));
+    }
+    out
+}
+
+/// [`ErrorReport`] を機械可読 JSON（pretty・末尾改行）に整形する（CI/履歴比較用）。
+pub fn render_stratified_json(report: &ErrorReport) -> Result<String, serde_json::Error> {
     let mut out = serde_json::to_string_pretty(report)?;
     out.push('\n');
     Ok(out)

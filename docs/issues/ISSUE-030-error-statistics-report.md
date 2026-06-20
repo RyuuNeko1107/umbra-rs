@@ -10,7 +10,8 @@
 - **S30f CLI 統合**: `xtask validate`（実エンジンで同梱ゴールデン照合・text/json）— 実装済み。
 - **DE 差分・誤差層分解の純コア**（strict 全工程）: `LayeredError`/`DifferentialReport`/`report_differential`/`render_differential_{text,json}`（umbra-fixtures）— 実装済み（mutation 31 中 29 caught・2 unviable・生存0）。**層分解は 2 バケット（暦層 ephemeris / 幾何・数値層 geometry）へ集約**＝6 物理層スケッチ（§公開IF）からの確定逸脱を accuracy.md §4.1 に記録。
 - **DE 実エンジン結線ハーネス**（strict 全工程）: `xtask differential` サブコマンド＝`JplGoldenComputer`（DE440s Reference 版 `GoldenComputer`・feature `jpl`）＋`differential_report`（注入2エンジンで層分解レンダ）。FAST 5＋SLOW 1（実 DE440s×解析暦で 2017-08-21-total を end-to-end 層分解・compared==1・105s）。mutation（differential_report）2 中 2 caught。
-- **残（後続スライス）**: (1) 1900〜2100 全食スイープ harness（有無/種別/最大食時刻/gamma/食分の一括比較・§3.4）、(2) 年代別/食種別/地点条件別の層別集計（§公開IF `ErrorReport`）。
+- **層別誤差統計 `ErrorReport`**（strict 全工程）: `report_stratified`（umbra-fixtures）＝`by_metric`（全 metric 全体統計・固定 7 件）＋`by_era`/`by_kind`/`by_location_class`（**層別 metric = 局地最大食接触時刻誤差 秒**）＋`pass_fail`（ToleranceProfile 判定）＋`render_stratified_{text,json}`。年代は 50 年バケット `[start,start+50)`（`div_euclid`・半開区間）、食種/地点条件は出現分のみ・Debug 文字列昇順（BTreeMap で順序保証）。JSON は enum キーを Debug 文字列へ写像（`serialize_with`・SolarEclipseKind に serde 非依存）。19 テスト / mutation 15 中 13 caught・2 unviable・生存0。
+- **残（後続スライス）**: 1900〜2100 全食スイープ harness（有無/種別/最大食時刻/gamma/食分の一括比較・search 偽陰性ゼロのマージン実余裕統計・§3.4/D6）。
 
 ## 目的
 ゴールデン20（ISSUE-029）および 1900〜2100 全日食比較に対し、**pass/fail だけでなく誤差統計を生成**するレポータを実装する（accuracy.md §3.4/§4）。

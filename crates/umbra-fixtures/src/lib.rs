@@ -25,8 +25,9 @@ pub use checksum::{fixtures_checksum, FIXTURES_CHECKSUM};
 pub use loader::golden_eclipses;
 pub use report::{
     aggregate_global, aggregate_local, compare_global, compare_local, render_differential_json,
-    render_differential_text, render_json, render_text, report_against_golden, report_differential,
-    DifferentialReport, ErrorStats, GlobalErrors, GlobalReport, GoldenComputer, GoldenReport,
+    render_differential_text, render_json, render_stratified_json, render_stratified_text,
+    render_text, report_against_golden, report_differential, report_stratified, DifferentialReport,
+    ErrorReport, ErrorStats, GlobalErrors, GlobalReport, GoldenComputer, GoldenReport,
     LayeredError, LocalErrors, LocalReport, ToleranceProfile,
 };
 pub use types::{GoldenContact, GoldenEclipse, GoldenLocation, LocationClass, OracleSource};
