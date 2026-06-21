@@ -15,6 +15,8 @@
 // ζ 粗走査の添字 ⇔ f64 変換は小さな整数のみ（天文量ではない, local_maximum.rs と同方針）。
 #![allow(clippy::cast_precision_loss)]
 
+use core::f64::consts::TAU;
+
 use umbra_core::ellipsoid::Ellipsoid;
 use umbra_core::{brent_root, EastLongitude, GeodeticLatitude, Radians, SolverError};
 
@@ -39,6 +41,12 @@ const LIMIT_FIXED_POINT_TOL: f64 = 1e-12;
 const LIMIT_FIXED_POINT_MAX_ITER: usize = 16;
 /// WGS84 平均半径 \[km\]（IUGG・帯幅の大圏距離換算用。±200 km 規模に対し球近似誤差 <0.5%）。
 const EARTH_MEAN_RADIUS_KM: f64 = 6371.0;
+/// rise/set limb 点（錐縁∩terminator 楕円）の媒介角 θ∈[0,2π) 粗走査の分割数（≤4 根を分離する解像度）。
+const TERMINATOR_SCAN_STEPS: usize = 720;
+/// terminator 交点の θ 根の収束許容（rad）。中心線位置 sub-km を十分下回る。
+const TERMINATOR_ROOT_TOL: f64 = 1e-12;
+/// terminator 交点 θ 求根の Brent 反復上限（円∩楕円の滑らかな残差ゆえ十分な余裕）。
+const TERMINATOR_ROOT_MAX_ITER: usize = 100;
 
 /// 影軸の地表貫通点（太陽側 ζ>0）を測地座標で返す。中心食でなければ `Err(Solver(RootNotBracketed))`。
 ///
@@ -240,6 +248,91 @@ pub(crate) fn solve_limit_edge(
     }
     // 未収束（rel 悪条件等・実太陽日食では rel≈0.2 Re/h で到達しない）は近似を返さずスキップ。
     Ok(if converged { point } else { None })
+}
+
+/// 影錐縁（ζ=0・半径 `cone_l`）と WGS84 terminator（ζ=0 の地表＝太陽が地平）の交点を測地座標で返す
+/// （rise/set limb 点・部分食域 §11.2/11.3・M9 残(3) 3b）。
+///
+/// 基本面で円 `(ξ−x)²+(η−y)²=cone_l²`（中心は影軸 (x,y)）と terminator 楕円 `ξ²+k·η²=1`
+/// （`k=sin²d+cos²d/(1−f)²`・f は扁平）の交点を求める。楕円を θ で `ξ=cos θ, η=sin θ/√k` と媒介し、円残差
+/// `r(θ)=(ξ−x)²+(η−y)²−cone_l²` の符号反転を [0,2π) の粗走査（[`TERMINATOR_SCAN_STEPS`]）でブラケットして
+/// Brent で全根を求め、各根 (ξ,η) を [`fundamental_to_geodetic`]（ζ=0）で測地座標化し **θ 昇順**で返す。
+/// 交点数は 0/1/2/(最大4)。錐が terminator に届かない/完全内包なら空 `Vec`。**接する端（P1/P4 の 1 点接触）は
+/// 符号反転が無く拾わない**（交点数 0↔2 の遷移点＝外周端の扱いは後続 (3c) の責務）。
+///
+/// `cone_l` は ζ=0 の錐半径（半影は `elements.l1`）。terminator を WGS84 楕円で厳密化しているため、返点は
+/// WGS84 前方射影で **ζ≈0（terminator 上）・軸からの面内距離≈cone_l（錐縁上）** に往復一致する（球近似 k=1 の
+/// ~Re·f 残差を排除＝中心線/限界線と同じ WGS84-exact オラクルで検証可能）。`fundamental_to_geodetic` の緯度
+/// 検証等以外の `Err` は伝播。
+pub(crate) fn cone_terminator_intersections(
+    elements: &InstantaneousBesselianElements,
+    cone_l: f64,
+    ellipsoid: &Ellipsoid,
+) -> Result<Vec<GeoPoint>, EclipseError> {
+    let (sin_d, cos_d) = elements.declination.0.sin_cos();
+    let omf = 1.0 - ellipsoid.f; // b/a
+                                 // terminator 楕円係数 k（球 f=0 で 1＝単位円・扁平で k≥1＝η 方向に縮む）。
+    let k = sin_d * sin_d + cos_d * cos_d / (omf * omf);
+    let sqrt_k = k.sqrt();
+    let x = elements.x;
+    let y = elements.y;
+
+    // 媒介点 θ（terminator 楕円上 ξ=cos θ, η=sin θ/√k）に対する錐縁の円残差。
+    let residual = |theta: f64| -> f64 {
+        let (s, c) = theta.sin_cos();
+        let xi = c;
+        let eta = s / sqrt_k;
+        (xi - x) * (xi - x) + (eta - y) * (eta - y) - cone_l * cone_l
+    };
+
+    // 符号反転の粗走査＋Brent（resolution 機構＝[`scan_periodic_sign_change_roots`]）で全根 θ を得て、
+    // 各根を測地座標化（ζ=0）。点が無ければ空 Vec（錐が terminator に届かない/内包）。
+    let mut points = Vec::new();
+    for root in scan_periodic_sign_change_roots(&residual)? {
+        let (s, c) = root.sin_cos();
+        points.push(fundamental_to_geodetic(
+            c,
+            s / sqrt_k,
+            0.0,
+            elements.declination,
+            elements.mu,
+            ellipsoid,
+        )?);
+    }
+    Ok(points)
+}
+
+/// 周期残差 `r(θ)`（θ∈[0,2π)）の符号反転を粗走査でブラケットし Brent で全根 θ を昇順に返す。
+///
+/// **resolution 機構**（[`descending_sign_change_bracket`] / `solve_zero_in_window` / `scan_point_count` と
+/// 同カテゴリ）: 区間内で根が分離していれば、刻み `TAU/STEPS`・符号積 `prev_r·r`・境界 `< 0` の算術は
+/// Brent の収束先（真根）に影響しない解像度要素。符号積の `* → /`（積と商は符号判定が同値）・`< → <=`
+/// （厳密ゼロ＝グリッドが根に一致する測度ゼロのみ差）は真根を変えない等価変異ゆえ `mutation.yml` で
+/// `--exclude-re 'in scan_periodic_sign_change_roots'` 除外（docs/reviews/mutation-rise-set.md）。閉ループ端
+/// （θ=0 と 2π は同残差）で根を二重計上しないのは strict `< 0`（厳密 0 は測度ゼロ）による。
+fn scan_periodic_sign_change_roots<F: Fn(f64) -> f64>(
+    residual: &F,
+) -> Result<Vec<f64>, EclipseError> {
+    let step = TAU / TERMINATOR_SCAN_STEPS as f64;
+    let mut roots = Vec::new();
+    let mut prev_theta = 0.0_f64;
+    let mut prev_r = residual(prev_theta);
+    for i in 1..=TERMINATOR_SCAN_STEPS {
+        let theta = step * i as f64; // i=STEPS で 2π（=0 と同点・閉ループの終端）
+        let r = residual(theta);
+        if prev_r * r < 0.0 {
+            roots.push(brent_root(
+                residual,
+                prev_theta,
+                theta,
+                TERMINATOR_ROOT_TOL,
+                TERMINATOR_ROOT_MAX_ITER,
+            )?);
+        }
+        prev_theta = theta;
+        prev_r = r;
+    }
+    Ok(roots)
 }
 
 /// 2 つの地表点間の概算大圏距離 \[km\]（haversine・[`EARTH_MEAN_RADIUS_KM`]）。帯幅（北縁-南縁距離）に使う。
@@ -834,6 +927,248 @@ mod tests {
             matches!(r, Ok(None)),
             "相対速度ゼロでは Ok(None) のはず, got {r:?}"
         );
+    }
+
+    // ====================================================================
+    // cone_terminator_intersections（錐縁 ∩ terminator 楕円）FAST 単体テスト（M9 残(3) 3b）
+    //
+    // 確定仕様（docs/algorithms/11-path-partial-domain.md §11.2/§11.3, WGS84 厳密）:
+    //   terminator 楕円（基本面 ζ=0）: ξ² + k·η² = 1,  k = sin²d + cos²d/(1−f)²。
+    //   錐縁の円（ζ=0）:               (ξ−x)² + (η−y)² = cone_l²（中心は影軸 (x,y)=(elements.x,y)）。
+    //   交点 (ξ,η) を fundamental_to_geodetic(ξ,η,0,d,μ) で測地座標化して Vec<GeoPoint> で返す。
+    //   交点数 0/1/2（…最大4）。届かない/完全内包なら空 Vec。
+    //
+    // 戦略（追認回避・独立オラクル）: 返る各点 P を**検証済み前方射影** project_observer_to_fundamental
+    // （forward_of）へ通して自身の (ξ,η,ζ) を独立復元し、契約を絶対値で表明する:
+    //   契約1（terminator 上）: ζ ≈ 0（日の出入りの最中）。球近似 k=1 なら扁平 d≠0 で ζ≠0 になり落ちる
+    //     ＝WGS84 厳密 terminator を担保。
+    //   契約2（錐縁上）: hypot(ξ−x, η−y) ≈ cone_l（面内距離が錐半径）。
+    //   契約3: 妥当な緯度経度（GeodeticLatitude 検証通過＝Ok で返ること自体が担保）。
+    // d=0（k=1）では二円交点の閉形式（根軸 ∩ 単位円）で (ξ,η) を手計算し、返点と突き合わせる。
+    // ====================================================================
+
+    /// 返点 P を前方射影し、契約1（ζ≈0）・契約2（面内距離≈cone_l）を機械精度で表明する共有チェック。
+    /// 期待値生成に被テスト関数の戻りを流用しない（前方射影は独立に検証済み）。
+    fn assert_terminator_intersection(
+        p: &GeoPoint,
+        e: &InstantaneousBesselianElements,
+        cone_l: f64,
+        zeta_tol: f64,
+        cone_tol: f64,
+    ) {
+        let of = forward_of(p, e);
+        // 契約1: terminator 上（ζ≈0・太陽が地平）。WGS84 厳密 ⇒ 機械精度で 0。
+        assert!(
+            of.zeta.abs() < zeta_tol,
+            "ζ={} must be ≈0 (on terminator, WGS84-exact)",
+            of.zeta
+        );
+        // 契約2: 錐縁上（軸からの基本面内距離 = cone_l）。
+        let in_plane = (of.xi - e.x).hypot(of.eta - e.y);
+        assert!(
+            (in_plane - cone_l).abs() < cone_tol,
+            "面内距離 {in_plane} = cone_l {cone_l} でない（錐縁上でない）"
+        );
+    }
+
+    /// 2 交点・契約検証: 軸を端（x≈0.8）に置いた合成（d≠0・μ≠0）で 2 点返り、各点が前方射影往復で
+    /// ζ≈0（契約1・WGS84 厳密 terminator）・面内距離≈cone_l（契約2）を機械精度で満たす。
+    /// 円が terminator 楕円を跨ぐよう cone_l を適度に取る（軸が端なので円縁が楕円外周をまたぐ）。
+    ///
+    /// 殺す変異: 中心 (x,y) の取り違え（軸でない点を中心にすると面内距離≠cone_l）・cone_l の係数・
+    ///   ζ=0 引数（fundamental_to_geodetic に 0 以外を渡すと ζ≠0 で契約1 違反）。
+    #[test]
+    fn two_intersections_satisfy_contracts() {
+        // 軸を端に（x=0.80, y=0.10 ⇒ 円中心は楕円縁付近）。d≠0・μ≠0 で扁平と回転が効く。
+        let e = elems(0.80, 0.10, 0.20, 1.10);
+        let cone_l = 0.40_f64; // 円が terminator 楕円を跨ぐ適度な半径。
+        let pts = cone_terminator_intersections(&e, cone_l, &WGS84)
+            .expect("錐縁∩terminator は Ok のはず");
+        assert_eq!(
+            pts.len(),
+            2,
+            "軸を端＋適度な cone_l で 2 交点のはず, got {pts:?}"
+        );
+        for p in &pts {
+            assert_terminator_intersection(p, &e, cone_l, 1e-7, 1e-7);
+        }
+    }
+
+    /// k=1（d=π/2）で二円交点の閉形式一致: WGS84 terminator は基本面で楕円 ξ²+k·η²=1,
+    /// k=sin²d+cos²d/(1−f)²。二円（円∩**単位円**）の閉形式が成立するのは k=1 のときのみ
+    /// ＝cos d=0 ⇔ d=±π/2。そこで d=π/2 を採り真に単位円 ξ²+η²=1 にして既存の閉形式を有効化する。
+    /// 根軸 x·ξ+y·η=(x²+y²+1−cone_l²)/2 ∩ 単位円の閉形式で 2 点を独立に組み、前方射影した
+    /// 返点の (ξ,η) と集合一致（順序非依存）で突き合わせる。ζ≈0（面内距離＝cone_l）も確認。
+    ///
+    /// 殺す変異: 円側の中心 (x,y)・cone_l を撃つ。閉形式は厳密ゆえ機械精度で縛れる。
+    #[test]
+    fn d_zero_matches_two_circle_closed_form() {
+        use std::f64::consts::FRAC_PI_2;
+        let x = 0.30_f64;
+        let y = 0.40_f64;
+        let cone_l = 0.80_f64;
+        // d=π/2 ⇒ k=sin²d+cos²d/(1−f)²=1 ⇒ terminator は単位円 ξ²+η²=1。円 (ξ−x)²+(η−y)²=cone_l²。
+        // 根軸: x·ξ + y·η = c,  c = (x²+y²+1−cone_l²)/2。
+        let c = (x * x + y * y + 1.0 - cone_l * cone_l) / 2.0;
+        // 根軸 ∩ 単位円の閉形式（d2 = x²+y²>0）:
+        //   ξ = (x·c ± y·√(d2−c²))/d2,  η = (y·c ∓ x·√(d2−c²))/d2。
+        let d2 = x * x + y * y;
+        let disc = d2 - c * c;
+        assert!(disc > 0.0, "選定は 2 交点を持つ（判別式>0）: disc={disc}");
+        let s = disc.sqrt();
+        let sol = |sgn: f64| -> (f64, f64) {
+            let xi = (x * c + sgn * y * s) / d2;
+            let eta = (y * c - sgn * x * s) / d2;
+            (xi, eta)
+        };
+        let expected = [sol(1.0), sol(-1.0)];
+        // 閉形式が確かに両曲線上にあることを独立サニティ（単位円上・円上）。
+        for (xi, eta) in expected {
+            assert!(
+                (xi * xi + eta * eta - 1.0).abs() < 1e-12,
+                "閉形式は単位円上のはず"
+            );
+            assert!(
+                ((xi - x).powi(2) + (eta - y).powi(2) - cone_l * cone_l).abs() < 1e-12,
+                "閉形式は錐縁円上のはず"
+            );
+        }
+
+        let e = elems(x, y, FRAC_PI_2, 0.7);
+        let pts = cone_terminator_intersections(&e, cone_l, &WGS84).expect("Ok のはず");
+        assert_eq!(pts.len(), 2, "k=1（d=π/2）二円交点で 2 点, got {pts:?}");
+        // 順序非依存で集合一致: 各返点を前方射影し (ξ,η) を取り、期待 2 点のどちらかに一致。
+        for p in &pts {
+            let of = forward_of(p, &e);
+            assert!(of.zeta.abs() < 1e-7, "ζ={} ≈0 (terminator)", of.zeta);
+            let matched = expected
+                .iter()
+                .any(|(exi, eeta)| close(of.xi, *exi, 1e-7) && close(of.eta, *eeta, 1e-7));
+            assert!(
+                matched,
+                "返点 (ξ={}, η={}) が閉形式 2 点 {expected:?} のどちらにも一致しない",
+                of.xi, of.eta
+            );
+        }
+        // 逆向きも: 期待 2 点それぞれに対応する返点が存在（全単射＝過不足なし）。
+        for (exi, eeta) in expected {
+            let found = pts.iter().any(|p| {
+                let of = forward_of(p, &e);
+                close(of.xi, exi, 1e-7) && close(of.eta, eeta, 1e-7)
+            });
+            assert!(found, "閉形式点 (ξ={exi}, η={eeta}) に対応する返点が無い");
+        }
+    }
+
+    /// 空 Vec: 錐が terminator に届かない合成（軸 (x,y)≈0・cone_l 小 ⇒ 円が原点近傍で楕円
+    /// |ξ²+kη²=1| に届かない）で交点 0。
+    ///
+    /// 殺す変異: 「届かない＝空」判定を潰して偽の交点を返す・空でなく Err にする。
+    #[test]
+    fn cone_not_reaching_terminator_returns_empty() {
+        // 軸を原点付近、半径も小さく（円は原点近傍に完全に収まり、|ξ²+kη²|=1 楕円に届かない）。
+        let e = elems(0.05, 0.0, 0.20, 1.10);
+        let cone_l = 0.10_f64;
+        let pts = cone_terminator_intersections(&e, cone_l, &WGS84)
+            .expect("届かない合成でも Ok（空 Vec）のはず");
+        assert!(
+            pts.is_empty(),
+            "錐が terminator に届かないので空のはず, got {pts:?}"
+        );
+    }
+
+    /// cone_l 取り違え（l1 vs l2 相当）: cone_l を変えると交点位置/面内距離が連動する（半径の load-bearing 化）。
+    /// 同一 elements で cone_l を 2 値に変え、各々で返点の面内距離が**渡した cone_l に一致**することを縛る。
+    /// 半径を無視して固定値を使う変異は、片方で面内距離≠cone_l になり落ちる。
+    ///
+    /// 殺す変異: cone_l を定数で置換・l1/l2 取り違え・半径計算の脱落。
+    #[test]
+    fn cone_radius_is_load_bearing() {
+        let e = elems(0.80, 0.10, 0.20, 1.10);
+        for cone_l in [0.35_f64, 0.45_f64] {
+            let pts = cone_terminator_intersections(&e, cone_l, &WGS84).expect("Ok");
+            assert_eq!(pts.len(), 2, "cone_l={cone_l} で 2 交点のはず, got {pts:?}");
+            for p in &pts {
+                let of = forward_of(p, &e);
+                let in_plane = (of.xi - e.x).hypot(of.eta - e.y);
+                assert!(
+                    (in_plane - cone_l).abs() < 1e-7,
+                    "cone_l={cone_l} だが面内距離={in_plane}（半径が反映されていない）"
+                );
+            }
+        }
+        // 2 つの cone_l で交点集合が実際に違う（半径が位置を動かす）ことを独立に確認。
+        let p_small = cone_terminator_intersections(&e, 0.35, &WGS84).expect("Ok");
+        let p_large = cone_terminator_intersections(&e, 0.45, &WGS84).expect("Ok");
+        let of_s = forward_of(&p_small[0], &e);
+        let of_l = forward_of(&p_large[0], &e);
+        let moved = !close(of_s.xi, of_l.xi, 1e-4) || !close(of_s.eta, of_l.eta, 1e-4);
+        assert!(
+            moved,
+            "cone_l を変えても交点が動かない（半径が無視されている）"
+        );
+    }
+
+    /// 決定性: 同一入力で同じ順序・同じ点を返す（実装は θ 昇順等で決定的）。
+    /// 同じ呼び出しを 2 回行い、要素数・各 index の (φ,λ) が完全一致することを縛る。
+    #[test]
+    fn deterministic_order_and_points() {
+        let e = elems(0.80, 0.10, 0.20, 1.10);
+        let cone_l = 0.40_f64;
+        let a = cone_terminator_intersections(&e, cone_l, &WGS84).expect("Ok");
+        let b = cone_terminator_intersections(&e, cone_l, &WGS84).expect("Ok");
+        assert_eq!(a.len(), b.len(), "要素数が決定的でない");
+        for (pa, pb) in a.iter().zip(b.iter()) {
+            // 決定性は厳密等価で確認（許容差付き close ではなく exact 一致）。
+            assert!(
+                pa == pb,
+                "同一入力で index ごとの点が一致しない（非決定的）: a={pa:?} b={pb:?}"
+            );
+        }
+    }
+
+    /// terminator 楕円の扁平が効く: d≠0 で k=sin²d+cos²d/(1−f)²>1（η 方向が縮む）を反映した点になる。
+    /// 球近似（k=1, 単位円）に terminator を置くと、その点を WGS84 前方射影で戻すと ζ≠0（~Re·f 残差）に
+    /// なるが、本関数は WGS84 厳密 ⇒ 前方射影 ζ≈0 が機械精度で成立する。
+    /// d を大きめ（0.6 rad）に取り k−1 を顕在化させ、各交点が確かに楕円 ξ²+kη²=1 上（球近似では外れる）
+    /// にあることを独立に表明する。
+    ///
+    /// 殺す変異: k の cos²d/(1−f)² 項を cos²d（球近似）にする・(1−f)² を 1 にする・sin²d 項脱落
+    ///   ⇒ terminator が単位円に化け、前方射影 ζ が機械精度 0 を外れて契約1 が落ちる。
+    #[test]
+    fn terminator_ellipse_flattening_matters() {
+        let d = 0.60_f64; // 大きめの赤緯で扁平 k−1 を顕在化。
+        let e = elems(0.70, 0.20, d, 0.9);
+        let cone_l = 0.50_f64;
+        // 独立に k を組み、k>1（η 方向に縮む楕円）を確認。
+        let (sin_d, cos_d) = d.sin_cos();
+        let omf = 1.0 - WGS84.f;
+        let k = sin_d * sin_d + cos_d * cos_d / (omf * omf);
+        assert!(k > 1.0, "扁平 d≠0 で k>1 のはず: k={k}");
+
+        let pts = cone_terminator_intersections(&e, cone_l, &WGS84).expect("Ok");
+        assert!(!pts.is_empty(), "交点が存在する合成のはず, got {pts:?}");
+        for p in &pts {
+            let of = forward_of(p, &e);
+            // 契約1（WGS84 厳密）: ζ≈0 が機械精度で成立（球近似 k=1 なら ~Re·f≈3e-3 残差で落ちる）。
+            assert!(
+                of.zeta.abs() < 1e-7,
+                "ζ={} ≈0（WGS84 厳密 terminator）。球近似なら ζ≠0 で落ちる",
+                of.zeta
+            );
+            // 楕円 ξ²+k·η²=1 上にあることを独立に表明（球近似 ξ²+η²=1 とは k·η² 項で異なる）。
+            let ellipse = of.xi * of.xi + k * of.eta * of.eta;
+            assert!(
+                (ellipse - 1.0).abs() < 1e-7,
+                "ξ²+k·η²={ellipse} ≈1（WGS84 terminator 楕円上）でない（k={k}）"
+            );
+            // 錐縁上（契約2）も維持。
+            let in_plane = (of.xi - e.x).hypot(of.eta - e.y);
+            assert!(
+                (in_plane - cone_l).abs() < 1e-7,
+                "面内距離 {in_plane} = cone_l {cone_l} でない"
+            );
+        }
     }
 
     // ====================================================================
