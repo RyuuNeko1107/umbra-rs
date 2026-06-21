@@ -894,3 +894,61 @@ fn real_2024_eclipse_limits_match_nasa_band_width() {
         5.0e-6,
     );
 }
+
+// ============================================================
+// SLOW: 実 2024-04-08 皆既の GreatestEclipse.path_width / central_duration が NASA 値
+// （M9.6 — 中心食の帯幅 path_width と中心食継続 central_duration を Some・NASA ballpark に縛る）
+// ============================================================
+
+/// SLOW / 新規（**M9.6 強オラクル**）: 実エンジンで 2024-04-08 皆既を search し、
+/// `eclipse.global.greatest.path_width` ≈ 197.5 km・`central_duration` ≈ 268.1 s（4m28.1s）の
+/// NASA 公表値の妥当域に入ることを縛る（中心食ゆえともに Some）。de440s 不要（解析暦）。
+///
+/// 量の定義（オラクル根拠・実装式は写経しない）:
+/// - path_width [km] = 最大食時刻の本影帯の北縁-南縁の地表点間 大圏距離（M9.4 限界線・相対速度包絡⊥）。
+/// - central_duration [s] = 2·|L2'|/|rel|（umbra 直径 ÷ 影の地表相対速度）。
+///
+/// 帯幅域 [185, 215] km の根拠: NASA 公表 197.5 km（18:16/18:18 で 197–198 km）に ±~7%
+/// （`real_2024_eclipse_limits_match_nasa_band_width` と同じ・k 値/ΔT/解析暦差/最大食サンプルズレ）。
+/// 継続域 [250, 286] s の根拠: NASA 公表 268.1 s（4m28.1s）に ±~7%。NASA 秒/km の等値ハードコードは
+/// 禁止（conventions §11）＝範囲 check に限定。`umbra_core::Kilometers` から `.0` で値を取り出す。
+///
+/// 殺す変異: 中心食で path_width/central_duration を None にする（None↔Some 分岐）・width↔duration の
+///   取り違え（km vs 秒で桁が違い両域を同時に外す）・2 倍/半分（範囲外）・|rel| の逆数誤り（duration 域外）。
+#[test]
+fn real_2024_greatest_path_width_and_central_duration_match_nasa() {
+    let engine = standard_engine(bundled_time_data());
+    let range = umbra_core::TimeRange {
+        start: utc(2024, 4, 8, 0, 0, 0.0),
+        end: utc(2024, 4, 9, 0, 0, 0.0),
+    };
+    let eclipses = engine
+        .search(range)
+        .expect("2024-04-08 範囲の search は成功する");
+    let eclipse = eclipses
+        .iter()
+        .find(|e| matches!(e.kind, SolarEclipseKind::Total))
+        .expect("2024-04-08 皆既が見つかる");
+
+    let greatest = &eclipse.global.greatest;
+
+    // 中心食（皆既）ゆえ path_width・central_duration はともに Some。
+    let width = greatest
+        .path_width
+        .expect("2024 皆既は中心食ゆえ path_width=Some（M9.6）");
+    let duration = greatest
+        .central_duration
+        .expect("2024 皆既は中心食ゆえ central_duration=Some（M9.6）");
+
+    // 帯幅 [km]: NASA 公表 197.5 km の妥当域 ±~7%。Kilometers から .0 で取り出す。
+    assert!(
+        (185.0..=215.0).contains(&width.0),
+        "2024 greatest path_width {} km not in NASA ballpark [185,215] (NASA≈197.5 km)",
+        width.0
+    );
+    // 継続 [s]: NASA 公表 268.1 s（4m28.1s）の妥当域 ±~7%。
+    assert!(
+        (250.0..=286.0).contains(&duration),
+        "2024 greatest central_duration {duration} s not in NASA ballpark [250,286] (NASA≈268.1 s)"
+    );
+}

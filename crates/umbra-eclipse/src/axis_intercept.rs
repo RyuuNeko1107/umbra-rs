@@ -32,6 +32,14 @@ const ZETA_ROOT_TOL: f64 = 1e-12;
 /// Brent 反復上限。
 const ZETA_ROOT_MAX_ITER: usize = 100;
 
+/// 限界点の自己整合（相対速度包絡）不動点反復の収束許容（基本面 Re）。中心線位置 sub-km
+/// （≈7.8e-5 Re）を大きく下回り、`L2'=l2−ζ·tan f2` の ζ 依存残差（tan f2·Δζ）を 1e-7 以下にする。
+const LIMIT_FIXED_POINT_TOL: f64 = 1e-12;
+/// 限界点 不動点反復の上限。半径 |L2'|≈0.01 Re は微小で ζ 依存が弱く、通常 3–4 回で収束。
+const LIMIT_FIXED_POINT_MAX_ITER: usize = 16;
+/// WGS84 平均半径 \[km\]（IUGG・帯幅の大圏距離換算用。±200 km 規模に対し球近似誤差 <0.5%）。
+const EARTH_MEAN_RADIUS_KM: f64 = 6371.0;
+
 /// 影軸の地表貫通点（太陽側 ζ>0）を測地座標で返す。中心食でなければ `Err(Solver(RootNotBracketed))`。
 ///
 /// 検証済み前方射影 [`project_observer_to_fundamental`](crate::projection) の逆。前方射影の回転
@@ -152,6 +160,90 @@ fn descending_sign_change_bracket<F: Fn(f64) -> f64>(
         r_hi = r_lo;
     }
     None
+}
+
+/// 本影帯の片側（`sign=±1`）の縁点を相対速度包絡の不動点反復で厳密に解く（南北限界線・帯幅）。
+///
+/// 各反復で現在の縁推定 (ξ,η,ζ) から相対速度 rel=(x'−μ'(ζcos d−η sin d), y'−μ'ξ sin d) を作り、
+/// それに直交する単位法線 n̂=(−rel_y, rel_x)/|rel| の `sign` 側へ ζ補正本影半径 `|l2−ζ·tan f2|` だけ
+/// 軸 (x,y) からオフセットし、地表へ射影して新しい (ξ,η,ζ) を得る。(ξ,η,ζ) が
+/// [`LIMIT_FIXED_POINT_TOL`] 以内で安定（＝rel・半径とも自己整合）した縁点を返す。射影が
+/// 地表を外す（`RootNotBracketed`）/ 相対速度ゼロ/ **[`LIMIT_FIXED_POINT_MAX_ITER`] 内に未収束**は
+/// `Ok(None)`（lockstep スキップ）＝**未収束の近似を無警告で返さない**（誤差を隠さない・conventions §11）。
+/// 他 `Err` は伝播。`vx`/`vy`/`mu_rate` は影軸運動 x'/y' と地球自転位相 μ'（基本面・時間単位は呼び側統一）。
+///
+/// `zeta0` は初期推定（中心軸 ζ）。半径 |L2'|≈0.01 Re が微小で写像は強い縮小ゆえ**収束先は初期値に
+/// 依らない**（良い初期値は反復数を減らすのみ）。よって `zeta0` を別値に変える/捨てる変異は結果を
+/// 変えず等価（工程7 で生存列挙・許容）。
+pub(crate) fn solve_limit_edge(
+    elements: &InstantaneousBesselianElements,
+    zeta0: f64,
+    vx: f64,
+    vy: f64,
+    mu_rate: f64,
+    sign: f64,
+    ellipsoid: &Ellipsoid,
+) -> Result<Option<GeoPoint>, EclipseError> {
+    let (sin_d, cos_d) = elements.declination.0.sin_cos();
+    // 縁推定（初期＝中心軸）。ξ,η は基本面オフセット点、ζ はその地表射影での影軸方向成分。
+    let mut xi = elements.x;
+    let mut eta = elements.y;
+    let mut zeta = zeta0;
+    let mut point: Option<GeoPoint> = None;
+    let mut converged = false;
+    for _ in 0..LIMIT_FIXED_POINT_MAX_ITER {
+        // 影の地表に対する相対速度（ω×P の基本面 (ξ,η) 成分を影軸運動から差し引く）。
+        let rel_x = vx - mu_rate * (zeta * cos_d - eta * sin_d);
+        let rel_y = vy - mu_rate * xi * sin_d;
+        let rel_speed = rel_x.hypot(rel_y);
+        if rel_speed == 0.0 {
+            return Ok(None); // 相対速度ゼロ（影が地表に静止）はスキップ。
+        }
+        // rel に直交する単位法線（路限界方向）。
+        let nx = -rel_y / rel_speed;
+        let ny = rel_x / rel_speed;
+        // ζ補正本影半径（縁点自身の ζ で評価＝自己整合）。
+        let radius = (elements.l2 - zeta * elements.tan_f2).abs();
+        let xi_new = elements.x + sign * radius * nx;
+        let eta_new = elements.y + sign * radius * ny;
+        let (p, zeta_new) = match surface_point_for_fundamental(
+            xi_new,
+            eta_new,
+            elements.declination,
+            elements.mu,
+            ellipsoid,
+        ) {
+            Ok(v) => v,
+            Err(EclipseError::Solver(SolverError::RootNotBracketed)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        // 収束判定（過収束機構）: 反復は機械精度まで収束し ξ,η,ζ は同率で <TOL に達するため、境界
+        // `< → <=` や `&& → ||` は真解に影響しない等価変異（`< → >`＝発散は caught）。mutation.yml で
+        // `with <= in.*solve_limit_edge` / `with || in.*solve_limit_edge` を除外（docs/reviews/mutation-limit-line.md）。
+        let step_converged = (xi_new - xi).abs() < LIMIT_FIXED_POINT_TOL
+            && (eta_new - eta).abs() < LIMIT_FIXED_POINT_TOL
+            && (zeta_new - zeta).abs() < LIMIT_FIXED_POINT_TOL;
+        xi = xi_new;
+        eta = eta_new;
+        zeta = zeta_new;
+        point = Some(p);
+        if step_converged {
+            converged = true;
+            break;
+        }
+    }
+    // 未収束（rel 悪条件等・実太陽日食では rel≈0.2 Re/h で到達しない）は近似を返さずスキップ。
+    Ok(if converged { point } else { None })
+}
+
+/// 2 つの地表点間の概算大圏距離 \[km\]（haversine・[`EARTH_MEAN_RADIUS_KM`]）。帯幅（北縁-南縁距離）に使う。
+pub(crate) fn great_circle_distance_km(a: &GeoPoint, b: &GeoPoint) -> f64 {
+    let lat1 = a.lat.radians().0;
+    let lat2 = b.lat.radians().0;
+    let dlat = lat2 - lat1;
+    let dlon = b.lon.radians().0 - a.lon.radians().0;
+    let h = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+    2.0 * EARTH_MEAN_RADIUS_KM * h.sqrt().asin()
 }
 
 #[cfg(test)]
@@ -528,6 +620,83 @@ mod tests {
         assert!(
             matches!(r, Err(EclipseError::Solver(SolverError::RootNotBracketed))),
             "expected Err(Solver(RootNotBracketed)), got {r:?}"
+        );
+    }
+
+    // ====================================================================
+    // great_circle_distance_km の純関数ユニットテスト（高速・haversine 既知値オラクル）
+    //
+    // 既知 2 点→既知距離（球半径 EARTH_MEAN_RADIUS_KM=6371 km の大圏）で縛り、
+    // `2.0 * EARTH_MEAN_RADIUS_KM` の `*`→`/`（半径が 2/6371 km に潰れ距離が桁違いに小さくなる）等を撃破する。
+    // tol は ~0.5 km（haversine が球近似ゆえ厳密 0 ではない・WGS84 楕円体差は別途統合テスト）。
+    // ====================================================================
+
+    /// 赤道上の経度 1° 差の大圏距離 ≈ 6371·π/180 ≈ 111.195 km。
+    /// `2.0 * R` の `*`→`/` は ~3.5e-3 km に潰れ tol 0.5 km を大きく外す。
+    #[test]
+    fn great_circle_distance_equator_one_degree_lon() {
+        let a = GeoPoint::from_degrees(0.0, 0.0).expect("valid point");
+        let b = GeoPoint::from_degrees(0.0, 1.0).expect("valid point");
+        let expected = EARTH_MEAN_RADIUS_KM * (PI / 180.0); // 111.1949 km
+        let got = great_circle_distance_km(&a, &b);
+        assert!(
+            (got - expected).abs() < 0.5,
+            "equator 1° lon: got {got} km, expected ≈{expected} km"
+        );
+    }
+
+    /// 子午線上の緯度 0°→1° の大圏距離 ≈ 6371·π/180 ≈ 111.195 km（lat 差経路も縛る）。
+    #[test]
+    fn great_circle_distance_one_degree_lat() {
+        let a = GeoPoint::from_degrees(0.0, 0.0).expect("valid point");
+        let b = GeoPoint::from_degrees(1.0, 0.0).expect("valid point");
+        let expected = EARTH_MEAN_RADIUS_KM * (PI / 180.0); // 111.1949 km
+        let got = great_circle_distance_km(&a, &b);
+        assert!(
+            (got - expected).abs() < 0.5,
+            "1° lat: got {got} km, expected ≈{expected} km"
+        );
+    }
+
+    /// 同一点の大圏距離 = 0（dlat=dlon=0 ⇒ h=0 ⇒ asin(0)=0）。
+    #[test]
+    fn great_circle_distance_same_point_is_zero() {
+        let a = GeoPoint::from_degrees(35.0, 139.0).expect("valid point");
+        let got = great_circle_distance_km(&a, &a);
+        assert!(
+            got.abs() < 1e-9,
+            "same point distance must be 0, got {got} km"
+        );
+    }
+
+    /// 赤道上の対蹠半周（経度 0°↔180°）= 半周 ≈ π·6371 ≈ 20015.09 km。
+    /// この大スケールでも `2.0 * R` の係数 2 とスケールを縛る（`*`→`/` は ~6e-3 km）。
+    #[test]
+    fn great_circle_distance_antipodal_equator_is_half_circumference() {
+        let a = GeoPoint::from_degrees(0.0, 0.0).expect("valid point");
+        let b = GeoPoint::from_degrees(0.0, 180.0).expect("valid point");
+        let expected = PI * EARTH_MEAN_RADIUS_KM; // 20015.086 km
+        let got = great_circle_distance_km(&a, &b);
+        assert!(
+            (got - expected).abs() < 0.5,
+            "antipodal equator: got {got} km, expected ≈{expected} km"
+        );
+    }
+
+    /// 緯度・経度がともに非自明に異なる斜め 2 点（10°N,0° ↔ 50°N,40°E）の大圏距離 ≈ 5763.650 km。
+    /// 両緯度の cos が異なり、かつ dlon≠0 で `lat1.cos() * lat2.cos()` 項が値を持つので、
+    /// この積の `*`→`/`（cos(lat1)/cos(lat2)）を撃破する（赤道/同経度ケースでは cos が等しいか dlon=0 で
+    /// 等価化していた）。期待値は haversine 既知式の独立手計算（R=6371 km）。
+    #[test]
+    fn great_circle_distance_diagonal_pair_known_value() {
+        let a = GeoPoint::from_degrees(10.0, 0.0).expect("valid point");
+        let b = GeoPoint::from_degrees(50.0, 40.0).expect("valid point");
+        // haversine 手計算: h = sin²(Δφ/2) + cos φ1·cos φ2·sin²(Δλ/2), d = 2R·asin√h。
+        let expected = 5_763.650_056_682_031_f64;
+        let got = great_circle_distance_km(&a, &b);
+        assert!(
+            (got - expected).abs() < 0.5,
+            "diagonal pair: got {got} km, expected ≈{expected} km"
         );
     }
 }

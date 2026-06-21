@@ -10,8 +10,10 @@
 //! 注: ハイブリッド（中心線上で l2 が符号反転）は単一時刻では判定不能。全球パス（時系列）で
 //! 判定し本関数は瞬時の Total/Annular を返す（要確認: 0.9972/1.5433 の式番号・有効桁。§C3）。
 
-use crate::axis_intercept::shadow_axis_surface_point;
-use crate::besselian::BesselianElements;
+use crate::axis_intercept::{
+    great_circle_distance_km, shadow_axis_surface_point, solve_limit_edge,
+};
+use crate::besselian::{BesselianElements, InstantaneousBesselianElements};
 use crate::config::EngineConfig;
 use crate::conjunction::RootConfig;
 use crate::error::EclipseError;
@@ -24,10 +26,15 @@ use crate::results::GreatestEclipse;
 use crate::source::BesselianSource;
 use umbra_core::deltat::DeltaTModel;
 use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid, GeocentricObserver};
-use umbra_core::{JulianDate2, Radians, SolverError, TtInstant};
+use umbra_core::{JulianDate2, Kilometers, Radians, SolverError, TtInstant};
 
 /// 1 日 = 86400 SI 秒（root_tolerance を日へ換算）。
 const SECONDS_PER_DAY: f64 = 86_400.0;
+/// 1 時間 = 3600 SI 秒（中心食継続 hour→秒 換算）。
+const SECONDS_PER_HOUR: f64 = 3_600.0;
+/// 帯幅・継続の影軸運動 x'/y'/μ' を数値中心差分する刻み \[hour\]。0.1h≈6min は最大食近傍で
+/// 速度が滑らかな尺度（fit 区間内・打切り誤差 O(h²) で帯幅 km/継続 s に十分）。
+const DERIV_STEP_HOURS: f64 = 0.1;
 /// 最大食時刻 Brent 求根の反復上限。
 const GREATEST_ROOT_MAX_ITER: usize = 200;
 
@@ -159,18 +166,23 @@ where
     //      **m は max(0) でクランプ**: 非中心帯（扁平楕円体では軸が外れるが球近似 gamma<1）では
     //      gamma−1<0 となるが、観測者-軸距離は非負・かつ中心点(m=0)が最大食分の上限。負 m を許すと
     //      中心値を超える非物理 magnitude になるため 0 に頭打ちする（球/扁平モデル差の吸収・要確認帯）。
-    let (position, m, zeta) = match shadow_axis_surface_point(&elements, &ellipsoid) {
-        Ok(p) => {
-            let obs = observer_geocentric(&ellipsoid, p.lat.radians().0, 0.0);
-            let zeta = project_observer_to_fundamental(&obs, p.lon.radians(), &elements).zeta;
-            (p, 0.0, zeta)
-        }
-        Err(EclipseError::Solver(SolverError::RootNotBracketed)) => {
-            let p = global_contact_ground_point(&elements, &ellipsoid)?;
-            (p, (gamma_magnitude - 1.0).max(0.0), 0.0)
-        }
-        Err(other) => return Err(other),
-    };
+    //    中心食では帯幅 `path_width`（南北本影縁の地表点間 大圏距離）と中心食継続 `central_duration`
+    //    （= 2|L2'|/|rel|・本影直径÷影の地表相対速度）も併せて算出（M9.6・部分/非中心は None）。
+    let (position, m, zeta, path_width, central_duration) =
+        match shadow_axis_surface_point(&elements, &ellipsoid) {
+            Ok(p) => {
+                let obs = observer_geocentric(&ellipsoid, p.lat.radians().0, 0.0);
+                let zeta = project_observer_to_fundamental(&obs, p.lon.radians(), &elements).zeta;
+                let (width, duration) =
+                    central_width_and_duration(source, max.time_tt, &elements, zeta, &ellipsoid)?;
+                (p, 0.0, zeta, width, duration)
+            }
+            Err(EclipseError::Solver(SolverError::RootNotBracketed)) => {
+                let p = global_contact_ground_point(&elements, &ellipsoid)?;
+                (p, (gamma_magnitude - 1.0).max(0.0), 0.0, None, None)
+            }
+            Err(other) => return Err(other),
+        };
 
     // 4. 食分・食面積（観測者 ζ で補正した半径 L1'=l1−ζ·tanf1, L2'=l2−ζ·tanf2）。
     //    食分 magnitude = (L1'−m)/(L1'+L2')。視半径比 ρ=(L1'−L2')/(L1'+L2')、視半径平面の中心離隔
@@ -198,11 +210,64 @@ where
         position,
         magnitude,
         obscuration,
-        path_width: None,
-        central_duration: None,
+        path_width,
+        central_duration,
         sun_altitude,
     };
     Ok(GreatestEclipseSolution { greatest, gamma })
+}
+
+/// 中心食の帯幅 \[km\] と中心線継続 \[s\] を算出する（M9.6・`solve_greatest_eclipse` の中心食分岐）。
+///
+/// 影軸運動 x'/y' と地球自転位相 μ' を供給源の**数値中心差分**（±[`DERIV_STEP_HOURS`] hour・per hour）で
+/// 得る（供給源は多項式でなく直接評価のため）。μ' は角度差の ±2π 折返しを補正する。
+/// - **帯幅** = 相対速度包絡の南北本影縁点（[`solve_limit_edge`]・t_max）の大圏距離。両縁が地表に
+///   当たらなければ `None`。
+/// - **中心線継続** = `2|L2'| / |rel|`（hour）→ ×3600 秒。`|L2'|=|l2−ζ·tan f2|`、rel は中心軸 (x,y,ζ) の
+///   地表相対速度。`|rel|` 非正/非有限なら `None`。
+fn central_width_and_duration<B: BesselianSource>(
+    source: &B,
+    t_max: TtInstant,
+    elements: &InstantaneousBesselianElements,
+    zeta: f64,
+    ellipsoid: &Ellipsoid,
+) -> Result<(Option<Kilometers>, Option<f64>), EclipseError> {
+    // 影軸運動 x',y' と μ'（per hour）を数値中心差分で得る。
+    let h_days = DERIV_STEP_HOURS / 24.0;
+    let e_plus = source.at(TtInstant::from_jd2(t_max.jd2().add_days(h_days)))?;
+    let e_minus = source.at(TtInstant::from_jd2(t_max.jd2().add_days(-h_days)))?;
+    let vx = (e_plus.x - e_minus.x) / (2.0 * DERIV_STEP_HOURS);
+    let vy = (e_plus.y - e_minus.y) / (2.0 * DERIV_STEP_HOURS);
+    let mu_rate = wrap_to_pi(e_plus.mu.0 - e_minus.mu.0) / (2.0 * DERIV_STEP_HOURS);
+
+    // 中心線継続 = 2|L2'|/|rel|（hour）→ 秒。rel は中心軸 (ξ=x, η=y, ζ) の地表相対速度。
+    let (sin_d, cos_d) = elements.declination.0.sin_cos();
+    let rel_x = vx - mu_rate * (zeta * cos_d - elements.y * sin_d);
+    let rel_y = vy - mu_rate * elements.x * sin_d;
+    let rel_speed = rel_x.hypot(rel_y);
+    let l2p_abs = (elements.l2 - zeta * elements.tan_f2).abs();
+    let central_duration = if rel_speed > 0.0 && rel_speed.is_finite() {
+        Some(2.0 * l2p_abs / rel_speed * SECONDS_PER_HOUR)
+    } else {
+        None
+    };
+
+    // 帯幅 = 南北本影縁点（相対速度包絡）の大圏距離。
+    let north = solve_limit_edge(elements, zeta, vx, vy, mu_rate, 1.0, ellipsoid)?;
+    let south = solve_limit_edge(elements, zeta, vx, vy, mu_rate, -1.0, ellipsoid)?;
+    let path_width = match (north, south) {
+        (Some(n), Some(s)) => Some(Kilometers(great_circle_distance_km(&n, &s))),
+        _ => None,
+    };
+
+    Ok((path_width, central_duration))
+}
+
+/// 角度差を `[−π, π)` へ折り返す（μ' 数値差分の ±2π 跨ぎ補正）。
+fn wrap_to_pi(x: f64) -> f64 {
+    use core::f64::consts::PI;
+    let twopi = 2.0 * PI;
+    x - (x / twopi).round() * twopi
 }
 
 /// 全球の日食種別（Total/Annular/Hybrid/Partial/NonCentral）を時系列込みで判定する（ISSUE-043 S6b-iii）。
@@ -696,19 +761,362 @@ mod tests {
         );
     }
 
-    /// 観点11（path/duration は本スライス非責務）: path_width・central_duration はともに None。
-    /// S6b（帯幅・中心食継続）が充足するまで本関数では常に None を返す契約を縛る。
+    // ====================================================================
+    // 観点11（書換・M9.6）: 中心食の帯幅 path_width・中心食継続 central_duration を Some に縛る
+    // ====================================================================
+    //
+    // 旧テスト `greatest_path_and_duration_are_none`（2017 皆既で path/duration=None を表明）は
+    // M9.6 で陳腐化した。M9.6 は中心食（Total/Annular）で path_width=Some・central_duration=Some に
+    // する（部分・非中心は引き続き None＝追補A/C/C-4 で別途縛る）。よって本観点を **中心食で Some**
+    // ＋ NASA ballpark / 独立オラクルに **書換**える。
+    //
+    // ## 量の定義（オラクル根拠・実装式は写経しない）
+    // - path_width [km] = 最大食時刻 t_max での本影帯の **北縁と南縁の地表点間の大圏距離**
+    //   （M9.4 限界線＝相対速度包絡に直交する両縁。中心線の帯幅）。
+    // - central_duration [s] = 本影が中心線上の点を通過する時間 = **2·|L2'| / |rel|**
+    //   （umbra 直径 ÷ 影の地表相対速度・初等運動学）。
+    //     |L2'| = |l2 − ζ·tan f2|（ζ=影軸地表点の基本面 ζ）、
+    //     rel = 影の地表相対速度 = (x' − μ'(ζ cos d − η sin d), y' − μ'·ξ sin d)、|rel|=基本面速さ。
+    //
+    // ## オラクル戦略（追認回避）
+    // - 2017/2024 実日食は **NASA 公表 ballpark の範囲 check**（k/ΔT/解析暦差で下位桁は再現しない・
+    //   秒/km の等値ハードコードは禁止＝conventions §11）。
+    // - 独立オラクルの主軸は **合成中心食**（`CentralDurationSource`）: 既知の x',y',μ',l2,tan_f2 から
+    //   `2·|L2'|/|rel|` を **別経路で手計算** して `central_duration` に厳密一致を要求する。ζ・ξ・η は
+    //   返った position を **検証済み前方射影**（`project_observer_to_fundamental`）で独立復元する
+    //   （被テスト関数の内部 ζ には依存しない）。
+    // - width↔duration は **非対称な単位/桁**（km vs 秒）で区別し取り違えを撃破する。
+
+    /// 中心食継続の独立オラクル用の時変合成供給源。影軸が地表を貫く（gamma≪1）中心食で、
+    /// **x' / μ' を非零の既知値**に取り、`2·|L2'|/|rel|` を手計算できる構成にする。
+    ///   x(jd) = X0 + X1·(jd−center)·24   （= X0 + X1·t_hours, 東進・x'=X1 [Re/hour] 一定・非零）
+    ///   y(jd) = Y0 + Y1·(jd−center)·24   （y'=Y1 [Re/hour] 一定・**非零**・小さく取り gamma≪1 を保つ）
+    ///   μ(jd) = MU0 + MU1·(jd−center)·24  （μ'=MU1 [rad/hour] 一定・非零＝地球自転）
+    ///   declination = D（**非零の定数**・sin d≠0 で rel の交差項を有効化）。l2, tan_f2 固定。
+    ///   最大食（gamma 最小）は t*=−(X0·X1+Y0·Y1)/(X1²+Y1²) [hour]・center 近傍。
+    /// 非退化化（mutation 強化）: D≠0（sin d≠0）かつ Y1≠0（y'≠0）で rel_x の `η·sin d` 項・
+    /// rel_y の全項・y の数値中心差分が**実際に効く**ようにする（さもなくば ×0 で等価変異化）。
+    /// 注: x'/y'/μ' は jd でなく **t_hours=(jd−center)·24** に対する微分で実装側と一致させる（hour 単位）。
+    struct CentralDurationSource {
+        center_jd: f64,
+        x0: f64,
+        x1_per_hour: f64,
+        y0: f64,
+        y1_per_hour: f64,
+        declination: f64,
+        mu0: f64,
+        mu1_per_hour: f64,
+        l2: f64,
+        tan_f2: f64,
+        window: TimeInterval<TtInstant>,
+    }
+
+    impl BesselianSource for CentralDurationSource {
+        fn at(&self, t: TtInstant) -> Result<InstantaneousBesselianElements, EclipseError> {
+            let t_hours = (t.jd2().jd() - self.center_jd) * 24.0;
+            Ok(InstantaneousBesselianElements {
+                x: self.x0 + self.x1_per_hour * t_hours,
+                y: self.y0 + self.y1_per_hour * t_hours,
+                declination: Radians(self.declination),
+                mu: Radians(self.mu0 + self.mu1_per_hour * t_hours),
+                l1: 0.54,
+                l2: self.l2,
+                tan_f1: 0.0047,
+                tan_f2: self.tan_f2,
+                time_tt: t,
+            })
+        }
+
+        fn fit_interval(&self) -> TimeInterval<TtInstant> {
+            self.window
+        }
+    }
+
+    // ====================================================================
+    // wrap_to_pi の純関数ユニットテスト（高速・既知入力→既知出力オラクル）
+    //
+    // wrap_to_pi(x) = x − round(x/2π)·2π で x を [−π, π) へ折り返す。private ゆえ in-module。
+    // 既知値（±2π 跨ぎ複数）で twopi=2·π の `*`、x/twopi の `/`、.round() への `/`→`%`/`*`、
+    // x − k·2π の `-`→`+`、k·2π の `*`→`/` をすべて撃破する。tol 1e-12。
+    // ====================================================================
+
+    /// 範囲内（|x|<π）はそのまま返る: round(x/2π)=0 ⇒ x。
     #[test]
-    fn greatest_path_and_duration_are_none() {
+    fn wrap_to_pi_inside_range_is_identity() {
+        use core::f64::consts::PI;
+        assert!((wrap_to_pi(0.5) - 0.5).abs() < 1e-12);
+        assert!((wrap_to_pi(-0.5) - (-0.5)).abs() < 1e-12);
+        // π に近い内側（折返し境界手前）も恒等。
+        let near_pi = PI - 0.01;
+        assert!((wrap_to_pi(near_pi) - near_pi).abs() < 1e-12);
+    }
+
+    /// π を僅かに超える: π+0.5 → (π+0.5)−2π = 0.5−π（負側へ折返し）。
+    /// `-`→`+`（x+k·2π になり ≈π+0.5+2π）・k·2π の `*`→`/` を撃破。
+    #[test]
+    fn wrap_to_pi_just_over_pi_folds_negative() {
+        use core::f64::consts::PI;
+        let got = wrap_to_pi(PI + 0.5);
+        let want = 0.5 - PI; // ≈ -2.6416
+        assert!(
+            (got - want).abs() < 1e-12,
+            "wrap_to_pi(π+0.5)={got} expected {want}"
+        );
+    }
+
+    /// −π を僅かに下回る: −π−0.5 → π−0.5（正側へ折返し）。
+    #[test]
+    fn wrap_to_pi_just_under_neg_pi_folds_positive() {
+        use core::f64::consts::PI;
+        let got = wrap_to_pi(-PI - 0.5);
+        let want = PI - 0.5; // ≈ 2.6416
+        assert!(
+            (got - want).abs() < 1e-12,
+            "wrap_to_pi(−π−0.5)={got} expected {want}"
+        );
+    }
+
+    /// +1 周期跨ぎ: 2π+0.3 → 0.3。round((2π+0.3)/2π)=round(1.0477)=1 ⇒ x−2π=0.3。
+    /// twopi=2·π の `*`→`+,/`、x/twopi の `/`→`%,*`（round が変わる）を撃破。
+    #[test]
+    fn wrap_to_pi_one_period_over_folds_to_small() {
+        use core::f64::consts::PI;
+        let got = wrap_to_pi(2.0 * PI + 0.3);
+        assert!(
+            (got - 0.3).abs() < 1e-12,
+            "wrap_to_pi(2π+0.3)={got} expected 0.3"
+        );
+    }
+
+    /// −1 周期跨ぎ: −2π−0.3 → −0.3（符号対称）。
+    #[test]
+    fn wrap_to_pi_one_period_under_folds_to_small_negative() {
+        use core::f64::consts::PI;
+        let got = wrap_to_pi(-2.0 * PI - 0.3);
+        assert!(
+            (got - (-0.3)).abs() < 1e-12,
+            "wrap_to_pi(−2π−0.3)={got} expected −0.3"
+        );
+    }
+
+    /// +2 周期跨ぎ: 4π+0.3 → 0.3。round((4π+0.3)/2π)=round(2.0477)=2 ⇒ x−2·2π=0.3。
+    /// 係数 k=2 の k·2π（`*`→`/` で k/2π になり残差が桁違い）を強く撃破する。
+    #[test]
+    fn wrap_to_pi_two_periods_over_folds_to_small() {
+        use core::f64::consts::PI;
+        let got = wrap_to_pi(4.0 * PI + 0.3);
+        assert!(
+            (got - 0.3).abs() < 1e-12,
+            "wrap_to_pi(4π+0.3)={got} expected 0.3"
+        );
+    }
+
+    /// 観点11a（中心食で Some・2017 皆既・NASA ballpark）: 2017-08-21 皆既で path_width・
+    /// central_duration がともに **Some**であり、NASA 公表 ballpark（帯幅≈115 km・継続≈160 s）の
+    /// 妥当域に入る。k/ΔT/解析暦差で下位桁は再現しないため範囲 check（width ±~15%・duration ±~12%）。
+    ///
+    /// 帯幅域 [98, 132] km の根拠: NASA 公表 ~115 km に ±~15%（k 値で l2 が ~1–2% スケール・最大食に
+    /// 最も近い扱い・地表傾斜近似差）。継続域 [140, 180] s の根拠: NASA 公表 ~160 s（2m40s）に ±~12.5%。
+    /// width↔duration は単位/桁が違う（km vs 秒）ため取り違え（Some を入れ替える変異）も撃破する。
+    ///
+    /// 殺す変異: 中心食で None を返す（None↔Some 分岐）・width と duration の取り違え（桁/単位違いで露見）・
+    ///   width/duration を 2 倍/半分にする（範囲外）・部分/中心の取り違え（2017 は中心皆既）。
+    #[test]
+    fn greatest_total_2017_path_width_and_duration_are_some_in_nasa_ballpark() {
         let dt = EspenakMeeusDeltaT;
         let (_src, sol) = solve_2017(&dt);
-        assert_eq!(
-            sol.greatest.path_width, None,
-            "path_width must be None in this slice (S6b territory)"
+
+        let width = sol
+            .greatest
+            .path_width
+            .expect("2017 中心皆既では path_width=Some（M9.6）");
+        let duration = sol
+            .greatest
+            .central_duration
+            .expect("2017 中心皆既では central_duration=Some（M9.6）");
+
+        // 帯幅 [km]: NASA ~115 km の妥当域。
+        assert!(
+            (98.0..=132.0).contains(&width.0),
+            "2017 path_width {} km not in NASA ballpark [98,132] (NASA≈115 km)",
+            width.0
         );
-        assert_eq!(
-            sol.greatest.central_duration, None,
-            "central_duration must be None in this slice (S6b territory)"
+        // 継続 [s]: NASA ~160 s（2m40s）の妥当域。
+        assert!(
+            (140.0..=180.0).contains(&duration),
+            "2017 central_duration {duration} s not in NASA ballpark [140,180] (NASA≈160 s)"
+        );
+    }
+
+    /// 観点11b（**独立オラクル**・中心食継続の主オラクル）: 合成中心食で `central_duration` が
+    /// **2·|L2'|/|rel|** に厳密一致する（手計算・別経路）。ζ・ξ・η は返った position を検証済み前方射影で
+    /// 独立復元し、x'・μ' は供給源の既知値（X1・MU1）から組む（被テスト関数の内部に依存しない）。
+    ///
+    /// 構成: X0=0.10・X1=0.40 Re/hour（東進・非零）・Y0=0.05・**Y1=0.02 Re/hour（y'≠0）**・
+    /// **D=0.2 rad（declination≠0 ⇒ sin d≠0）**・MU1=0.26 rad/hour（地球自転・非零）・l2=−0.009（皆既）・
+    /// tan_f2=0.0046。gamma≪1（軸が地表を貫く中心食）を保つ小傾き。最大食は t*≈−0.256 hour・窓内。
+    ///
+    /// **非退化の意義（mutation 強化・ISSUE-045 工程7）**: D≠0・Y1≠0 により
+    ///   rel_x の `η·sin d` 項・rel_y の全項（vy − μ'·ξ·sin d）・x/y の数値中心差分の `/(2·step)` が
+    ///   いずれも duration を**実際に動かす**。期待 vx/vy/μ' は供給源の既知傾き（X1/Y1/MU1）から組み、
+    ///   実装の数値微分とは独立に照合する。
+    ///
+    /// 殺す変異: |rel| の逆数誤り（×|rel| にする）・2|L2'| の係数 2 を 1/4 にする（2倍/半分）・
+    ///   |L2'| を中心軸 ζ でなく 0 や別値で測る・rel に μ' 項を含めない（μ'≠0 で値が変わる）・
+    ///   微分スケール `(e₊−e₋)/(2·step)` の `/`→`%,*` / `*`→`+,/`（vx/vy が変わる）・
+    ///   rel_x の `μ'·(ζcosd−η sind)` 各項・rel_y の `vy−μ'·ξ·sind` 各項（D≠0・Y1≠0 で効く）・
+    ///   width と duration の取り違え（duration は秒・width は km で桁が違う）。
+    #[test]
+    fn greatest_central_duration_matches_two_l2p_over_rel_speed() {
+        let dt = EspenakMeeusDeltaT;
+        let center_jd = 2_457_986.768;
+        let half_day = 0.05;
+        let src = CentralDurationSource {
+            center_jd,
+            x0: 0.10,
+            x1_per_hour: 0.40,
+            y0: 0.05,
+            y1_per_hour: 0.02,
+            declination: 0.2,
+            mu0: 1.2,
+            mu1_per_hour: 0.26,
+            l2: -0.009,
+            tan_f2: 0.0046,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        };
+        let config = crate::config::EngineConfig::standard();
+        let sol = solve_greatest_eclipse(&src, &dt, &config)
+            .expect("synthetic central eclipse must yield Ok(GreatestEclipseSolution)");
+
+        // 中心食ゆえ duration は Some。
+        let duration = sol
+            .greatest
+            .central_duration
+            .expect("central eclipse central_duration=Some");
+
+        // --- 独立オラクル: 2·|L2'|/|rel| を別経路で手計算 ---
+        // 返った time_tt の瞬時要素と、返った position を検証済み前方射影して ζ,ξ,η を独立復元。
+        let e = src
+            .at(sol.greatest.time_tt)
+            .expect("source.at should succeed at greatest-eclipse time");
+        let phi = sol.greatest.position.lat.radians().0;
+        let lam = sol.greatest.position.lon.radians().0;
+        let obs = observer_geocentric(&Ellipsoid::WGS84, phi, 0.0);
+        let r = project_observer_to_fundamental(&obs, Radians::new(lam), &e);
+        // |L2'| = |l2 − ζ·tan f2|（ζ は地表点自身の基本面 ζ）。
+        let l2p = (e.l2 - r.zeta * e.tan_f2).abs();
+        // 影の地表相対速度（供給源の既知 x'=X1, y'=Y1, μ'=MU1 から組む。t に依らず一定）。
+        // 実装の数値微分には依存せず、ソースの定義傾きを直接用いる（独立オラクル）。
+        let (sin_d, cos_d) = e.declination.0.sin_cos();
+        let vx = 0.40_f64; // x1_per_hour（既知・非零）
+        let vy = 0.02_f64; // y1_per_hour（既知・**非零**）
+        let mu_rate = 0.26_f64; // mu1_per_hour（既知・非零）
+        let rel_x = vx - mu_rate * (r.zeta * cos_d - r.eta * sin_d);
+        let rel_y = vy - mu_rate * r.xi * sin_d;
+        let rel_speed = rel_x.hypot(rel_y);
+        let want_duration = 2.0 * l2p / rel_speed;
+
+        // |rel| を Re/hour で組んだので duration は hour 単位。秒へ換算して比較する。
+        let want_seconds = want_duration * 3600.0;
+        // 許容 1e-2 s: 同一式の二経路計算の浮動小数残差＋実装の t_max 求根 tol に対し十分タイト
+        // （NASA 値の等値ハードコードでなく、定義式 2·|L2'|/|rel| への厳密一致を縛る）。係数 2 の
+        // 1/4 化・|rel| 逆数誤り・μ' 項脱落（μ'≠0 で値が変わる）はいずれもこの域を大きく外す。
+        assert!(
+            (duration - want_seconds).abs() < 1e-2,
+            "central_duration {duration} s must equal 2·|L2'|/|rel| = {want_seconds} s \
+             (|L2'|={l2p} Re, |rel|={rel_speed} Re/hour, ζ={})",
+            r.zeta
+        );
+        // duration は正（umbra が中心線上を非零時間で通過）。
+        assert!(
+            duration > 0.0,
+            "central_duration {duration} must be positive"
+        );
+    }
+
+    /// 観点11c（中心食で path_width=Some・正値・帯幅オーダー妥当）: 合成中心食で path_width が
+    /// **Some**かつ正で、地球規模ではない妥当オーダー（0 < width < ~1000 km）に収まる。
+    /// width↔duration を非対称（km vs 秒）に区別し、duration の値を width に入れる取り違えを撃破する。
+    ///
+    /// 帯幅の厳密値（北縁-南縁の大圏距離）は M9.4 の限界線 solver に律速され in-module からは独立
+    /// 再現が重いため、ここでは Some＋正＋妥当オーダーで縛り、**実 2024 の厳密 NASA 帯幅は
+    /// `tests/path_limits.rs` の統合テスト**（197.5 km の妥当域）で別途縛る（spec 方針）。
+    ///
+    /// 殺す変異: 中心食で path_width=None（None↔Some 分岐）・width を負/ゼロにする・
+    ///   width に duration（秒値）を入れる（オーダーが地球規模 or 0 近傍で露見）。
+    #[test]
+    fn greatest_central_path_width_is_some_and_positive() {
+        let dt = EspenakMeeusDeltaT;
+        let center_jd = 2_457_986.768;
+        let half_day = 0.05;
+        let src = CentralDurationSource {
+            center_jd,
+            x0: 0.10,
+            x1_per_hour: 0.40,
+            y0: 0.05,
+            y1_per_hour: 0.02,
+            declination: 0.2,
+            mu0: 1.2,
+            mu1_per_hour: 0.26,
+            l2: -0.009,
+            tan_f2: 0.0046,
+            window: TimeInterval {
+                start: g_tt_jd(center_jd - half_day),
+                end: g_tt_jd(center_jd + half_day),
+            },
+        };
+        let config = crate::config::EngineConfig::standard();
+        let sol = solve_greatest_eclipse(&src, &dt, &config)
+            .expect("synthetic central eclipse must yield Ok(GreatestEclipseSolution)");
+
+        let width = sol
+            .greatest
+            .path_width
+            .expect("central eclipse path_width=Some（M9.6）");
+        // 帯幅は正（北縁≠南縁・帯が分離）。
+        assert!(
+            width.0 > 0.0,
+            "central path_width {} km must be positive (band has nonzero width)",
+            width.0
+        );
+        // 妥当オーダー（地球規模でない・継続秒値の取り違えでもない）。本影帯幅は数 km〜数百 km。
+        assert!(
+            width.0 < 1000.0,
+            "central path_width {} km must be a plausible band width (< 1000 km), not a swapped duration/global value",
+            width.0
+        );
+    }
+
+    /// 観点11d（金環でも中心食ゆえ width/duration=Some）: 2023-10-14 金環食でも中心食ゆえ
+    /// path_width・central_duration がともに **Some**かつ正値・妥当オーダー（width<1000 km・
+    /// duration>0）。金環でも帯幅・継続は定義される（NASA 厳密値は調べず Some＋正値＋妥当域で縛る・
+    /// spec 方針: 金環帯幅 ~125–190 km・継続は別途）。
+    ///
+    /// 殺す変異: 金環（l2>0）分岐で width/duration を None にする・中心/部分の取り違え（2023 は中心金環）。
+    #[test]
+    fn greatest_annular_2023_path_width_and_duration_are_some() {
+        let dt = EspenakMeeusDeltaT;
+        let (_src, sol) = solve_2023(&dt);
+
+        let width = sol
+            .greatest
+            .path_width
+            .expect("2023 中心金環でも path_width=Some（中心食ゆえ）");
+        let duration = sol
+            .greatest
+            .central_duration
+            .expect("2023 中心金環でも central_duration=Some（中心食ゆえ）");
+        assert!(
+            width.0 > 0.0 && width.0 < 1000.0,
+            "2023 annular path_width {} km must be positive and plausible (< 1000 km)",
+            width.0
+        );
+        assert!(
+            duration > 0.0,
+            "2023 annular central_duration {duration} s must be positive"
         );
     }
 
@@ -838,14 +1246,14 @@ mod tests {
             "time_utc must equal tt_to_utc(time_tt)"
         );
 
-        // path/duration は本スライス非責務（常に None）。
-        assert_eq!(
-            sol.greatest.path_width, None,
-            "path_width must be None (S6b)"
+        // path/duration は中心食（金環も中心食）ゆえ Some（M9.6・専用テストで値域を縛る）。
+        assert!(
+            sol.greatest.path_width.is_some(),
+            "path_width must be Some for central annular (M9.6)"
         );
-        assert_eq!(
-            sol.greatest.central_duration, None,
-            "central_duration must be None (S6b)"
+        assert!(
+            sol.greatest.central_duration.is_some(),
+            "central_duration must be Some for central annular (M9.6)"
         );
     }
 
@@ -976,14 +1384,14 @@ mod tests {
             sol.greatest.obscuration.0
         );
 
-        // --- path/duration は本スライス非責務（常に None）---
+        // --- path/duration は **部分食**ゆえ None（M9.6 でも中心食のみ Some・部分は不変）---
         assert!(
             sol.greatest.path_width.is_none(),
-            "path_width must be None for partial (S6b territory)"
+            "path_width must be None for partial (central-only Some, M9.6)"
         );
         assert!(
             sol.greatest.central_duration.is_none(),
-            "central_duration must be None for partial (S6b territory)"
+            "central_duration must be None for partial (central-only Some, M9.6)"
         );
     }
 
@@ -1156,6 +1564,18 @@ mod tests {
             (sol.greatest.obscuration.0 - 1.0).abs() < 1e-9,
             "non-central total central obscuration {} must be 1.0 (m=0, contained)",
             sol.greatest.obscuration.0
+        );
+
+        // path/duration は **非中心**ゆえ None（M9.6 でも中心食＝軸が地表を貫く Total/Annular のみ
+        // Some。非中心＝軸ミス＝中心線が存在しないので帯幅・継続は未定義 ⇒ None）。中心↔非中心の
+        // None↔Some 取り違え変異を撃破する。
+        assert!(
+            sol.greatest.path_width.is_none(),
+            "path_width must be None for non-central (central-only Some, M9.6)"
+        );
+        assert!(
+            sol.greatest.central_duration.is_none(),
+            "central_duration must be None for non-central (central-only Some, M9.6)"
         );
     }
 

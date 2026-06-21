@@ -26,7 +26,7 @@ use umbra_core::{
 use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
 use umbra_geo::{GeoLine, GeoPoint};
 
-use crate::axis_intercept::surface_point_for_fundamental;
+use crate::axis_intercept::{solve_limit_edge, surface_point_for_fundamental};
 use crate::bessel_poly::{BesselFitError, BesselianPolynomial};
 use crate::besselian::InstantaneousBesselianElements;
 use crate::calc_metadata::CalculationMetadata;
@@ -589,12 +589,6 @@ fn next_visible_is_observable(visibility: Visibility) -> bool {
     )
 }
 
-/// 限界点の自己整合（相対速度包絡）不動点反復の収束許容（基本面 Re）。中心線位置 sub-km
-/// （≈7.8e-5 Re）を大きく下回り、`L2'=l2−ζ·tan f2` の ζ 依存残差（tan f2·Δζ）を 1e-7 以下にする。
-const LIMIT_FIXED_POINT_TOL: f64 = 1e-12;
-/// 限界点 不動点反復の上限。半径 |L2'|≈0.01 Re は微小で ζ 依存が弱く、通常 3–4 回で収束。
-const LIMIT_FIXED_POINT_MAX_ITER: usize = 16;
-
 /// 中心食の中心線（と任意で南北限界線）を `[start_tt, end_tt]` を `interval_seconds` 刻みでサンプルして
 /// 追跡する（M9.1 中心線 / M9.3 限界線 / M9.4 厳密化・[`EclipseEngine::path`] から呼ぶ）。
 ///
@@ -713,80 +707,6 @@ fn sample_central_point(
         (edge_b, edge_a)
     };
     Ok(Some((center, Some((north, south)))))
-}
-
-/// 本影帯の片側（`sign=±1`）の縁点を相対速度包絡の不動点反復で厳密に解く（[`sample_central_point`]）。
-///
-/// 各反復で現在の縁推定 (ξ,η,ζ) から相対速度 rel=(x'−μ'(ζcos d−η sin d), y'−μ'ξ sin d) を作り、
-/// それに直交する単位法線 n̂=(−rel_y, rel_x)/|rel| の `sign` 側へ ζ補正本影半径 `|l2−ζ·tan f2|` だけ
-/// 軸 (x,y) からオフセットし、地表へ射影して新しい (ξ,η,ζ) を得る。(ξ,η,ζ) が
-/// [`LIMIT_FIXED_POINT_TOL`] 以内で安定（＝rel・半径とも自己整合）した縁点を返す。射影が
-/// 地表を外す（`RootNotBracketed`）/ 相対速度ゼロ/ **[`LIMIT_FIXED_POINT_MAX_ITER`] 内に未収束**は
-/// `Ok(None)`（lockstep スキップ）＝**未収束の近似を無警告で返さない**（誤差を隠さない・conventions §11）。
-/// 他 `Err` は伝播。
-///
-/// `zeta0` は初期推定（中心軸 ζ）。半径 |L2'|≈0.01 Re が微小で写像は強い縮小ゆえ**収束先は初期値に
-/// 依らない**（良い初期値は反復数を減らすのみ）。よって `zeta0` を別値に変える/捨てる変異は結果を
-/// 変えず等価（工程7 で生存列挙・許容）。
-fn solve_limit_edge(
-    elements: &InstantaneousBesselianElements,
-    zeta0: f64,
-    vx: f64,
-    vy: f64,
-    mu_rate: f64,
-    sign: f64,
-    ellipsoid: &Ellipsoid,
-) -> Result<Option<GeoPoint>, EclipseError> {
-    let (sin_d, cos_d) = elements.declination.0.sin_cos();
-    // 縁推定（初期＝中心軸）。ξ,η は基本面オフセット点、ζ はその地表射影での影軸方向成分。
-    let mut xi = elements.x;
-    let mut eta = elements.y;
-    let mut zeta = zeta0;
-    let mut point: Option<GeoPoint> = None;
-    let mut converged = false;
-    for _ in 0..LIMIT_FIXED_POINT_MAX_ITER {
-        // 影の地表に対する相対速度（ω×P の基本面 (ξ,η) 成分を影軸運動から差し引く）。
-        let rel_x = vx - mu_rate * (zeta * cos_d - eta * sin_d);
-        let rel_y = vy - mu_rate * xi * sin_d;
-        let rel_speed = rel_x.hypot(rel_y);
-        if rel_speed == 0.0 {
-            return Ok(None); // 相対速度ゼロ（影が地表に静止）はスキップ。
-        }
-        // rel に直交する単位法線（路限界方向）。
-        let nx = -rel_y / rel_speed;
-        let ny = rel_x / rel_speed;
-        // ζ補正本影半径（縁点自身の ζ で評価＝自己整合）。
-        let radius = (elements.l2 - zeta * elements.tan_f2).abs();
-        let xi_new = elements.x + sign * radius * nx;
-        let eta_new = elements.y + sign * radius * ny;
-        let (p, zeta_new) = match surface_point_for_fundamental(
-            xi_new,
-            eta_new,
-            elements.declination,
-            elements.mu,
-            ellipsoid,
-        ) {
-            Ok(v) => v,
-            Err(EclipseError::Solver(SolverError::RootNotBracketed)) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        // 収束判定（過収束機構）: 反復は機械精度まで収束し ξ,η,ζ は同率で <TOL に達するため、境界
-        // `< → <=` や `&& → ||` は真解に影響しない等価変異（`< → >`＝発散は caught）。mutation.yml で
-        // `with <= in.*solve_limit_edge` / `with || in.*solve_limit_edge` を除外（docs/reviews/mutation-limit-line.md）。
-        let step_converged = (xi_new - xi).abs() < LIMIT_FIXED_POINT_TOL
-            && (eta_new - eta).abs() < LIMIT_FIXED_POINT_TOL
-            && (zeta_new - zeta).abs() < LIMIT_FIXED_POINT_TOL;
-        xi = xi_new;
-        eta = eta_new;
-        zeta = zeta_new;
-        point = Some(p);
-        if step_converged {
-            converged = true;
-            break;
-        }
-    }
-    // 未収束（rel 悪条件等・実太陽日食では rel≈0.2 Re/h で到達しない）は近似を返さずスキップ。
-    Ok(if converged { point } else { None })
 }
 
 /// 現在の壁時計 UTC を `UtcInstant` で返す（`generated_at` 用）。std 時計 → UNIX 秒 → UTC-JD。
