@@ -14,8 +14,9 @@
 //! - **限界線 Feature（M9.5）**: `northern_limit=Some` → Feature（geometry=GeoLine の GeoJSON・
 //!   `properties.role="northern_limit"`）、`southern_limit=Some` → 同（`role="southern_limit"`）。
 //!   いずれも `None` なら当該 feature を出さない。
-//! - **partial_limit は features に出さない**（常に None・GeoPolygon の GeoJSON 化は後続スライス）。
-//! - feature 順序は **greatest → center_line → northern_limit → southern_limit**（決定的）。
+//! - **partial_limit（M9 3d）**: `partial_limit=Some` → Feature（geometry=GeoPolygon の GeoJSON・
+//!   `properties.role="partial_limit"`）を southern_limit の後（末尾）に出す。`None` なら出さない。
+//! - feature 順序は **greatest → center_line → northern_limit → southern_limit → partial_limit**（決定的）。
 //! - samples は features に出さない（本スライス）。
 //! - GeoJSON 座標順は [経度, 緯度]（lon, lat）。
 //!
@@ -29,7 +30,7 @@
 
 use serde_json::Value;
 use umbra_eclipse::EclipsePath;
-use umbra_geo::{GeoLine, GeoPoint};
+use umbra_geo::{GeoLine, GeoPoint, GeoPolygon};
 
 /// 数値比較の許容。
 const EPS: f64 = 1e-9;
@@ -422,4 +423,158 @@ fn to_geojson_antimeridian_center_line_is_multilinestring() {
         close(first1[1].as_f64().expect("lat"), lat_c),
         "seg1 先頭 lat=lat_c"
     );
+}
+
+// ============================================================
+// to_geojson — partial_limit feature（GeoPolygon の GeoJSON 化・3d）
+// ============================================================
+
+/// partial_limit=Some の EclipsePath を作る（中心食・北南限界線 Some・部分食域 Some）。
+/// 部分食域は外環＋穴の 2 リングで、座標は中心線・限界線・greatest と**重ならない非対称値**
+/// （経度 100 系の四角形外環＋小四角形穴）にして role↔geometry 取り違えを殺す。
+fn central_path_with_partial() -> EclipsePath {
+    EclipsePath {
+        center_line: Some(GeoLine::new(vec![
+            pt(0.0, 0.0),
+            pt(10.0, 30.0),
+            pt(-5.0, 60.0),
+        ])),
+        northern_limit: Some(GeoLine::new(vec![pt(11.0, 31.0), pt(12.0, 61.0)])),
+        southern_limit: Some(GeoLine::new(vec![pt(-11.0, 29.0), pt(-12.0, 59.0)])),
+        partial_limit: Some(GeoPolygon::new(vec![
+            // 外環（CCW・非閉）: (lon,lat) = (100,0)->(140,0)->(140,40)->(100,40)。
+            vec![
+                pt(0.0, 100.0),
+                pt(0.0, 140.0),
+                pt(40.0, 140.0),
+                pt(40.0, 100.0),
+            ],
+        ])),
+        greatest_point: pt(12.5, 77.5),
+        samples: Vec::new(),
+    }
+}
+
+/// partial_limit=Some のとき role=="partial_limit" の Feature が**ちょうど 1 つ**現れ、
+/// その geometry は `partial_limit.geojson_geometry()` と**完全一致**する。
+///
+/// 殺す変異: partial_limit を出さない・role 文字列を別物にする・geometry を別ソースから作る・
+///   geometry を捏造する・複数出す。
+#[test]
+fn to_geojson_partial_limit_some_emits_one_polygon_feature() {
+    let path = central_path_with_partial();
+    // オラクル: partial_limit の geojson_geometry を独立に取得。
+    let expected_geom = path
+        .partial_limit
+        .as_ref()
+        .expect("partial_limit は Some")
+        .geojson_geometry();
+
+    let s = path.to_geojson().expect("直列化は成功する");
+    let root: Value = serde_json::from_str(&s).expect("valid JSON");
+
+    let pl = features_with_role(&root, "partial_limit");
+    assert_eq!(pl.len(), 1, "partial_limit feature はちょうど 1 つ");
+    assert_eq!(
+        pl[0]["type"],
+        Value::String("Feature".to_string()),
+        "partial_limit は Feature"
+    );
+    // geometry は GeoPolygon::geojson_geometry と一致（Polygon・閉リング・[lon,lat]・環向き込み）。
+    assert_eq!(
+        pl[0]["geometry"], expected_geom,
+        "geometry は partial_limit.geojson_geometry() と一致"
+    );
+    // 念のため Polygon 型であること。
+    assert_eq!(
+        pl[0]["geometry"]["type"],
+        Value::String("Polygon".to_string()),
+        "geometry は Polygon"
+    );
+}
+
+/// partial_limit feature の出現順は **southern_limit の後**（決定的・末尾）。
+/// greatest → center_line → northern_limit → southern_limit → partial_limit。
+///
+/// 殺す変異: partial_limit を southern_limit より前に出す・順序を入れ替える・
+///   既存 feature 順序を壊す。
+#[test]
+fn to_geojson_partial_limit_is_last_after_southern() {
+    let s = central_path_with_partial().to_geojson().expect("直列化");
+    let root: Value = serde_json::from_str(&s).expect("valid JSON");
+    assert_eq!(
+        role_order(&root),
+        vec![
+            "greatest".to_string(),
+            "center_line".to_string(),
+            "northern_limit".to_string(),
+            "southern_limit".to_string(),
+            "partial_limit".to_string(),
+        ],
+        "feature 順序は ...southern_limit→partial_limit（末尾）"
+    );
+}
+
+/// partial_limit=Some でも既存 feature（greatest/center_line/northern/southern）は**不変**。
+/// 各 role がちょうど 1 件・座標が対応 GeoLine/Point と一致し、partial_limit 追加で壊れない。
+///
+/// 殺す変異: partial_limit 追加時に既存 feature を消す/重複させる・既存座標を壊す。
+#[test]
+fn to_geojson_partial_limit_some_keeps_existing_features_intact() {
+    let s = central_path_with_partial().to_geojson().expect("直列化");
+    let root: Value = serde_json::from_str(&s).expect("valid JSON");
+
+    // 5 件（既存 4 + partial_limit 1）。
+    let all = root["features"].as_array().expect("features は配列");
+    assert_eq!(all.len(), 5, "既存 4 件 + partial_limit 1 件 = 5 件");
+
+    // 各既存 role ちょうど 1 件。
+    for role in [
+        "greatest",
+        "center_line",
+        "northern_limit",
+        "southern_limit",
+    ] {
+        assert_eq!(
+            features_with_role(&root, role).len(),
+            1,
+            "{role} はちょうど 1 件（partial_limit 追加で壊れない）"
+        );
+    }
+
+    // greatest 座標は不変（[77.5, 12.5]）。
+    let (lon, lat) = point_coord(features_with_role(&root, "greatest")[0]);
+    assert!(
+        close(lon, 77.5) && close(lat, 12.5),
+        "greatest=[77.5,12.5] 不変"
+    );
+
+    // northern_limit 座標は不変（[31,11],[61,12]）。
+    let n_coords = line_coords(features_with_role(&root, "northern_limit")[0]);
+    assert_eq!(n_coords.len(), 2, "北限界線 2 点");
+    assert!(
+        close(n_coords[0].0, 31.0) && close(n_coords[0].1, 11.0),
+        "北[0]=[31,11]"
+    );
+    assert!(
+        close(n_coords[1].0, 61.0) && close(n_coords[1].1, 12.0),
+        "北[1]=[61,12]"
+    );
+}
+
+/// partial_limit=None のとき role=="partial_limit" の feature は**現れない**。
+/// 既存 central_path()（partial_limit=None）で確認し、4 件（既存のみ）であること。
+///
+/// 殺す変異: None でも partial_limit feature を捏造する・None 判定を逆にする。
+#[test]
+fn to_geojson_partial_limit_none_emits_no_polygon_feature() {
+    let s = central_path().to_geojson().expect("直列化");
+    let root: Value = serde_json::from_str(&s).expect("valid JSON");
+    assert!(
+        features_with_role(&root, "partial_limit").is_empty(),
+        "partial_limit=None では partial_limit feature を出さない"
+    );
+    // 既存 4 件のまま（partial_limit を足さない）。
+    let all = root["features"].as_array().expect("features は配列");
+    assert_eq!(all.len(), 4, "partial_limit=None は既存 4 件のまま");
 }

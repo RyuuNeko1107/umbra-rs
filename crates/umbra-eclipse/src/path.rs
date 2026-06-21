@@ -43,9 +43,10 @@ impl EclipsePath {
     ///
     /// feature を決定的順序で含む: `greatest_point`（Point・`role="greatest"`）→ `center_line`（Some 時・
     /// `role="center_line"`）→ `northern_limit`（Some 時・`role="northern_limit"`）→ `southern_limit`
-    /// （Some 時・`role="southern_limit"`）。折れ線は [`GeoLine::geojson_geometry`]（LineString/MultiLineString・
-    /// ±180 補間）。**部分食域 `partial_limit`（現状 None・GeoPolygon の GeoJSON 化）・`samples` は未出力**
-    /// （後続スライス(3)）。座標順は [経度, 緯度]（RFC 7946）。
+    /// （Some 時・`role="southern_limit"`）→ `partial_limit`（Some 時・`role="partial_limit"`・M9 残(3) 3d）。折れ線は
+    /// [`GeoLine::geojson_geometry`]（LineString/MultiLineString・±180 補間）、部分食域は
+    /// [`GeoPolygon::geojson_geometry`]（Polygon・閉リング・環向き正規化・v1 は反子午線非分割）。**`samples` は未出力**。
+    /// 座標順は [経度, 緯度]（RFC 7946）。
     pub fn to_geojson(&self) -> Result<String, serde_json::Error> {
         let mut features = vec![serde_json::json!({
             "type": "Feature",
@@ -65,6 +66,14 @@ impl EclipsePath {
                     "properties": { "role": role },
                 }));
             }
+        }
+        // 部分食域 feature（Some 時・southern_limit の後）。
+        if let Some(polygon) = &self.partial_limit {
+            features.push(serde_json::json!({
+                "type": "Feature",
+                "geometry": polygon.geojson_geometry(),
+                "properties": { "role": "partial_limit" },
+            }));
         }
         let collection = serde_json::json!({
             "type": "FeatureCollection",

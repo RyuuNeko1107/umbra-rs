@@ -131,6 +131,56 @@ impl GeoPolygon {
     pub fn new(rings: Vec<Vec<GeoPoint>>) -> Self {
         Self { rings }
     }
+
+    /// GeoJSON 多角形ジオメトリ（M9 残(3) 3d・RFC 7946 §3.1.6）。`{"type":"Polygon","coordinates":[ring0, …]}`。
+    /// 座標は [経度, 緯度] 順。各リングは**先頭==末尾で閉じる**（非閉なら先頭を末尾に複製・既に閉なら二重化しない）。
+    /// **環向き（右手則）**: 外環（`rings[0]`）は反時計回り CCW、穴（`rings[1..]`）は時計回り CW になるよう、(lon,lat)
+    /// 平面の符号付き面積（shoelace・CCW>0）が規約と逆なら点列を反転する（元の `rings` は不変）。`rings` 空 →
+    /// `coordinates:[]`。点 0/1/2 個の退行リングは面積ゼロゆえ反転せずそのまま閉じる（捏造しない）。
+    ///
+    /// **v1 の限界（反子午線）**: ±180 跨ぎの**分割（MultiPolygon 化）は未対応**＝跨ぐリングも経度がそのまま並ぶ
+    /// 単一 Polygon になる（ポリゴンクリッピングは後続精緻化。GeoLine の MultiLineString 分割とは別問題）。
+    pub fn geojson_geometry(&self) -> serde_json::Value {
+        let coordinates: Vec<Vec<[f64; 2]>> = self
+            .rings
+            .iter()
+            .enumerate()
+            .map(|(index, ring)| {
+                // [経度, 緯度] 列に変換。
+                let mut coords: Vec<[f64; 2]> = ring
+                    .iter()
+                    .map(|p| [p.lon.degrees().0, p.lat.degrees().0])
+                    .collect();
+                // 閉リング（先頭==末尾でなければ先頭を複製）。
+                if let (Some(first), Some(last)) = (coords.first().copied(), coords.last().copied())
+                {
+                    if first != last {
+                        coords.push(first);
+                    }
+                }
+                // 環向き正規化: 外環(index==0)=CCW(面積>0)・穴=CW(面積<0)。面積ゼロ（退行）は反転しない。
+                let area = signed_area_lonlat(&coords);
+                let want_ccw = index == 0;
+                if (want_ccw && area < 0.0) || (!want_ccw && area > 0.0) {
+                    coords.reverse();
+                }
+                coords
+            })
+            .collect();
+        serde_json::json!({ "type": "Polygon", "coordinates": coordinates })
+    }
+}
+
+/// 閉リング（[経度, 緯度] 列）の符号付き面積（shoelace・2 倍値で十分＝符号のみ使う）。反時計回り CCW で正。
+/// 環向き正規化（[`GeoPolygon::geojson_geometry`]）の向き判定に使う。点 <3 は 0（退行＝向き不定）。
+fn signed_area_lonlat(coords: &[[f64; 2]]) -> f64 {
+    let mut sum = 0.0;
+    for w in coords.windows(2) {
+        let [x1, y1] = w[0];
+        let [x2, y2] = w[1];
+        sum += x1 * y2 - x2 * y1;
+    }
+    sum
 }
 
 #[cfg(test)]
