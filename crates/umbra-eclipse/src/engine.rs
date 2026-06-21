@@ -589,14 +589,19 @@ fn next_visible_is_observable(visibility: Visibility) -> bool {
     )
 }
 
+/// 限界点の自己整合（相対速度包絡）不動点反復の収束許容（基本面 Re）。中心線位置 sub-km
+/// （≈7.8e-5 Re）を大きく下回り、`L2'=l2−ζ·tan f2` の ζ 依存残差（tan f2·Δζ）を 1e-7 以下にする。
+const LIMIT_FIXED_POINT_TOL: f64 = 1e-12;
+/// 限界点 不動点反復の上限。半径 |L2'|≈0.01 Re は微小で ζ 依存が弱く、通常 3–4 回で収束。
+const LIMIT_FIXED_POINT_MAX_ITER: usize = 16;
+
 /// 中心食の中心線（と任意で南北限界線）を `[start_tt, end_tt]` を `interval_seconds` 刻みでサンプルして
-/// 追跡する（M9.1 中心線 / M9.3 限界線・[`EclipseEngine::path`] から呼ぶ）。
+/// 追跡する（M9.1 中心線 / M9.3 限界線 / M9.4 厳密化・[`EclipseEngine::path`] から呼ぶ）。
 ///
 /// 各サンプル時刻で `bessel.at` の瞬時要素から影軸∩WGS84 地表点（中心線）を求める。`include_limits` の
-/// とき、ζ補正本影半径 `L2' = l2 − ζ·tan f2` を影の運動方向 (x',y') に垂直へ ±|L2'| オフセットした 2 点も
-/// 地表へ射影し、**高緯度側を北限・低緯度側を南限**とする（geometric 近似・厳密な錐接線解は後続。
-/// accuracy.md / ISSUE-045 に明記）。中心線と南北限界線が**同じサンプル列**になるよう、軸または縁が
-/// 地表を外す（`RootNotBracketed`）/ 影速度ゼロのサンプルは**3 本とも**スキップする（lockstep）。
+/// とき、本影帯の北/南縁を**厳密な錐接線解**で求める（[`sample_central_point`]・自己整合ζ＋相対速度
+/// 包絡、ISSUE-045 残(5)）。中心線と南北限界線が**同じサンプル列**になるよう、軸または縁が地表を外す
+/// （`RootNotBracketed`）/ 相対速度ゼロのサンプルは**3 本とも**スキップする（lockstep）。
 /// `RootNotBracketed` 以外の `Err` は伝播。始点・終点を必ず含む（端は span にクランプ）。`interval_seconds`
 /// 非正は始点のみ（無限ループ回避）。前提 `start_tt ≤ end_tt`（U1≤U4・逆順は始点のみの無害な縮退）。
 #[allow(clippy::type_complexity)]
@@ -608,9 +613,10 @@ fn trace_central(
     include_limits: bool,
 ) -> Result<(GeoLine, Option<(GeoLine, GeoLine)>), EclipseError> {
     let ellipsoid = Ellipsoid::WGS84;
-    // 影速度 (x', y')（基本面・hour 単位。垂直方向の比のみ使うので単位は相殺）。
+    // 影軸運動 (x', y') と地球自転位相 μ'（基本面・hour 単位）。限界線の相対速度包絡に使う。
     let x_deriv = bessel.x.derivative();
     let y_deriv = bessel.y.derivative();
+    let mu_deriv = bessel.mu.derivative();
     let epoch = bessel.epoch_tt;
     let span_seconds = end_tt.jd2().days_since(start_tt.jd2()) * SECONDS_PER_DAY;
 
@@ -624,6 +630,7 @@ fn trace_central(
             bessel,
             &x_deriv,
             &y_deriv,
+            &mu_deriv,
             epoch,
             t,
             include_limits,
@@ -646,12 +653,24 @@ fn trace_central(
 }
 
 /// 1 サンプル時刻の中心線点（と任意で南北限界点）を求める。軸/縁が地表を外す（`RootNotBracketed`）/
-/// 影速度ゼロなら `Ok(None)`（lockstep スキップ）。他の `Err` は伝播。
+/// 相対速度ゼロなら `Ok(None)`（lockstep スキップ）。他の `Err` は伝播。
+///
+/// 限界点は**厳密な錐接線解**（ISSUE-045 残(5)・第一原理から導出。概念出典 Explanatory Supplement
+/// to the Astronomical Almanac §11 / NASA Espenak 経路生成）。各縁点 P は次の 2 条件を**同時に**満たす。
+/// 条件(1) 錐exact（自己整合ζ）: 影軸からの基本面内距離 = ζ補正本影半径 `|l2 − ζ·tan f2|`（ζ は P 自身の値）。
+/// 条件(2) 包絡（路限界方向）: 軸からのオフセットが影の**地表に対する相対速度** rel に直交する。
+/// rel = 影軸運動 (x',y') − 観測者の自転運搬 ω×P（ω=μ'·基本面 pole 方向 (0,cos d,sin d)）で、
+/// `rel_x = x' − μ'·(ζ·cos d − η·sin d)`, `rel_y = y' − μ'·ξ·sin d`。
+/// 両条件は (ξ,η,ζ) で結合するため不動点反復（[`solve_limit_edge`]）で解く。WGS84 楕円体投影は
+/// [`surface_point_for_fundamental`] が厳密（root-find）に行うため、Almanac の ρ1/d1 扁平近似は不要。
+/// d'（赤緯変化によるフレーム回転 ~1e-4 rad/hour）は μ'（~0.26）に対し無視する。
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn sample_central_point(
     bessel: &BesselianPolynomial,
     x_deriv: &crate::polynomial::Polynomial,
     y_deriv: &crate::polynomial::Polynomial,
+    mu_deriv: &crate::polynomial::Polynomial,
     epoch: TtInstant,
     t: TtInstant,
     include_limits: bool,
@@ -673,37 +692,101 @@ fn sample_central_point(
         return Ok(Some((center, None)));
     }
 
-    // ζ補正本影半径 |L2'| = |l2 − ζ·tan f2|（本影 l2<0 なら |l2|+ζ·tan f2、反本影 l2>0 も同式）。
-    let umbral_radius = (elements.l2 - zeta0 * elements.tan_f2).abs();
-    // 影の運動方向 (x', y') に垂直な単位ベクトル n = (−y', x')/|v|（基本面）。
+    // 影軸運動 (x', y') と地球自転位相 μ'（hour 単位、基本面）。
     let t_hours = t.jd2().days_since(epoch.jd2()) * 24.0;
     let vx = x_deriv.eval(t_hours);
     let vy = y_deriv.eval(t_hours);
-    let speed = vx.hypot(vy);
-    if speed == 0.0 {
-        return Ok(None); // 影速度ゼロ（退行）はスキップ（lockstep 維持）。
-    }
-    let (nx, ny) = (-vy / speed, vx / speed);
-    // 帯の北縁/南縁＝軸から ±|L2'| だけ垂直オフセットした基本面点を地表へ射影。
-    let edge = |sign: f64| -> Result<Option<GeoPoint>, EclipseError> {
-        let xi = elements.x + sign * umbral_radius * nx;
-        let eta = elements.y + sign * umbral_radius * ny;
-        match surface_point_for_fundamental(xi, eta, elements.declination, elements.mu, ellipsoid) {
-            Ok((p, _)) => Ok(Some(p)),
-            Err(EclipseError::Solver(SolverError::RootNotBracketed)) => Ok(None),
-            Err(e) => Err(e),
-        }
+    let mu_rate = mu_deriv.eval(t_hours);
+
+    // 北/南縁を相対速度包絡の不動点反復で厳密に解く。初期推定は中心軸 (x,y,ζ0)。
+    let (Some(edge_a), Some(edge_b)) = (
+        solve_limit_edge(&elements, zeta0, vx, vy, mu_rate, 1.0, ellipsoid)?,
+        solve_limit_edge(&elements, zeta0, vx, vy, mu_rate, -1.0, ellipsoid)?,
+    ) else {
+        // どちらかの縁が地表を外す/相対速度ゼロのサンプルは 3 本ともスキップ（lockstep 維持）。
+        return Ok(None);
     };
-    let (Some(edge_a), Some(edge_b)) = (edge(1.0)?, edge(-1.0)?) else {
-        return Ok(None); // どちらかの縁が地表を外すサンプルは 3 本ともスキップ。
-    };
-    // 高緯度側＝北限・低緯度側＝南限（geometric 近似・経路がほぼ東西走行の前提, ISSUE-045）。
+    // 高緯度側＝北限・低緯度側＝南限（±対称な厳密解の南北割当）。
     let (north, south) = if edge_a.lat.degrees().0 >= edge_b.lat.degrees().0 {
         (edge_a, edge_b)
     } else {
         (edge_b, edge_a)
     };
     Ok(Some((center, Some((north, south)))))
+}
+
+/// 本影帯の片側（`sign=±1`）の縁点を相対速度包絡の不動点反復で厳密に解く（[`sample_central_point`]）。
+///
+/// 各反復で現在の縁推定 (ξ,η,ζ) から相対速度 rel=(x'−μ'(ζcos d−η sin d), y'−μ'ξ sin d) を作り、
+/// それに直交する単位法線 n̂=(−rel_y, rel_x)/|rel| の `sign` 側へ ζ補正本影半径 `|l2−ζ·tan f2|` だけ
+/// 軸 (x,y) からオフセットし、地表へ射影して新しい (ξ,η,ζ) を得る。(ξ,η,ζ) が
+/// [`LIMIT_FIXED_POINT_TOL`] 以内で安定（＝rel・半径とも自己整合）した縁点を返す。射影が
+/// 地表を外す（`RootNotBracketed`）/ 相対速度ゼロ/ **[`LIMIT_FIXED_POINT_MAX_ITER`] 内に未収束**は
+/// `Ok(None)`（lockstep スキップ）＝**未収束の近似を無警告で返さない**（誤差を隠さない・conventions §11）。
+/// 他 `Err` は伝播。
+///
+/// `zeta0` は初期推定（中心軸 ζ）。半径 |L2'|≈0.01 Re が微小で写像は強い縮小ゆえ**収束先は初期値に
+/// 依らない**（良い初期値は反復数を減らすのみ）。よって `zeta0` を別値に変える/捨てる変異は結果を
+/// 変えず等価（工程7 で生存列挙・許容）。
+fn solve_limit_edge(
+    elements: &InstantaneousBesselianElements,
+    zeta0: f64,
+    vx: f64,
+    vy: f64,
+    mu_rate: f64,
+    sign: f64,
+    ellipsoid: &Ellipsoid,
+) -> Result<Option<GeoPoint>, EclipseError> {
+    let (sin_d, cos_d) = elements.declination.0.sin_cos();
+    // 縁推定（初期＝中心軸）。ξ,η は基本面オフセット点、ζ はその地表射影での影軸方向成分。
+    let mut xi = elements.x;
+    let mut eta = elements.y;
+    let mut zeta = zeta0;
+    let mut point: Option<GeoPoint> = None;
+    let mut converged = false;
+    for _ in 0..LIMIT_FIXED_POINT_MAX_ITER {
+        // 影の地表に対する相対速度（ω×P の基本面 (ξ,η) 成分を影軸運動から差し引く）。
+        let rel_x = vx - mu_rate * (zeta * cos_d - eta * sin_d);
+        let rel_y = vy - mu_rate * xi * sin_d;
+        let rel_speed = rel_x.hypot(rel_y);
+        if rel_speed == 0.0 {
+            return Ok(None); // 相対速度ゼロ（影が地表に静止）はスキップ。
+        }
+        // rel に直交する単位法線（路限界方向）。
+        let nx = -rel_y / rel_speed;
+        let ny = rel_x / rel_speed;
+        // ζ補正本影半径（縁点自身の ζ で評価＝自己整合）。
+        let radius = (elements.l2 - zeta * elements.tan_f2).abs();
+        let xi_new = elements.x + sign * radius * nx;
+        let eta_new = elements.y + sign * radius * ny;
+        let (p, zeta_new) = match surface_point_for_fundamental(
+            xi_new,
+            eta_new,
+            elements.declination,
+            elements.mu,
+            ellipsoid,
+        ) {
+            Ok(v) => v,
+            Err(EclipseError::Solver(SolverError::RootNotBracketed)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        // 収束判定（過収束機構）: 反復は機械精度まで収束し ξ,η,ζ は同率で <TOL に達するため、境界
+        // `< → <=` や `&& → ||` は真解に影響しない等価変異（`< → >`＝発散は caught）。mutation.yml で
+        // `with <= in.*solve_limit_edge` / `with || in.*solve_limit_edge` を除外（docs/reviews/mutation-limit-line.md）。
+        let step_converged = (xi_new - xi).abs() < LIMIT_FIXED_POINT_TOL
+            && (eta_new - eta).abs() < LIMIT_FIXED_POINT_TOL
+            && (zeta_new - zeta).abs() < LIMIT_FIXED_POINT_TOL;
+        xi = xi_new;
+        eta = eta_new;
+        zeta = zeta_new;
+        point = Some(p);
+        if step_converged {
+            converged = true;
+            break;
+        }
+    }
+    // 未収束（rel 悪条件等・実太陽日食では rel≈0.2 Re/h で到達しない）は近似を返さずスキップ。
+    Ok(if converged { point } else { None })
 }
 
 /// 現在の壁時計 UTC を `UtcInstant` で返す（`generated_at` 用）。std 時計 → UNIX 秒 → UTC-JD。
@@ -2350,38 +2433,56 @@ mod tests {
     // ------------------------------------------------------------------
 
     // ==================================================================
-    // 9. sample_central_point: 独立オラクル（中心点 + 南北限界）
+    // 9. 南北限界線: 厳密な錐接線解（自己整合ζ・相対速度包絡）— ISSUE-045 残(5)
     //
-    // オラクル戦略（strict・追認回避）: `sample_central_point` の各算術
-    //   （umbral_radius=|l2−ζ₀·tanf2|, t_hours=days_since(epoch)·24, 速度ベクトル (vx,vy)・
-    //    速さ・単位法線 (−vy,vx)/|v|, 縁基本面点 (x±|L2'|·n), 南北＝高緯度側）
-    // を、bessel.at(t) が返した瞬時要素から**テスト内で独立に再計算**して突き合わせる。
-    // 地表射影だけは別テストで縛り済みの `surface_point_for_fundamental` を再利用してよい
-    // （test A で独立にピン済み）。x,y を**二次**多項式にすることで影速度が t_hours に依存し、
-    // 時間スケール（·24 や days_since の方向）の取り違えが (vx,vy) 経由で南北点へ伝播し検出される。
+    // オラクル戦略（strict・追認回避）: 限界線生成は private（sample_central_point /
+    // trace_central, シグネチャは実装担当の自由）。よって本テスト群は **公開 `path()`** 経由で
+    // 合成中心食を流し、返った各限界点 P を **検証済み前方射影** project_observer_to_fundamental
+    // （ISSUE-024）へ通して自身の基本面座標 (ξ,η,ζ) を独立に復元し、満たすべき 2 条件を
+    // 絶対値で表明する（被テスト関数の戻りを期待値生成に流用しない）。
+    //
+    //   条件1（錐exact・自己整合ζ）:
+    //       hypot(ξ−x, η−y) == |l2 − ζ·tan_f2|   （ζ は **その点自身** の値）
+    //   条件2（包絡・路限界方向）:
+    //       (ξ−x)·rel_vx + (η−y)·rel_vy == 0
+    //       rel_vx = x' − μ'·(ζ·cos d − η·sin d)
+    //       rel_vy = y' − μ'·ξ·sin d
+    //
+    // 真値 x,y,d,μ,l2,tan_f2 は bessel.at(t)（bessel_poly.rs で検証済）、微分 x',y',μ' は
+    // bessel.{x,y,mu}.derivative()（polynomial.rs で検証済）から独立に組む。前方射影と
+    // observer_geocentric（ISSUE-010/011/024）はいずれも独立検証済みゆえ追認にならない。
+    //
+    // **μ を時間依存**（一次）にすることで μ'≠0 を保証し、現行の幾何近似（rel ではなく影速度
+    // (x',y') のみに垂直・|L2'| を中心軸 ζ₀ で計算）が条件2（および条件1の自己整合ζ）を
+    // **満たせない**ようにする＝厳密化前は RED。
     // ------------------------------------------------------------------
 
-    /// 二次 x,y を持つ合成ベッセル多項式。epoch_tt をフィット中心に置き、t_hours が綺麗に出るようにする。
-    /// l2<0（皆既）・tan_f2>0 で umbral_radius=|l2−ζ₀·tanf2| は綺麗な正値。x,y は単位円内に十分収まる
-    /// 小さな値（サンプル時 x≈0.1, y≈0.05 付近）で中心・両縁とも地表に当たる。
-    fn quadratic_bessel(epoch: TtInstant) -> crate::bessel_poly::BesselianPolynomial {
+    /// 厳密限界線テスト用の合成ベッセル多項式。
+    /// - **x は二次**（x''≠0）。速度 x'(t)=0.45+0.04 t_hours が **t_hours 依存**で出る。これにより
+    ///   実装の `t_hours = days_since*24` のスケール変異（`*24`→`+24`/`/24`）が x_deriv.eval(t_hours) を
+    ///   変え、相対速度包絡⊥（条件2）テストが拾う（x が一次だと x' が定数で t_hours に依らず変異が生存）。
+    ///   y は一次（y'=0.06 定数）。
+    /// - **μ は一次**（μ'≠0）。μ' が rel 速度に効くため、影速度のみに垂直な幾何近似と厳密包絡が分離する。
+    /// - l2<0（皆既）・tan_f2>0。中心・両縁とも地表に当たる小さな x,y（gamma≪1）。二次係数 0.02 は微小で
+    ///   epoch±1h・60s 刻み（t_hours∈[-1,1]）でも x∈[-0.40,0.52]・gamma≪1 を維持し全サンプル地表に当たる。
+    fn rigorous_bessel(epoch: TtInstant) -> crate::bessel_poly::BesselianPolynomial {
         use crate::polynomial::Polynomial;
         let p = |coeffs: Vec<f64>| Polynomial {
             coefficients: coeffs,
         };
         crate::bessel_poly::BesselianPolynomial {
             epoch_tt: epoch,
-            // x(t)=0.08 + 0.03 t + 0.01 t²（t は epoch からの hour）— 速度 x'(t)=0.03+0.02 t は t 依存。
-            x: p(vec![0.08, 0.03, 0.01]),
-            // y(t)=0.04 + 0.02 t − 0.005 t²  — 速度 y'(t)=0.02−0.01 t は t 依存。
-            y: p(vec![0.04, 0.02, -0.005]),
+            // x(t)=0.05 + 0.45 t + 0.02 t²（hour）— x'(t)=0.45+0.04 t_hours（東進・t_hours 依存）。
+            x: p(vec![0.05, 0.45, 0.02]),
+            // y(t)=0.02 + 0.06 t — y'=0.06。
+            y: p(vec![0.02, 0.06]),
             d: p(vec![0.2070]),
-            mu: p(vec![1.2]),
+            // μ(t)=1.2 + 0.26 t — **μ'=0.26 rad/hour ≠ 0**（地球自転）。厳密包絡を幾何近似から分離。
+            mu: p(vec![1.2, 0.26]),
             l1: p(vec![0.5400]),
             l2: p(vec![-0.0090]),
             tan_f1: 0.004_65,
             tan_f2: 0.004_63,
-            // fit_interval はサンプル時刻（epoch + 0.5h ≈ epoch + 0.0208 d）を十分含む幅。
             fit_interval: umbra_core::TimeInterval {
                 start: tt(2_451_544.5, 0.0),
                 end: tt(2_451_545.5, 0.0),
@@ -2395,126 +2496,280 @@ mod tests {
         }
     }
 
-    /// include_limits=true: 中心点・北限・南限の 3 点が、bessel.at(t) の要素から独立に組んだ
-    /// umbral_radius・単位法線・縁基本面点（surface_point_for_fundamental 射影）と一致する。
-    /// t_hours≠0（epoch+0.5h）で速度が t 依存。各座標値を絶対値で突き合わせ、
-    /// umbral_radius・法線・時間スケール・縁オフセットの符号/演算子変異を撃破する。
+    /// 合成「中心食」SolarEclipse（central_begin/central_end=Some）を、与えた bessel で構築する。
+    /// U1/U4 を epoch ±span_hours に置き、path() がその区間をサンプルする。
+    fn central_eclipse_with_bessel(
+        bessel: crate::bessel_poly::BesselianPolynomial,
+        span_hours: f64,
+    ) -> SolarEclipse {
+        let epoch = bessel.epoch_tt;
+        let u_time = |h: f64| {
+            let time_tt = TtInstant::from_jd2(epoch.jd2().add_days(h / 24.0));
+            crate::results::GlobalContact {
+                time_utc: utc(2024, 4, 8, 18, 0, 0.0),
+                time_tt,
+                position: geo(0.0, 0.0),
+            }
+        };
+        let greatest = GreatestEclipse {
+            time_utc: utc(2024, 4, 8, 18, 17, 0.0),
+            time_tt: epoch,
+            position: geo(0.0, 0.0),
+            magnitude: EclipseMagnitude(1.05),
+            obscuration: Obscuration(1.0),
+            path_width: Some(umbra_core::Kilometers(180.0)),
+            central_duration: Some(200.0),
+            sun_altitude: umbra_core::Degrees(70.0),
+        };
+        let global = GlobalCircumstances {
+            kind: SolarEclipseKind::Total,
+            partial_begin: None,
+            central_begin: Some(u_time(-span_hours)),
+            greatest,
+            central_end: Some(u_time(span_hours)),
+            partial_end: None,
+            gamma: 0.05,
+        };
+        SolarEclipse {
+            event_key: "synthetic-central#0".to_string(),
+            kind: SolarEclipseKind::Total,
+            global,
+            bessel,
+            metadata: metadata(),
+        }
+    }
+
+    /// ある地表点 P を **検証済み前方射影**へ通し、自身の基本面座標 (ξ,η,ζ) を返す独立オラクル。
+    /// 逆射影の内部式は再実装しない（axis_intercept.rs `assert_forward_roundtrip` と同パターン）。
+    fn forward_project(
+        p: &GeoPoint,
+        elements: &InstantaneousBesselianElements,
+    ) -> ObserverFundamental {
+        let phi = p.lat.radians().0;
+        let lam = p.lon.radians().0;
+        let obs = observer_geocentric(&Ellipsoid::WGS84, phi, 0.0);
+        project_observer_to_fundamental(&obs, Radians::new(lam), elements)
+    }
+
+    /// **厳密条件1（錐exact・自己整合ζ）**: 中心食＋include_limits の各限界点 P を前方射影して
+    /// 得た (ξ,η,ζ) が、影軸からの面内距離 = ζ補正本影半径 |l2 − ζ·tan_f2| を **その点自身の ζ** で
+    /// 厳密に満たす。北縁・南縁の双方で表明する。
+    ///
+    /// 殺す変異（厳密化前 RED の主因）:
+    /// - |L2'| を中心軸 ζ₀ で計算する現行幾何近似（点自身の ζ ではない）→ 距離不一致で落ちる。
+    /// - tan_f2 の符号反転・係数取り違え・l2 と l1 の取り違え。
+    /// - 面内距離を hypot でなく成分一方のみで測る変異。
+    /// - 限界点を中心線にコピー（面内距離 0 ≠ |L2'|）。
     #[test]
-    fn sample_central_point_independent_oracle_center_and_limits() {
-        // surface_point_for_fundamental は `use super::*` 経由でスコープ内（engine.rs L29 で import 済み）。
+    fn limits_satisfy_cone_exact_self_consistent_zeta() {
+        let engine = standard_engine_from_synthetic();
         let epoch = tt(2_451_545.0, 0.0);
-        let bessel = quadratic_bessel(epoch);
+        let bessel = rigorous_bessel(epoch);
+        let eclipse = central_eclipse_with_bessel(bessel.clone(), 1.0);
+
+        let path = engine
+            .path(&eclipse, PathOptions::default())
+            .expect("中心食の path() は Ok");
+        let north = path.northern_limit.as_ref().expect("northern_limit=Some");
+        let south = path.southern_limit.as_ref().expect("southern_limit=Some");
+
+        // 中心線・限界線は同サンプル列（lockstep）。サンプル時刻列を独立に再構成する。
+        let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+        let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+        let interval = PathOptions::default().sample_interval_seconds;
+        let sample_times = lockstep_sample_times(u1, u4, interval);
+        assert_eq!(
+            north.points.len(),
+            south.points.len(),
+            "北縁・南縁は同点数（lockstep）"
+        );
+        assert!(
+            !north.points.is_empty(),
+            "限界線は非空（合成中心食は地表に当たる）"
+        );
+
+        // 各限界点で条件1を表明（前方射影 → 自己整合ζ）。
+        // 限界線点と sample_times の対応はスキップ次第でズレうるが、本合成は全サンプル地表ヒット
+        // ゆえ index 対応する。万一外すサンプルがあると len 不一致で上の assert が先に落ちる。
+        const TOL: f64 = 1e-7; // 前方射影は厳密に閉じる（axis_intercept TOL_ROUNDTRIP 同等域）。
+        for (i, t) in sample_times.iter().enumerate() {
+            if i >= north.points.len() {
+                break;
+            }
+            let e = bessel.at(*t).expect("区間内サンプルは評価成功");
+            for p in [&north.points[i], &south.points[i]] {
+                let of = forward_project(p, &e);
+                let in_plane = (of.xi - e.x).hypot(of.eta - e.y);
+                let umbral = (e.l2 - of.zeta * e.tan_f2).abs();
+                assert!(
+                    (in_plane - umbral).abs() < TOL,
+                    "サンプル{i}: 面内距離 {in_plane} = ζ補正本影半径 {umbral}（自己整合ζ={}）でない",
+                    of.zeta
+                );
+            }
+        }
+    }
+
+    /// **厳密条件2（包絡・路限界方向）**: 各限界点の面内オフセット (ξ−x, η−y) が、影の地表に対する
+    /// **相対速度** rel に直交する。rel は影軸運動 (x',y') と地球自転 μ' の合成。
+    ///   rel_vx = x' − μ'·(ζ·cos d − η·sin d), rel_vy = y' − μ'·ξ·sin d
+    /// 北縁・南縁の双方で dot ≈ 0 を表明する。
+    ///
+    /// 殺す変異（厳密化前 RED の主因）:
+    /// - rel に μ' 項を含めず影速度 (x',y') のみに垂直とする現行幾何近似（μ'≠0 構成で dot≠0）。
+    /// - rel_vx/rel_vy の μ' 項の符号反転・ζ↔η や ξ の取り違え・cos d↔sin d の取り違え。
+    /// - 法線を rel の平行方向に取る（dot が最大化され 0 から外れる）。
+    #[test]
+    fn limits_offset_perpendicular_to_relative_velocity() {
+        let engine = standard_engine_from_synthetic();
+        let epoch = tt(2_451_545.0, 0.0);
+        let bessel = rigorous_bessel(epoch);
         let x_deriv = bessel.x.derivative();
         let y_deriv = bessel.y.derivative();
-        // サンプル時刻 = epoch + 0.5 hour（t_hours≠0 を保証）。
-        let t = TtInstant::from_jd2(epoch.jd2().add_days(0.5 / 24.0));
-        let ellipsoid = Ellipsoid::WGS84;
+        let mu_deriv = bessel.mu.derivative();
+        let eclipse = central_eclipse_with_bessel(bessel.clone(), 1.0);
 
-        // 関数戻り（被テスト）。
-        let (center, limits) =
-            sample_central_point(&bessel, &x_deriv, &y_deriv, epoch, t, true, &ellipsoid)
-                .expect("中心・両縁とも地表に当たる構成では Ok")
-                .expect("speed≠0 かつ縁が外れないので Some");
-        let (north, south) = limits.expect("include_limits=true なら Some((north,south))");
+        let path = engine
+            .path(&eclipse, PathOptions::default())
+            .expect("中心食の path() は Ok");
+        let north = path.northern_limit.as_ref().expect("northern_limit=Some");
+        let south = path.southern_limit.as_ref().expect("southern_limit=Some");
 
-        // ---- 独立オラクル ----
-        // bessel.at(t) は別途 bessel_poly.rs で検証済み。ここでは要素を真値として受ける。
-        let elements = bessel.at(t).expect("区間内サンプルは評価成功");
+        let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+        let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+        let interval = PathOptions::default().sample_interval_seconds;
+        let sample_times = lockstep_sample_times(u1, u4, interval);
 
-        // 中心点: x,y を直接射影（test A で縛った関数を再利用）。
-        let (exp_center, zeta0) = surface_point_for_fundamental(
-            elements.x,
-            elements.y,
-            elements.declination,
-            elements.mu,
-            &ellipsoid,
-        )
-        .expect("中心軸は地表に当たる");
+        // μ'≠0 を独立に確認（このテストの分離力の前提）。
+        let mu_rate_mid = mu_deriv.eval(0.0);
         assert!(
-            (center.lat.degrees().0 - exp_center.lat.degrees().0).abs() < 1e-7
-                && (center.lon.degrees().0 - exp_center.lon.degrees().0).abs() < 1e-7,
-            "center {:?} expected {:?}（中心軸射影）",
-            center,
-            exp_center
+            mu_rate_mid.abs() > 1e-6,
+            "μ'={mu_rate_mid} ≠ 0（rel 速度に μ' が効く構成）"
         );
 
-        // umbral_radius=|l2−ζ₀·tan_f2|（独立算術）。
-        let umbral_radius = (elements.l2 - zeta0 * elements.tan_f2).abs();
-        // t_hours と速度ベクトル（独立: epoch から days_since·24）。
-        let t_hours = t.jd2().days_since(epoch.jd2()) * 24.0;
-        assert!(
-            t_hours.abs() > 1e-9,
-            "t_hours={t_hours} は非零（速度の t 依存を観測）"
-        );
-        let vx = x_deriv.eval(t_hours);
-        let vy = y_deriv.eval(t_hours);
-        let speed = vx.hypot(vy);
-        assert!(speed > 0.0, "速度ゼロでない構成");
-        // 単位法線 n=(−vy, vx)/|v|（独立算術）。
-        let nx = -vy / speed;
-        let ny = vx / speed;
+        // dot のスケールは |offset|·|rel| オーダー（offset≈|L2'|~0.01 Re, rel~0.5 /hour）。
+        // 直交の絶対許容はそのスケールに対し十分小さく取る。
+        const DOT_TOL: f64 = 1e-9;
+        for (i, t) in sample_times.iter().enumerate() {
+            if i >= north.points.len() {
+                break;
+            }
+            let e = bessel.at(*t).expect("区間内サンプルは評価成功");
+            let t_hours = t.jd2().days_since(epoch.jd2()) * 24.0;
+            let vx = x_deriv.eval(t_hours);
+            let vy = y_deriv.eval(t_hours);
+            let mu_rate = mu_deriv.eval(t_hours);
+            let (sin_d, cos_d) = e.declination.0.sin_cos();
+            for p in [&north.points[i], &south.points[i]] {
+                let of = forward_project(p, &e);
+                let off_x = of.xi - e.x;
+                let off_y = of.eta - e.y;
+                // 相対速度 rel（影軸運動 − 観測者の自転運搬）。μ' は rad/hour, (x',y') は Re/hour で同単位。
+                let rel_vx = vx - mu_rate * (of.zeta * cos_d - of.eta * sin_d);
+                let rel_vy = vy - mu_rate * of.xi * sin_d;
+                let dot = off_x * rel_vx + off_y * rel_vy;
+                assert!(
+                    dot.abs() < DOT_TOL,
+                    "サンプル{i}: offset·rel = {dot}（≈0 でない＝包絡条件違反）。\
+                     off=({off_x},{off_y}) rel=({rel_vx},{rel_vy})"
+                );
+            }
+        }
+    }
 
-        // 両縁の基本面点 (x ± |L2'|·n) を独立に組み、射影する。
-        let project_edge = |sign: f64| {
-            let xi = elements.x + sign * umbral_radius * nx;
-            let eta = elements.y + sign * umbral_radius * ny;
-            surface_point_for_fundamental(xi, eta, elements.declination, elements.mu, &ellipsoid)
-                .expect("縁は地表に当たる構成")
-                .0
-        };
-        let edge_plus = project_edge(1.0);
-        let edge_minus = project_edge(-1.0);
-        // 高緯度側が north。
-        let (exp_north, exp_south) = if edge_plus.lat.degrees().0 >= edge_minus.lat.degrees().0 {
-            (edge_plus, edge_minus)
-        } else {
-            (edge_minus, edge_plus)
-        };
+    /// 南北分離・高緯度側＝北限: 各サンプルで北限緯度 ≥ 南限緯度、かつ帯幅が正で過大でない。
+    /// 厳密 2 条件（上 2 テスト）に加え、南北の割当を縛る（条件は ±対称ゆえ割当が別途必要）。
+    ///
+    /// 殺す変異: 北限と南限を入れ替える・両縁を同一点にする（幅 0）・片側だけにオフセットして
+    /// 幅を消す・帯幅を桁違いにする。
+    #[test]
+    fn limits_north_above_south_with_plausible_band() {
+        let engine = standard_engine_from_synthetic();
+        let epoch = tt(2_451_545.0, 0.0);
+        let bessel = rigorous_bessel(epoch);
+        let eclipse = central_eclipse_with_bessel(bessel, 1.0);
 
-        // 北限・南限の絶対値一致（umbral_radius・法線・時間スケール・縁オフセットを縛る）。
+        let path = engine
+            .path(&eclipse, PathOptions::default())
+            .expect("中心食の path() は Ok");
+        let north = path.northern_limit.as_ref().expect("northern_limit=Some");
+        let south = path.southern_limit.as_ref().expect("southern_limit=Some");
+        let center = path.center_line.as_ref().expect("center_line=Some");
+
+        assert_eq!(
+            north.points.len(),
+            center.points.len(),
+            "北限と中心線は同点数"
+        );
+        assert_eq!(
+            south.points.len(),
+            center.points.len(),
+            "南限と中心線は同点数"
+        );
+
+        for i in 0..center.points.len() {
+            let n = north.points[i].lat.degrees().0;
+            let c = center.points[i].lat.degrees().0;
+            let s = south.points[i].lat.degrees().0;
+            assert!(n >= c - 1e-9, "サンプル{i}: 北限 {n} ≥ 中心 {c}");
+            assert!(c >= s - 1e-9, "サンプル{i}: 中心 {c} ≥ 南限 {s}");
+            // 帯が分離している（北 ≠ 南）。緯度差は本構成で正・過大でない（< 5°）。
+            let dlat = n - s;
+            assert!(dlat > 1e-6, "サンプル{i}: 帯幅 {dlat}° > 0（分離）");
+            assert!(dlat < 5.0, "サンプル{i}: 帯幅 {dlat}° が過大でない");
+        }
+    }
+
+    /// include_limits=false: 中心線は Some・限界線は両方 None（フラグの早期 return 経路を縛る）。
+    /// 公開 path() 経由ゆえ private シグネチャに依存しない。
+    #[test]
+    fn path_include_limits_false_yields_no_limits_but_keeps_center() {
+        let engine = standard_engine_from_synthetic();
+        let epoch = tt(2_451_545.0, 0.0);
+        let bessel = rigorous_bessel(epoch);
+        let eclipse = central_eclipse_with_bessel(bessel, 1.0);
+
+        let path = engine
+            .path(
+                &eclipse,
+                PathOptions {
+                    include_limits: false,
+                    ..PathOptions::default()
+                },
+            )
+            .expect("中心食の path() は Ok");
         assert!(
-            (north.lat.degrees().0 - exp_north.lat.degrees().0).abs() < 1e-7
-                && (north.lon.degrees().0 - exp_north.lon.degrees().0).abs() < 1e-7,
-            "north {:?} expected {:?}",
-            north,
-            exp_north
+            path.northern_limit.is_none(),
+            "include_limits=false で northern_limit=None"
         );
         assert!(
-            (south.lat.degrees().0 - exp_south.lat.degrees().0).abs() < 1e-7
-                && (south.lon.degrees().0 - exp_south.lon.degrees().0).abs() < 1e-7,
-            "south {:?} expected {:?}",
-            south,
-            exp_south
+            path.southern_limit.is_none(),
+            "include_limits=false で southern_limit=None"
         );
-        // north が確かに高緯度側（南北判定の取り違えを縛る補助確認）。
         assert!(
-            north.lat.degrees().0 >= south.lat.degrees().0,
-            "north.lat={} ≥ south.lat={} のはず",
-            north.lat.degrees().0,
-            south.lat.degrees().0
+            path.center_line.is_some(),
+            "include_limits=false でも中心食なら center_line=Some"
         );
     }
 
-    /// include_limits=false: 中心点のみ・limits は None（早期 return 経路を縛る）。
-    #[test]
-    fn sample_central_point_no_limits_returns_none() {
-        let epoch = tt(2_451_545.0, 0.0);
-        let bessel = quadratic_bessel(epoch);
-        let x_deriv = bessel.x.derivative();
-        let y_deriv = bessel.y.derivative();
-        let t = TtInstant::from_jd2(epoch.jd2().add_days(0.5 / 24.0));
-        let ellipsoid = Ellipsoid::WGS84;
-
-        let (center, limits) =
-            sample_central_point(&bessel, &x_deriv, &y_deriv, epoch, t, false, &ellipsoid)
-                .expect("中心軸は地表に当たる")
-                .expect("speed/縁を評価せず Some を返す");
-        assert!(limits.is_none(), "include_limits=false なら limits は None");
-        // 中心点は include_limits の有無に依らないので、true ケースと同一であることまでは
-        // ここで再検証しない（中心の絶対値は上のテストで縛り済み）。サニティのみ。
-        assert!(
-            center.lat.degrees().0.is_finite() && center.lon.degrees().0.is_finite(),
-            "中心点は有限"
-        );
+    /// path() の lockstep サンプル時刻列を独立に再構成する（trace_central と同じ刻み規則）。
+    /// `[start, end]` を `interval_seconds` 刻みで、始点・終点を必ず含み、終点へクランプ。
+    /// テスト側の独立再現なので実装の刻みループを写経しないが、契約（同点列・端含む）に合わせる。
+    fn lockstep_sample_times(
+        start: TtInstant,
+        end: TtInstant,
+        interval_seconds: f64,
+    ) -> Vec<TtInstant> {
+        let span = end.jd2().days_since(start.jd2()) * 86_400.0;
+        let mut out = Vec::new();
+        let mut t_sec = 0.0_f64;
+        loop {
+            out.push(TtInstant::from_jd2(start.jd2().add_days(t_sec / 86_400.0)));
+            if t_sec >= span || interval_seconds <= 0.0 {
+                break;
+            }
+            t_sec = (t_sec + interval_seconds).min(span);
+        }
+        out
     }
 }
