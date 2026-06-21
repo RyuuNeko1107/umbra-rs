@@ -896,6 +896,461 @@ fn real_2024_eclipse_limits_match_nasa_band_width() {
 }
 
 // ============================================================
+// M9.7: 経路サンプル列 samples（中心食で充足・center_line/南北限界線と lockstep）
+//
+// 確定仕様（観測可能な契約）:
+//  1. 中心食（central_begin/central_end 両方 Some）かつ include_limits=true で
+//     samples.len() == center_line.len() == northern_limit.len() == southern_limit.len()、
+//     samples[i].center == center_line.points[i]（完全 lockstep）。
+//  2. 中心食でも include_limits=false なら samples は空（限界線 None と整合）。
+//  3. 非中心/部分食では samples 空（center_line=None と整合）。
+//  各 PathSample フィールド:
+//   - time_utc = tt_to_utc(サンプル時刻 TT)。U1〜U4 内で単調増加。
+//   - center = center_line.points[i]（影軸地表点）。
+//   - duration_seconds = 2|L2'|/|rel|×3600（中心軸 ζ で評価。M9.6 と同定義）。
+//   - sun_altitude = その時刻・中心点の幾何高度（RefractionModel::None）。
+//   - path_width = 南北本影縁点間の大圏距離（M9.6 と同定義 = great_circle(north[i],south[i])）。
+//   - kind = L2'=l2−ζ·tan f2 の符号（<0=Total / それ以外=Annular）。
+// ============================================================
+
+/// サンプル時刻 TT を、その中心点を前方射影した ζ を使って M9.6 と同方式で
+/// `duration_seconds` の期待値を独立に組む（被テスト関数の戻りは流用しない）。
+/// rel は中心軸 (ξ=x, η=y, ζ) の地表相対速度（μ' 項込み）。
+fn expected_duration_seconds(
+    center_point: &umbra_geo::GeoPoint,
+    bessel: &BesselianPolynomial,
+    t: TtInstant,
+) -> f64 {
+    let e = bessel.at(t).expect("区間内サンプルは評価成功");
+    let zeta = forward_project(center_point, &e).zeta;
+    let epoch = bessel.epoch_tt;
+    let t_hours = t.jd2().days_since(epoch.jd2()) * 24.0;
+    let vx = bessel.x.derivative().eval(t_hours);
+    let vy = bessel.y.derivative().eval(t_hours);
+    let mu_rate = bessel.mu.derivative().eval(t_hours);
+    let (sin_d, cos_d) = e.declination.0.sin_cos();
+    let rel_x = vx - mu_rate * (zeta * cos_d - e.y * sin_d);
+    let rel_y = vy - mu_rate * e.x * sin_d;
+    let rel_speed = rel_x.hypot(rel_y);
+    let l2p_abs = (e.l2 - zeta * e.tan_f2).abs();
+    2.0 * l2p_abs / rel_speed * 3600.0
+}
+
+/// FAST / 新規（**lockstep の主検証**）: 中心食＋include_limits=true で samples が
+/// center_line・北限・南限と完全に同一サンプル列（同点数）になり、samples[i].center が
+/// center_line.points[i] と一致する。samples は非空（≥2）。
+///
+/// 殺す変異: samples を常に空にする（M9.6 以前の挙動）・samples 長さを center/限界線とズラす
+///   （off-by-one・別ループ上限）・samples[i].center に限界線点や別 index の点を入れる
+///   （center↔north/south 取り違え、index ズレ）。
+#[test]
+fn samples_are_lockstep_with_center_and_limit_lines() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = central_eclipse(geo(0.0, 0.0));
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("中心食の path() は成功する");
+
+    let center = path.center_line.as_ref().expect("center_line=Some");
+    let north = path.northern_limit.as_ref().expect("northern_limit=Some");
+    let south = path.southern_limit.as_ref().expect("southern_limit=Some");
+
+    assert!(
+        path.samples.len() >= 2,
+        "中心食では samples は非空（≥2）, got {}",
+        path.samples.len()
+    );
+    // 4 本が完全に同点数（lockstep）。
+    assert_eq!(
+        path.samples.len(),
+        center.points.len(),
+        "samples.len() == center_line.len()"
+    );
+    assert_eq!(
+        path.samples.len(),
+        north.points.len(),
+        "samples.len() == northern_limit.len()"
+    );
+    assert_eq!(
+        path.samples.len(),
+        south.points.len(),
+        "samples.len() == southern_limit.len()"
+    );
+
+    // samples[i].center == center_line.points[i]（影軸地表点・index 一致）。
+    for (i, s) in path.samples.iter().enumerate() {
+        assert_eq!(
+            s.center, center.points[i],
+            "samples[{i}].center が center_line.points[{i}] と一致しない（center 取り違え/index ズレ）"
+        );
+    }
+}
+
+/// FAST / 新規（**フィールド・オラクルの主検証**）: μ'≠0 の合成中心食で、各サンプルの
+/// duration_seconds・path_width・kind を独立オラクルで縛る。
+///   - duration_seconds = 2|L2'|/|rel|×3600（中心点 ζ・μ' 項込み・M9.6 同方式）。
+///   - path_width = great_circle(north[i], south[i])（M9.6 同方式）。
+///   - kind = L2'<0 → Total（合成は l2=−0.009<0 ゆえ Total）。
+///
+/// duration（秒・~200 s）と path_width（km・<1000）は桁が異なる非対称値なので、両者を
+/// 取り違える変異は両方のオラクルを同時に外す。
+///
+/// 殺す変異:
+/// - duration↔path_width フィールド取り違え（秒 vs km で両域同時に外れる）。
+/// - duration の 2× / ½ / |rel| の逆数誤り・×3600 脱落（秒域外）。
+/// - |L2'| を中心軸 ζ₀=0 で測る（点自身の ζ でない）→ duration ズレ（μ' で ζ≠0）。
+/// - rel に μ' 項を含めない近似 → duration ズレ（μ'≠0）。
+/// - path_width を北限・南限以外（中心線等）から測る・南北片側だけ → 距離ズレ。
+/// - kind の符号反転（L2'<0 を Annular にする）。
+#[test]
+fn samples_field_values_match_independent_oracles() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = central_eclipse_with_bessel(bessel.clone(), 1.0);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("中心食の path() は成功する");
+    let north = path.northern_limit.as_ref().expect("northern_limit=Some");
+    let south = path.southern_limit.as_ref().expect("southern_limit=Some");
+
+    // μ'≠0 を独立確認（ζ・rel オラクルの分離力の前提）。
+    assert!(
+        bessel.mu.derivative().eval(0.0).abs() > 1e-6,
+        "μ'≠0 構成（rel 速度に μ' が効く）"
+    );
+
+    let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+    let times = lockstep_sample_times(u1, u4, PathOptions::default().sample_interval_seconds);
+
+    assert_eq!(
+        path.samples.len(),
+        times.len(),
+        "samples 列が lockstep 時刻列と同点数（時刻復元の前提）"
+    );
+
+    for (i, s) in path.samples.iter().enumerate() {
+        let t = times[i];
+
+        // duration_seconds: 中心点 ζ・μ' 項込みの M9.6 式で独立に組む。
+        let want_dur = expected_duration_seconds(&s.center, &bessel, t);
+        assert!(
+            (s.duration_seconds - want_dur).abs() < 1e-6,
+            "samples[{i}].duration_seconds {} != 2|L2'|/|rel|×3600 期待 {want_dur}",
+            s.duration_seconds
+        );
+
+        // path_width: 南北本影縁点間の大圏距離（M9.6 同方式）。
+        let want_width = great_circle_km(&north.points[i], &south.points[i]);
+        // great_circle_km は haversine（実装側と同一近似でなくてもよい）ゆえ相対 1% 許容。
+        assert!(
+            (s.path_width.0 - want_width).abs() <= 1.0e-2 * want_width.max(1.0),
+            "samples[{i}].path_width {} km != great_circle(north,south) 期待 {want_width} km",
+            s.path_width.0
+        );
+        // 桁の独立性: 帯幅(km) と継続(秒) は別物（取り違え検出の補強）。
+        assert!(
+            (s.path_width.0 - s.duration_seconds).abs() > 1.0,
+            "samples[{i}]: path_width と duration_seconds が同値（取り違えの疑い）"
+        );
+
+        // kind: 合成は l2=−0.009<0 ⇒ L2'<0 ⇒ Total。
+        assert_eq!(
+            s.kind,
+            SolarEclipseKind::Total,
+            "samples[{i}].kind は L2'<0 ゆえ Total（符号規約 l2<0=皆既）"
+        );
+
+        // 各フィールドが有限・妥当域。
+        assert!(
+            s.duration_seconds.is_finite() && s.duration_seconds > 0.0,
+            "samples[{i}].duration_seconds {} は正・有限",
+            s.duration_seconds
+        );
+        assert!(
+            s.path_width.0.is_finite() && s.path_width.0 > 0.0,
+            "samples[{i}].path_width {} は正・有限",
+            s.path_width.0
+        );
+        assert!(
+            (-90.0..=90.0).contains(&s.sun_altitude.0) && s.sun_altitude.0.is_finite(),
+            "samples[{i}].sun_altitude {}° は [-90,90] で有限",
+            s.sun_altitude.0
+        );
+        assert!(
+            lat_lon_in_range(&s.center),
+            "samples[{i}].center が妥当な緯度経度域にない"
+        );
+    }
+}
+
+/// FAST / 新規: 各サンプルの time_utc が tt_to_utc(サンプル時刻 TT) と一致し、列全体で
+/// 単調増加する。サンプル時刻 TT は lockstep 時刻列から独立再構成する。
+///
+/// 殺す変異: time_utc に TT をそのまま入れる（UTC 変換脱落・ΔT 分ズレ）・別 index の時刻を
+///   入れる（時刻↔index 取り違え）・時刻列を逆順/定数にする（単調増加が崩れる）。
+#[test]
+fn samples_time_utc_equals_tt_to_utc_and_is_monotonic() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = central_eclipse(geo(0.0, 0.0));
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("中心食の path() は成功する");
+
+    let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+    let times = lockstep_sample_times(u1, u4, PathOptions::default().sample_interval_seconds);
+    assert_eq!(
+        path.samples.len(),
+        times.len(),
+        "samples 列が lockstep 時刻列と同点数（時刻復元の前提）"
+    );
+
+    let mut prev_jd = f64::NEG_INFINITY;
+    for (i, s) in path.samples.iter().enumerate() {
+        // time_utc == tt_to_utc(その TT)。同一瞬時（< 1ms 相当）。
+        let want_utc = umbra_core::time::tt_to_utc(times[i])
+            .expect("サンプル TT は post-1972 で UTC 変換可能");
+        let got_jd = s.time_utc.jd2().jd();
+        let want_jd = want_utc.jd2().jd();
+        assert!(
+            (got_jd - want_jd).abs() < 1.0 / 86_400.0,
+            "samples[{i}].time_utc == tt_to_utc(time_tt): got_jd={got_jd} want_jd={want_jd}"
+        );
+        // 単調増加（厳密に増加・等間隔サンプル）。
+        assert!(
+            got_jd > prev_jd,
+            "samples[{i}].time_utc が単調増加でない: got_jd={got_jd} prev_jd={prev_jd}"
+        );
+        prev_jd = got_jd;
+    }
+    // U1〜U4 の範囲内（始点 ≥ U1 相当・終点 ≤ U4 相当を UTC で確認）。
+    let first = path
+        .samples
+        .first()
+        .expect("samples 非空")
+        .time_utc
+        .jd2()
+        .jd();
+    let last = path
+        .samples
+        .last()
+        .expect("samples 非空")
+        .time_utc
+        .jd2()
+        .jd();
+    let u1_utc = umbra_core::time::tt_to_utc(u1).unwrap().jd2().jd();
+    let u4_utc = umbra_core::time::tt_to_utc(u4).unwrap().jd2().jd();
+    assert!(
+        first >= u1_utc - 1.0 / 86_400.0 && last <= u4_utc + 1.0 / 86_400.0,
+        "samples の時刻が [U1,U4] 内: first={first} last={last} U1={u1_utc} U4={u4_utc}"
+    );
+}
+
+/// FAST / 新規: 中心食でも include_limits=false なら samples は空（限界線が None になるのと整合）。
+/// center_line は include_limits に依らず Some のまま（samples 空が center_line 生成を巻き込まない）。
+///
+/// 殺す変異: include_limits を無視して常に samples を作る・include_limits=false で
+///   center_line まで None にする・samples 充足を限界線フラグから切り離して常時充足する。
+#[test]
+fn include_limits_false_yields_empty_samples_but_keeps_center_line() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = central_eclipse(geo(0.0, 0.0));
+
+    let path = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                include_limits: false,
+                ..PathOptions::default()
+            },
+        )
+        .expect("中心食の path() は成功する");
+
+    assert!(
+        path.samples.is_empty(),
+        "include_limits=false では samples 空, got {}",
+        path.samples.len()
+    );
+    // 限界線も None（整合）。center_line は Some のまま。
+    assert!(
+        path.northern_limit.is_none(),
+        "include_limits=false で northern_limit=None"
+    );
+    assert!(
+        path.southern_limit.is_none(),
+        "include_limits=false で southern_limit=None"
+    );
+    assert!(
+        path.center_line.is_some(),
+        "include_limits=false でも中心食なら center_line=Some"
+    );
+}
+
+/// FAST / 新規: 非中心（central_begin か central_end が None）では include_limits=true でも
+/// samples 空（center_line=None と整合）。「両方 Some」のときだけ samples を充足する（&& 条件）。
+///
+/// 殺す変異: 非中心でも samples を作る・central_begin/end の片方だけ見て充足（|| 化）・
+///   include_limits=true なら無条件で samples を出す。
+#[test]
+fn noncentral_eclipse_has_empty_samples() {
+    let engine = standard_engine(bundled_time_data());
+    let greatest_position = geo(-33.0, 151.0);
+
+    for (with_begin, with_end) in [(false, false), (true, false), (false, true)] {
+        let eclipse = noncentral_eclipse(greatest_position, with_begin, with_end);
+        let path = engine
+            .path(&eclipse, PathOptions::default())
+            .expect("非中心の path() も成功する");
+
+        assert!(
+            path.samples.is_empty(),
+            "非中心(begin={with_begin}, end={with_end}) では samples 空, got {}",
+            path.samples.len()
+        );
+        assert!(
+            path.center_line.is_none(),
+            "非中心(begin={with_begin}, end={with_end}) では center_line=None（samples と整合）"
+        );
+    }
+}
+
+// ============================================================
+// SLOW: 実 2024-04-08 皆既の samples（lockstep・各フィールド NASA 域・全 Total・単調 UTC）
+// ============================================================
+
+/// SLOW / 新規: 実エンジンで 2024-04-08 皆既を search → path()。samples が center_line/北限/南限と
+/// 同点数（lockstep）かつ samples[i].center == center_line.points[i]。最大食付近のサンプルで
+/// path_width ∈ [185,215] km・duration_seconds ∈ [250,286] s（NASA ~197.5 km / ~268 s の妥当域、
+/// 既存 SLOW テストと同域）。全サンプルの kind=Total（2024 は皆既）。time_utc は U1〜U4 内で単調増加。
+/// de440s 不要（解析暦）。
+///
+/// 殺す変異: 実日食で samples を空/捏造にする・lockstep 長さズレ・center に限界線点を入れる・
+///   width↔duration 取り違え（km vs 秒で両域同時外し）・duration の 2×/½・kind を Annular にする
+///   （皆既で金環）・time_utc に TT を入れる（ΔT 分ズレ）・時刻を非単調にする。
+#[test]
+fn real_2024_eclipse_samples_lockstep_and_field_domains() {
+    let engine = standard_engine(bundled_time_data());
+    let range = umbra_core::TimeRange {
+        start: utc(2024, 4, 8, 0, 0, 0.0),
+        end: utc(2024, 4, 9, 0, 0, 0.0),
+    };
+    let eclipses = engine
+        .search(range)
+        .expect("2024-04-08 範囲の search は成功する");
+    let eclipse = eclipses
+        .iter()
+        .find(|e| matches!(e.kind, SolarEclipseKind::Total))
+        .expect("2024-04-08 皆既が見つかる");
+
+    let path = engine
+        .path(eclipse, PathOptions::default())
+        .expect("実皆既の path() は成功する");
+
+    let center = path
+        .center_line
+        .as_ref()
+        .expect("皆既なので center_line=Some");
+    let north = path
+        .northern_limit
+        .as_ref()
+        .expect("皆既なので northern_limit=Some");
+    let south = path
+        .southern_limit
+        .as_ref()
+        .expect("皆既なので southern_limit=Some");
+
+    assert!(
+        path.samples.len() >= 2,
+        "実皆既の samples は非空（≥2）, got {}",
+        path.samples.len()
+    );
+    // lockstep: samples == center == north == south（同点数）。
+    assert_eq!(
+        path.samples.len(),
+        center.points.len(),
+        "samples==center_line 同点数"
+    );
+    assert_eq!(
+        path.samples.len(),
+        north.points.len(),
+        "samples==northern_limit 同点数"
+    );
+    assert_eq!(
+        path.samples.len(),
+        south.points.len(),
+        "samples==southern_limit 同点数"
+    );
+
+    // samples[i].center == center_line.points[i]、全 kind=Total、time_utc 単調増加。
+    let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+    let u1_utc = umbra_core::time::tt_to_utc(u1).unwrap().jd2().jd();
+    let u4_utc = umbra_core::time::tt_to_utc(u4).unwrap().jd2().jd();
+
+    let mut prev_jd = f64::NEG_INFINITY;
+    for (i, s) in path.samples.iter().enumerate() {
+        assert_eq!(
+            s.center, center.points[i],
+            "samples[{i}].center が center_line.points[{i}] と一致しない"
+        );
+        assert_eq!(
+            s.kind,
+            SolarEclipseKind::Total,
+            "samples[{i}].kind は皆既なので Total"
+        );
+        let jd = s.time_utc.jd2().jd();
+        assert!(jd > prev_jd, "samples[{i}].time_utc が単調増加でない");
+        prev_jd = jd;
+        assert!(
+            jd >= u1_utc - 1.0 / 86_400.0 && jd <= u4_utc + 1.0 / 86_400.0,
+            "samples[{i}].time_utc が [U1,U4] 内でない: jd={jd}"
+        );
+        assert!(
+            s.duration_seconds.is_finite() && s.duration_seconds > 0.0,
+            "samples[{i}].duration_seconds は正・有限"
+        );
+        assert!(
+            s.path_width.0.is_finite() && s.path_width.0 > 0.0,
+            "samples[{i}].path_width は正・有限"
+        );
+    }
+
+    // 最大食点に最も近いサンプルで path_width / duration_seconds が NASA 妥当域。
+    let g_lat = lat_deg(&path.greatest_point);
+    let g_lon = lon_deg(&path.greatest_point);
+    let mid = (0..center.points.len())
+        .min_by(|&a, &b| {
+            let da = {
+                let dlat = lat_deg(&center.points[a]) - g_lat;
+                let dlon = lon_deg(&center.points[a]) - g_lon;
+                dlat * dlat + dlon * dlon
+            };
+            let db = {
+                let dlat = lat_deg(&center.points[b]) - g_lat;
+                let dlon = lon_deg(&center.points[b]) - g_lon;
+                dlat * dlat + dlon * dlon
+            };
+            da.partial_cmp(&db).expect("有限距離")
+        })
+        .expect("中心線は非空");
+
+    let width = path.samples[mid].path_width.0;
+    let duration = path.samples[mid].duration_seconds;
+    assert!(
+        (185.0..=215.0).contains(&width),
+        "最大食付近 samples[{mid}].path_width {width} km が NASA 妥当域 [185,215] に入る（NASA≈197.5 km）"
+    );
+    assert!(
+        (250.0..=286.0).contains(&duration),
+        "最大食付近 samples[{mid}].duration_seconds {duration} s が NASA 妥当域 [250,286] に入る（NASA≈268.1 s）"
+    );
+}
+
+// ============================================================
 // SLOW: 実 2024-04-08 皆既の GreatestEclipse.path_width / central_duration が NASA 値
 // （M9.6 — 中心食の帯幅 path_width と中心食継続 central_duration を Some・NASA ballpark に縛る）
 // ============================================================

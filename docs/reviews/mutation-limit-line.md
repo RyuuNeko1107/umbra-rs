@@ -37,3 +37,32 @@ killer。非到達の他 lib テストを省いて高速化。）
 
 実回帰ガード: 通常 CI の `cargo test -p umbra-eclipse`（FAST 合成 μ'≠0 の前方射影 2 条件＋SLOW 実 2024-04-08
 皆既の NASA 帯幅 [185,215]km・2 条件）が限界線の正しさを縛る。
+
+---
+
+## 追記: M9 残(3) 3a 錐半径引数化の再走（2026-06-21）
+
+`solve_limit_edge` は M9.6 で `engine.rs` から `axis_intercept.rs` へ移設済み。M9.7 残(3) 3a で**錐半径を
+引数化**（`cone_l`/`cone_tan_f` を追加し、本影 `(l2,tan f2)`／半影 `(l1,tan f1)` の両縁を解けるよう一般化）。
+半径以外は不変。新たに axis_intercept.rs 内 FAST 単体テスト（半影・本影縁の錐exact＋包絡⊥を前方射影で機械精度
+検証・半影/本影の半径差・sign 両側・地表外し/相対速度ゼロの `Ok(None)`）を killer に追加。
+
+### 実行
+```
+cargo mutants -p umbra-eclipse --re 'solve_limit_edge' --no-shuffle \
+  --exclude-re 'with <= in.*solve_limit_edge' --exclude-re 'with \|\| in.*solve_limit_edge' \
+  -- --lib -- penumbral umbral_edge sign_gives edge_off zero_relative
+```
+
+### 結果
+**52 mutants: 51 caught・1 unviable・0 missed。** 半径 `cone_l − ζ·cone_tan_f` の引数化後も全算術・比較・
+sign・rel 項を新テストが捕捉（生存 0）。収束判定の等価 2 件（`<→<=`・`&&→||`）のみ除外（上表と同根拠）。
+
+### ⚠ CI 除外パターンの正規表現バグ修正（重要）
+旧 mutation.yml は `--exclude-re 'with || in.*solve_limit_edge'`（および `…central_width_and_duration`）と
+**`||` を未エスケープ**で書いていた。`||` は正規表現で**空 alternation＝全文字列マッチ**になるため、cargo-mutants
+の `--exclude-re` が**全 mutant を除外** → CI mutation ジョブが「Found 0 mutants／No mutants found」で**事実上
+no-op**（生存を検出できない）だった。リテラル `||`（mutant 名 "replace && with ||"）を除外するには
+**`\|\|` とエスケープ必須**。本スライスで mutation.yml の該当 2 パターンを `\|\|` へ修正（`solve_limit_edge` /
+`central_width_and_duration`）。M9.7 で追加した `sample_central_point` 用パターンは当初から `\|\|` でエスケープ済み。
+この修正で CI mutation が実際に変異をテストするようになる（本再走の 52 mutants がその実証）。

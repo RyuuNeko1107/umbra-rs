@@ -2,8 +2,8 @@
 //!
 //! `umbra-eclipse` の**公開 API のみ**を対象とした統合テスト（tests/ 配下・別クレート境界）。
 //! 対象は `EclipseEngine::path(&SolarEclipse, PathOptions) -> Result<EclipsePath, EclipseError>`。
-//! 本スライスでは `path()` が中心線 `center_line: Option<GeoLine>` と `greatest_point` のみを
-//! 生成し、北/南限界線・部分食域・samples は未実装（常に None / 空）であることを縛る。
+//! 本ファイルは中心線 `center_line: Option<GeoLine>` と `greatest_point` の生成、および
+//! 中心食での samples 充足（中心線との lockstep）を縛る。部分食域は未実装（常に None）。
 //!
 //! ## 確定セマンティクス（テストで縛る）
 //! 1. `greatest_point == eclipse.global.greatest.position`（passthrough・中心/非中心問わず）。
@@ -12,9 +12,10 @@
 //!    `options.sample_interval_seconds` 刻みでサンプルし、各時刻で `bessel.at(t)` の瞬時要素から
 //!    影軸地表貫通点を求めて結んだ点列。軸が地球を外す時刻はスキップ。中心食では非空（≥2 点）。
 //! 3. 非中心（central_begin か central_end のいずれかが None）: `center_line = None`。
-//! 4. `partial_limit` は常に None、`samples` は常に空（後続スライス）。`northern_limit`/`southern_limit`
-//!    は M9.3 以降、中心食かつ `include_limits` 既定(true) のとき Some（本ファイルは存在のみ縛り、
-//!    限界線の幾何性質は `path_limits.rs` で縛る）。非中心では限界線も None。
+//! 4. `partial_limit` は常に None。`samples` は M9.7 以降、中心食かつ `include_limits` 既定(true) で
+//!    中心線と lockstep 充足（非中心・`include_limits=false` では空）。`northern_limit`/`southern_limit`
+//!    は M9.3 以降、中心食かつ `include_limits` 既定(true) のとき Some（本ファイルは存在・lockstep のみ
+//!    縛り、限界線の幾何性質・samples 各フィールドは `path_limits.rs` で縛る）。非中心では限界線も None。
 //! 5. `bessel.at`/影軸貫通の `RootNotBracketed` 以外の Err は伝播。
 //!
 //! ## テスト戦略（strict / mutation-resistant / 負荷配分）
@@ -234,13 +235,14 @@ fn synthetic_central_axis_hits_earth_across_window() {
 }
 
 // ============================================================
-// FAST: 中心食 → center_line=Some・非空・各点妥当・passthrough・限界線 None・samples 空
+// FAST: 中心食 → center_line=Some・非空・各点妥当・passthrough・限界線 Some・samples lockstep 充足
 // ============================================================
 
 /// 中心食合成: path() は center_line=Some・点列非空（≥2）・各点が妥当な緯度経度を返す。
 /// greatest_point は global.greatest.position と厳密一致（passthrough）。
 /// M9.3 以降は include_limits 既定(true) で northern/southern_limit=Some（本テストは存在のみ縛り、
-/// 限界線の幾何性質は path_limits.rs で縛る）。partial_limit は None、samples は空（後続スライス）。
+/// 限界線の幾何性質は path_limits.rs で縛る）。partial_limit は None。M9.7 以降は samples が中心線と
+/// lockstep で充足（同点数。各フィールドオラクルは path_limits.rs）。
 ///
 /// 殺す変異: center_line を常に None にする・空点列を返す・サンプル間隔/区間の取り違えで <2 点になる・
 ///   greatest_point を別ソースから取る/捏造する・partial_limit や samples を捏造する・
@@ -283,7 +285,8 @@ fn central_eclipse_produces_nonempty_center_line() {
     );
 
     // M9.3 以降: 中心食＋include_limits 既定(true) では北/南限界線は Some（中心線同様に生成）。
-    // 部分食域は依然 None、samples は依然空（後続スライス）。
+    // M9.7 以降: samples も中心線と lockstep で充足（部分食域は依然 None）。詳細フィールド
+    // オラクルは path_limits.rs が担保。ここでは充足と lockstep（中心線と同点数）のみ縛る。
     assert!(
         path.northern_limit.is_some(),
         "中心食＋include_limits 既定(true) では northern_limit=Some（M9.3）"
@@ -296,9 +299,10 @@ fn central_eclipse_produces_nonempty_center_line() {
         path.partial_limit.is_none(),
         "partial_limit は本スライスでは None"
     );
-    assert!(
-        path.samples.is_empty(),
-        "samples は本スライスでは空, got {} 点",
+    assert_eq!(
+        path.samples.len(),
+        path.center_line.as_ref().unwrap().points.len(),
+        "samples は中心線と lockstep で充足（M9.7）, got {} 点",
         path.samples.len()
     );
 }
@@ -480,8 +484,8 @@ fn real_2017_eclipse_center_line_crosses_north_america() {
         "中心線は最大食点の近傍を通る（最近点 {min_deg}° < 3°）"
     );
 
-    // 実皆既＋include_limits 既定(true) では北/南限界線も Some（M9.3）。partial_limit は None、
-    // samples は空（後続スライス）。限界線の幾何性質は path_limits.rs で縛る。
+    // 実皆既＋include_limits 既定(true) では北/南限界線も Some（M9.3）。partial_limit は None。
+    // M9.7 以降: samples も中心線と lockstep で充足（詳細フィールドは path_limits.rs で縛る）。
     assert!(
         path.northern_limit.is_some(),
         "皆既＋既定 で northern_limit=Some（M9.3）"
@@ -491,9 +495,10 @@ fn real_2017_eclipse_center_line_crosses_north_america() {
         "皆既＋既定 で southern_limit=Some（M9.3）"
     );
     assert!(path.partial_limit.is_none(), "partial_limit None");
-    assert!(
-        path.samples.is_empty(),
-        "samples は本スライスでは空, got {} 点",
+    assert_eq!(
+        path.samples.len(),
+        path.center_line.as_ref().unwrap().points.len(),
+        "samples は中心線と lockstep で充足（M9.7）, got {} 点",
         path.samples.len()
     );
 

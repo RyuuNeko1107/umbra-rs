@@ -162,21 +162,26 @@ fn descending_sign_change_bracket<F: Fn(f64) -> f64>(
     None
 }
 
-/// 本影帯の片側（`sign=±1`）の縁点を相対速度包絡の不動点反復で厳密に解く（南北限界線・帯幅）。
+/// 移動する影錐縁の片側（`sign=±1`）の縁点を相対速度包絡の不動点反復で厳密に解く（南北限界線・帯幅・
+/// 部分食域）。錐半径は `cone_l`（ζ=0 での錐半径）と `cone_tan_f`（tan 半頂角）で**引数化**され、
+/// **本影**縁は `(l2, tan f2)`・**半影**縁は `(l1, tan f1)` を渡して同一機構で解く（M9 残(3) 3a）。
 ///
 /// 各反復で現在の縁推定 (ξ,η,ζ) から相対速度 rel=(x'−μ'(ζcos d−η sin d), y'−μ'ξ sin d) を作り、
-/// それに直交する単位法線 n̂=(−rel_y, rel_x)/|rel| の `sign` 側へ ζ補正本影半径 `|l2−ζ·tan f2|` だけ
+/// それに直交する単位法線 n̂=(−rel_y, rel_x)/|rel| の `sign` 側へ ζ補正錐半径 `|cone_l−ζ·cone_tan_f|` だけ
 /// 軸 (x,y) からオフセットし、地表へ射影して新しい (ξ,η,ζ) を得る。(ξ,η,ζ) が
 /// [`LIMIT_FIXED_POINT_TOL`] 以内で安定（＝rel・半径とも自己整合）した縁点を返す。射影が
 /// 地表を外す（`RootNotBracketed`）/ 相対速度ゼロ/ **[`LIMIT_FIXED_POINT_MAX_ITER`] 内に未収束**は
 /// `Ok(None)`（lockstep スキップ）＝**未収束の近似を無警告で返さない**（誤差を隠さない・conventions §11）。
 /// 他 `Err` は伝播。`vx`/`vy`/`mu_rate` は影軸運動 x'/y' と地球自転位相 μ'（基本面・時間単位は呼び側統一）。
 ///
-/// `zeta0` は初期推定（中心軸 ζ）。半径 |L2'|≈0.01 Re が微小で写像は強い縮小ゆえ**収束先は初期値に
-/// 依らない**（良い初期値は反復数を減らすのみ）。よって `zeta0` を別値に変える/捨てる変異は結果を
-/// 変えず等価（工程7 で生存列挙・許容）。
+/// `zeta0` は初期推定（中心軸 ζ）。半径（本影 |L2'|≈0.01 Re / 半影 |L1'|≈0.5 Re）でも写像は縮小で
+/// **収束先は初期値に依らない**（良い初期値は反復数を減らすのみ）。よって `zeta0` を別値に変える/捨てる
+/// 変異は結果を変えず等価（工程7 で生存列挙・許容）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_limit_edge(
     elements: &InstantaneousBesselianElements,
+    cone_l: f64,
+    cone_tan_f: f64,
     zeta0: f64,
     vx: f64,
     vy: f64,
@@ -202,8 +207,8 @@ pub(crate) fn solve_limit_edge(
         // rel に直交する単位法線（路限界方向）。
         let nx = -rel_y / rel_speed;
         let ny = rel_x / rel_speed;
-        // ζ補正本影半径（縁点自身の ζ で評価＝自己整合）。
-        let radius = (elements.l2 - zeta * elements.tan_f2).abs();
+        // ζ補正錐半径（縁点自身の ζ で評価＝自己整合・本影 l2/半影 l1 は呼び側が cone_l で選ぶ）。
+        let radius = (cone_l - zeta * cone_tan_f).abs();
         let xi_new = elements.x + sign * radius * nx;
         let eta_new = elements.y + sign * radius * ny;
         let (p, zeta_new) = match surface_point_for_fundamental(
@@ -219,7 +224,8 @@ pub(crate) fn solve_limit_edge(
         };
         // 収束判定（過収束機構）: 反復は機械精度まで収束し ξ,η,ζ は同率で <TOL に達するため、境界
         // `< → <=` や `&& → ||` は真解に影響しない等価変異（`< → >`＝発散は caught）。mutation.yml で
-        // `with <= in.*solve_limit_edge` / `with || in.*solve_limit_edge` を除外（docs/reviews/mutation-limit-line.md）。
+        // `with <= in.*solve_limit_edge` / `with \|\| in.*solve_limit_edge` を除外（`||` は正規表現の空
+        // alternation で全マッチするため必ず `\|\|` とエスケープ。docs/reviews/mutation-limit-line.md）。
         let step_converged = (xi_new - xi).abs() < LIMIT_FIXED_POINT_TOL
             && (eta_new - eta).abs() < LIMIT_FIXED_POINT_TOL
             && (zeta_new - zeta).abs() < LIMIT_FIXED_POINT_TOL;
@@ -620,6 +626,213 @@ mod tests {
         assert!(
             matches!(r, Err(EclipseError::Solver(SolverError::RootNotBracketed))),
             "expected Err(Solver(RootNotBracketed)), got {r:?}"
+        );
+    }
+
+    // ====================================================================
+    // solve_limit_edge（錐半径引数化）FAST 単体テスト（M9 残(3) 3a）
+    //
+    // 戦略（追認回避）: 各縁点 P を**検証済み前方射影** project_observer_to_fundamental へ通して
+    // 自身の (ξ,η,ζ) を独立復元し（path_limits.rs `assert_exact_limit_conditions` と同パターン）、
+    // 次の 2 条件を絶対値で表明する:
+    //   条件1（錐exact・自己整合ζ）: hypot(ξ−x, η−y) = |cone_l − ζ·cone_tan_f|（ζ は点自身の値）。
+    //   条件2（包絡）: (ξ−x)·rel_vx + (η−y)·rel_vy ≈ 0,
+    //     rel_vx = vx − μ'·(ζ·cos d − η·sin d), rel_vy = vy − μ'·ξ·sin d。
+    // 半径以外（軸位置・rel・μ'・sign）は本影/半影で同形なので、半影版は半径を |l1−ζ·tan f1| に
+    // するだけ。被テスト関数の戻りを期待値生成に流用しない（前方射影は独立に検証済み）。
+    // ====================================================================
+
+    /// 縁点 P を**検証済み前方射影**へ通し、自身の (ξ,η,ζ) を `ObserverFundamental` で返す独立オラクル。
+    /// `assert_forward_roundtrip` は ζ だけ返すため、2 条件用に ξ,η,ζ を全部使えるヘルパを別途用意する。
+    fn forward_of(
+        p: &GeoPoint,
+        e: &InstantaneousBesselianElements,
+    ) -> crate::projection::ObserverFundamental {
+        let phi = p.lat.radians().0;
+        let lam = p.lon.radians().0;
+        let obs = observer_geocentric(&WGS84, phi, 0.0);
+        project_observer_to_fundamental(&obs, Radians::new(lam), e)
+    }
+
+    /// 縁点 P が錐半径 `(cone_l, cone_tan_f)` について 2 条件（自己整合ζの錐exact＋相対速度包絡⊥）を
+    /// 満たすことを表明する共有チェック。半径は P 自身の ζ で評価する（自己整合）。
+    /// `cone_tol`/`dot_tol` は呼び側が与える（合成＝機械精度）。
+    #[allow(clippy::too_many_arguments)]
+    fn assert_edge_conditions(
+        p: &GeoPoint,
+        e: &InstantaneousBesselianElements,
+        cone_l: f64,
+        cone_tan_f: f64,
+        vx: f64,
+        vy: f64,
+        mu_rate: f64,
+        cone_tol: f64,
+        dot_tol: f64,
+    ) {
+        let (sin_d, cos_d) = e.declination.0.sin_cos();
+        let of = forward_of(p, e);
+        let off_x = of.xi - e.x;
+        let off_y = of.eta - e.y;
+        // 条件1: 面内距離 = |cone_l − ζ·cone_tan_f|（自己整合ζ）。
+        let in_plane = off_x.hypot(off_y);
+        let radius = (cone_l - of.zeta * cone_tan_f).abs();
+        assert!(
+            (in_plane - radius).abs() < cone_tol,
+            "面内距離 {in_plane} = |cone_l − ζ·cone_tan_f| {radius}（自己整合ζ={}）でない",
+            of.zeta
+        );
+        // 条件2: offset ⊥ rel 速度（μ' 項込み）。
+        let rel_vx = vx - mu_rate * (of.zeta * cos_d - of.eta * sin_d);
+        let rel_vy = vy - mu_rate * of.xi * sin_d;
+        let dot = off_x * rel_vx + off_y * rel_vy;
+        assert!(
+            dot.abs() < dot_tol,
+            "offset·rel = {dot}（≈0 でない＝包絡条件違反）"
+        );
+        // 面内距離の独立サニティ（半径が正＝縁が軸からオフセットしている）。
+        assert!(
+            in_plane > 0.0,
+            "縁は軸からオフセットしているはず（面内距離>0）"
+        );
+    }
+
+    /// 軸が地表に当たる合成中心食の代表構成（gamma≪1・μ'≠0 で包絡条件に分離力）。
+    /// vx,vy,mu_rate は合成の既知値（多項式微分不要）。本影も半影も縁が地表に当たる小さい x,y。
+    fn edge_config() -> (InstantaneousBesselianElements, f64, f64, f64, f64) {
+        // x,y は影軸を地表中央付近に置く（gamma=√(0.1²+0.05²)≈0.112≪1）。
+        // d は現実的な太陽見かけ赤緯, μ は任意。l1/l2/tan_f は elems() の既定。
+        let e = elems(0.10, 0.05, 0.20, 1.10);
+        // 影軸運動 vx,vy（Re/h 級）と地球自転位相 μ'（≠0 で包絡に効く）。
+        let (vx, vy, mu_rate) = (0.45_f64, 0.06_f64, 0.26_f64);
+        let zeta0 = 0.9_f64; // 初期推定（縮小写像ゆえ収束先に無関係）。
+        (e, vx, vy, mu_rate, zeta0)
+    }
+
+    /// 半影縁の 2 条件: (l1, tan_f1) で呼ぶと、返点が条件1=面内距離 |l1−ζ·tan f1|・条件2=offset⊥rel を
+    /// 機械精度で満たす。μ'≠0 で包絡条件に分離力。sign=±1 の両側を縛る。
+    ///
+    /// 殺す変異: cone_l↔cone_tan_f 取り違え（半径式が ζ·l1 等になり面内距離が大きく外れる）・
+    ///   半径計算 `cone_l − ζ·cone_tan_f` の演算子（`−`→`+`/`*`/`/`）・rel の μ' 項脱落（条件2 が dot≠0）・
+    ///   cos d↔sin d・ξ↔η・sign 反映漏れ。
+    #[test]
+    fn penumbral_edge_satisfies_cone_and_envelope_conditions() {
+        let (e, vx, vy, mu_rate, zeta0) = edge_config();
+        // μ'≠0 を独立確認（包絡条件の分離力の前提）。
+        assert!(mu_rate.abs() > 1e-6, "μ'≠0 構成（rel 速度に μ' が効く）");
+        for sign in [1.0_f64, -1.0_f64] {
+            let p = solve_limit_edge(&e, e.l1, e.tan_f1, zeta0, vx, vy, mu_rate, sign, &WGS84)
+                .expect("半影縁の解は Ok")
+                .unwrap_or_else(|| panic!("sign={sign}: 半影縁点が存在するはず（gamma≪1）"));
+            // 半影半径で 2 条件（自己整合ζ）を機械精度で。
+            assert_edge_conditions(&p, &e, e.l1, e.tan_f1, vx, vy, mu_rate, 1e-7, 1e-9);
+        }
+    }
+
+    /// 本影回帰: (l2, tan_f2) で呼ぶと、シグネチャ変更後も従来同様に 2 条件（半径=|l2−ζ·tan f2|）を
+    /// 満たす（本影が壊れていない独立確認）。sign=±1 の両側。
+    ///
+    /// 殺す変異: 引数化で本影半径が l1 等に化ける・半径式の演算子・rel の μ' 項脱落・sign 反映漏れ。
+    #[test]
+    fn umbral_edge_regression_satisfies_cone_and_envelope_conditions() {
+        let (e, vx, vy, mu_rate, zeta0) = edge_config();
+        for sign in [1.0_f64, -1.0_f64] {
+            let p = solve_limit_edge(&e, e.l2, e.tan_f2, zeta0, vx, vy, mu_rate, sign, &WGS84)
+                .expect("本影縁の解は Ok")
+                .unwrap_or_else(|| panic!("sign={sign}: 本影縁点が存在するはず（gamma≪1）"));
+            // 本影半径で 2 条件（自己整合ζ）を機械精度で。
+            assert_edge_conditions(&p, &e, e.l2, e.tan_f2, vx, vy, mu_rate, 1e-7, 1e-9);
+        }
+    }
+
+    /// 半影 vs 本影の半径差: 同一 elements・同一 sign で半影縁の軸からの面内距離 > 本影縁のそれ。
+    /// 半径 l1(~0.5)≫|l2|(~0.01) なので半影縁は本影縁より遥かに軸から遠い（l1↔l2 取り違えを撃つ）。
+    ///
+    /// 殺す変異: cone_l に l2 を使い続ける（半影呼び出しでも本影半径＝差が消える）・cone_l↔cone_tan_f
+    ///   取り違え（両者とも壊れて差が偶然一致しうるが、上の 2 条件テストが別途撃つ）。
+    #[test]
+    fn penumbral_edge_is_farther_from_axis_than_umbral() {
+        let (e, vx, vy, mu_rate, zeta0) = edge_config();
+        let sign = 1.0_f64;
+        let p_umbra = solve_limit_edge(&e, e.l2, e.tan_f2, zeta0, vx, vy, mu_rate, sign, &WGS84)
+            .expect("本影縁 Ok")
+            .expect("本影縁点が存在");
+        let p_penumbra = solve_limit_edge(&e, e.l1, e.tan_f1, zeta0, vx, vy, mu_rate, sign, &WGS84)
+            .expect("半影縁 Ok")
+            .expect("半影縁点が存在");
+        // 各縁点を前方射影し、軸 (x,y) からの基本面内距離を独立に測る。
+        let of_u = forward_of(&p_umbra, &e);
+        let of_p = forward_of(&p_penumbra, &e);
+        let off_umbra = (of_u.xi - e.x).hypot(of_u.eta - e.y);
+        let off_penumbra = (of_p.xi - e.x).hypot(of_p.eta - e.y);
+        // |l2|≈0.01 vs l1≈0.5 ⇒ 半影は本影より桁違いに軸から遠い。
+        assert!(
+            off_penumbra > off_umbra,
+            "半影縁の面内距離 {off_penumbra} > 本影縁 {off_umbra}（l1≫|l2|）"
+        );
+        // 桁差を独立に確認（取り違えで両者が近接する変異を撃つ）: 半影は本影の 10 倍以上遠い。
+        assert!(
+            off_penumbra > 10.0 * off_umbra,
+            "半影縁は本影縁の 10 倍超遠いはず: penumbra {off_penumbra}, umbra {off_umbra}"
+        );
+    }
+
+    /// sign ±1 が反対側の縁を与える（南北別側）: 同一 elements・同一半径で、sign=+1 と sign=−1 の
+    /// 縁点は軸を挟んで反対側に出る。前方射影した offset ベクトルが互いに逆向き（内積<0）。
+    ///
+    /// 殺す変異: sign を無視して常に同じ側へ出す（offset が同一＝内積>0）・sign の符号反転を片側に倒す。
+    #[test]
+    fn sign_gives_opposite_sides_of_axis() {
+        let (e, vx, vy, mu_rate, zeta0) = edge_config();
+        // 半影半径で両側を取る（軸から遠く、対称性が見やすい）。
+        let p_pos = solve_limit_edge(&e, e.l1, e.tan_f1, zeta0, vx, vy, mu_rate, 1.0, &WGS84)
+            .expect("sign=+1 Ok")
+            .expect("sign=+1 縁点が存在");
+        let p_neg = solve_limit_edge(&e, e.l1, e.tan_f1, zeta0, vx, vy, mu_rate, -1.0, &WGS84)
+            .expect("sign=−1 Ok")
+            .expect("sign=−1 縁点が存在");
+        let of_pos = forward_of(&p_pos, &e);
+        let of_neg = forward_of(&p_neg, &e);
+        let (ox_p, oy_p) = (of_pos.xi - e.x, of_pos.eta - e.y);
+        let (ox_n, oy_n) = (of_neg.xi - e.x, of_neg.eta - e.y);
+        // 反対側＝offset ベクトルが逆向き（内積<0）。
+        let dot = ox_p * ox_n + oy_p * oy_n;
+        assert!(
+            dot < 0.0,
+            "sign=+1 と sign=−1 の offset は反対側（内積<0）, got {dot}"
+        );
+    }
+
+    /// 縁が地表を外す合成 ⇒ `Ok(None)`。軸を地表の縁ギリギリ（gamma<1）に置きつつ、半影半径
+    /// l1≈0.5 で外側へ押すと縁点の射影が地表を外す（`RootNotBracketed`）→ `Ok(None)`。
+    /// `Err` でも `Some` でもなく `Ok(None)`（未収束/外れは近似を返さずスキップ）。
+    ///
+    /// 殺す変異: `RootNotBracketed` を `Err` 伝播する・外れでも近似 `Some` を返す・None 分岐を潰す。
+    #[test]
+    fn edge_off_surface_returns_ok_none() {
+        // x を限界近く（0.92）に置き gamma=0.92<1（軸は地表に当たる）。半影半径 l1≈0.5 で
+        // sign=+1（外向き）に押すと縁点が gamma>1 域へ出て地表を外す。
+        let e = elems(0.92, 0.0, 0.20, 1.10);
+        let gamma = (e.x * e.x + e.y * e.y).sqrt();
+        assert!(gamma < 1.0, "軸自身は地表に当たる前提 gamma={gamma}<1");
+        let (vx, vy, mu_rate) = (0.45_f64, 0.06_f64, 0.26_f64);
+        let r = solve_limit_edge(&e, e.l1, e.tan_f1, 0.4, vx, vy, mu_rate, 1.0, &WGS84);
+        assert!(
+            matches!(r, Ok(None)),
+            "縁が地表を外す合成では Ok(None) のはず, got {r:?}"
+        );
+    }
+
+    /// 相対速度ゼロ（vx=vy=0 かつ μ'=0）⇒ rel=0 ⇒ `Ok(None)`（影が地表に静止・スキップ）。
+    ///
+    /// 殺す変異: rel_speed==0 ガードを外す（0 除算で NaN を返す/panic）・Ok(None) を別値にする。
+    #[test]
+    fn zero_relative_speed_returns_ok_none() {
+        let e = elems(0.10, 0.05, 0.20, 1.10);
+        // vx=vy=0, μ'=0 ⇒ rel=(0,0)（最初の反復で rel_speed==0）。
+        let r = solve_limit_edge(&e, e.l1, e.tan_f1, 0.9, 0.0, 0.0, 0.0, 1.0, &WGS84);
+        assert!(
+            matches!(r, Ok(None)),
+            "相対速度ゼロでは Ok(None) のはず, got {r:?}"
         );
     }
 

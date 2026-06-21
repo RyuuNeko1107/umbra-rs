@@ -253,8 +253,28 @@ fn central_width_and_duration<B: BesselianSource>(
     };
 
     // 帯幅 = 南北本影縁点（相対速度包絡）の大圏距離。
-    let north = solve_limit_edge(elements, zeta, vx, vy, mu_rate, 1.0, ellipsoid)?;
-    let south = solve_limit_edge(elements, zeta, vx, vy, mu_rate, -1.0, ellipsoid)?;
+    let north = solve_limit_edge(
+        elements,
+        elements.l2,
+        elements.tan_f2,
+        zeta,
+        vx,
+        vy,
+        mu_rate,
+        1.0,
+        ellipsoid,
+    )?;
+    let south = solve_limit_edge(
+        elements,
+        elements.l2,
+        elements.tan_f2,
+        zeta,
+        vx,
+        vy,
+        mu_rate,
+        -1.0,
+        ellipsoid,
+    )?;
     let path_width = match (north, south) {
         (Some(n), Some(s)) => Some(Kilometers(great_circle_distance_km(&n, &s))),
         _ => None,

@@ -2,11 +2,11 @@
 //!
 //! [`EclipseEngine`]`<E, D, O>` は暦 [`Ephemeris`]・ΔT [`DeltaTModel`]・地球姿勢
 //! [`EarthOrientation`] にジェネリックなまま日食計算を駆動する外殻（**`Box<dyn>` 不使用**,
-//! 確定A1）。本スライス（S5b）では構築 [`EclipseEngine::new`]・標準構築
-//! [`standard_engine`]／型エイリアス [`StandardEngine`]・瞬時要素
-//! [`EclipseEngine::instantaneous_elements`]・未実装 [`EclipseEngine::path`]
-//! （`Err(NotImplemented)`）のみを提供する。`search`/`local_circumstances`/
-//! `next_visible_eclipse` は後続スライス（S6/S7/S8）で追加する。
+//! 確定A1）。構築 [`EclipseEngine::new`]・標準構築 [`standard_engine`]／型エイリアス
+//! [`StandardEngine`]・瞬時要素 [`EclipseEngine::instantaneous_elements`]・探索
+//! [`EclipseEngine::search`]（S6）・局地条件 [`EclipseEngine::local_circumstances`]（S7）・
+//! 次の可視日食 [`EclipseEngine::next_visible_eclipse`]（S8）・経路 [`EclipseEngine::path`]
+//! （M9＝中心線・南北限界線・経路サンプル列）を提供する。
 //!
 //! 瞬時要素は供給源 [`InstantaneousEvaluator`](crate::source::InstantaneousEvaluator)
 //! （ISSUE-043 S3・暦ジェネリックな直接評価）を退化区間 `[time, time]` で構築して
@@ -19,14 +19,17 @@ use umbra_core::constants::EARTH_EQUATORIAL_RADIUS_M;
 use umbra_core::deltat::{decimal_year, DeltaTModel};
 use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid, GeocentricObserver};
 use umbra_core::eop::EarthOrientation;
+use umbra_core::time::tt_to_utc;
 use umbra_core::{
-    EspenakMeeusDeltaT, IersEopData, JulianDate2, Observer, Radians, SolverError, TimeData,
-    TimeInterval, TimeRange, TimeScales, TtInstant, UtcInstant,
+    EspenakMeeusDeltaT, IersEopData, JulianDate2, Kilometers, Observer, Radians, SolverError,
+    TimeData, TimeInterval, TimeRange, TimeScales, TtInstant, UtcInstant,
 };
 use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
 use umbra_geo::{GeoLine, GeoPoint};
 
-use crate::axis_intercept::{solve_limit_edge, surface_point_for_fundamental};
+use crate::axis_intercept::{
+    great_circle_distance_km, solve_limit_edge, surface_point_for_fundamental,
+};
 use crate::bessel_poly::{BesselFitError, BesselianPolynomial};
 use crate::besselian::InstantaneousBesselianElements;
 use crate::calc_metadata::CalculationMetadata;
@@ -35,13 +38,13 @@ use crate::config::EngineConfig;
 use crate::conjunction::{solve_conjunction, ConjunctionKind, RootConfig};
 use crate::eclipse_filter::assess_eclipse_possibility;
 use crate::error::EclipseError;
-use crate::global::{classify_global_kind, solve_greatest_eclipse};
+use crate::global::{classify_global_kind, solve_greatest_eclipse, SolarEclipseKind};
 use crate::global_contacts::solve_global_contact_set;
 use crate::horizontal::{classify_visibility, sun_horizontal, RefractionModel, Visibility};
 use crate::local_contacts::{solve_local_contacts, ContactInstant};
 use crate::local_maximum::solve_local_maximum;
 use crate::magnitude::{eclipse_magnitude, eclipse_obscuration, EclipseMagnitude, Obscuration};
-use crate::path::{EclipsePath, PathOptions};
+use crate::path::{EclipsePath, PathOptions, PathSample};
 use crate::position_angle::contact_position_angle;
 use crate::projection::{project_observer_to_fundamental, ObserverFundamental};
 use crate::results::{
@@ -54,6 +57,8 @@ use std::collections::HashSet;
 
 /// 1 日 = 86400 SI 秒。
 const SECONDS_PER_DAY: f64 = 86_400.0;
+/// 1 時間 = 3600 SI 秒（中心食継続 2|L2'|/|rel| の hour→秒 換算, M9.7）。
+const SECONDS_PER_HOUR: f64 = 3_600.0;
 /// 探索段の Brent 反復上限。
 const SEARCH_ROOT_MAX_ITER: usize = 200;
 /// ベッセル多項式 fit の開始次数（NASA 慣習 3。残差未達なら内部で自動昇次, ≤6）。
@@ -526,40 +531,45 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
         Ok(None)
     }
 
-    /// 日食経路を生成する（M9 第1スライス＝中心線トラック）。
+    /// 日食経路を生成する（M9 中心線・南北限界線・経路サンプル列）。
     ///
     /// **中心食**（全球 U1/U4 接触＝`central_begin`/`central_end` が両方 `Some`）では、`[U1.time_tt,
     /// U4.time_tt]` を `options.sample_interval_seconds` 刻みでサンプルし、各時刻のベッセル要素
     /// （`bessel.at`）から影軸の地表貫通点（[`shadow_axis_surface_point`]）を結んだ中心線 [`GeoLine`] を
     /// `center_line` に返す。軸が地球を外す端の時刻（`RootNotBracketed`）はスキップする。**非中心**
-    /// （部分/非中心食）では `center_line = None`。`greatest_point` は常に `global.greatest.position`。
+    /// （部分/非中心食）では `center_line = None`・`samples` は空。`greatest_point` は常に
+    /// `global.greatest.position`。
     ///
-    /// 本スライスでは北/南限界線・部分食域・経路サンプル（`samples`）は未生成（`None` / 空）。これらは
-    /// 帯幅・中心食継続式（算法 §8.11/8.12・要一次資料確認）や限界線追跡を要するため後続スライス（M9）で
-    /// 実装する。`bessel.at` / 影軸貫通の `RootNotBracketed` 以外の `Err` は伝播する。
+    /// `options.include_limits` のとき、本影帯の北/南縁を厳密な錐接線解（[`solve_limit_edge`]）で求め
+    /// `northern_limit`/`southern_limit` に返し、併せて各サンプルの [`PathSample`]（時刻 UTC・中心点・
+    /// 中心食継続・太陽高度・帯幅・種別）を `samples` に充足する（M9.7）。`samples` は中心線・南北限界線と
+    /// **完全に同一のサンプル列（lockstep）**＝軸/縁が地表を外すサンプルは 4 本ともスキップされ同点数になる。
+    /// `include_limits=false` では限界線 `None`・`samples` 空（中心線のみ）。`bessel.at`/`tt_to_utc`/
+    /// 影軸貫通の `RootNotBracketed` 以外の `Err` は伝播する。
     pub fn path(
         &self,
         eclipse: &SolarEclipse,
         options: PathOptions,
     ) -> Result<EclipsePath, EclipseError> {
         let greatest_point = eclipse.global.greatest.position;
-        // 中心食（U1/U4 両方 Some）でのみ中心線・限界線を追跡。片方でも None なら経路なし。
-        let (center_line, northern_limit, southern_limit) =
+        // 中心食（U1/U4 両方 Some）でのみ中心線・限界線・サンプル列を追跡。片方でも None なら経路なし。
+        let (center_line, northern_limit, southern_limit, samples) =
             match (&eclipse.global.central_begin, &eclipse.global.central_end) {
                 (Some(u1), Some(u4)) => {
-                    let (center, limits) = trace_central(
+                    let (center, limits, samples) = trace_central(
                         &eclipse.bessel,
+                        &self.delta_t,
                         u1.time_tt,
                         u4.time_tt,
                         options.sample_interval_seconds,
                         options.include_limits,
                     )?;
                     match limits {
-                        Some((north, south)) => (Some(center), Some(north), Some(south)),
-                        None => (Some(center), None, None),
+                        Some((north, south)) => (Some(center), Some(north), Some(south), samples),
+                        None => (Some(center), None, None, samples),
                     }
                 }
-                _ => (None, None, None),
+                _ => (None, None, None, Vec::new()),
             };
         Ok(EclipsePath {
             center_line,
@@ -567,7 +577,7 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
             southern_limit,
             partial_limit: None,
             greatest_point,
-            samples: Vec::new(),
+            samples,
         })
     }
 }
@@ -593,19 +603,23 @@ fn next_visible_is_observable(visibility: Visibility) -> bool {
 /// 追跡する（M9.1 中心線 / M9.3 限界線 / M9.4 厳密化・[`EclipseEngine::path`] から呼ぶ）。
 ///
 /// 各サンプル時刻で `bessel.at` の瞬時要素から影軸∩WGS84 地表点（中心線）を求める。`include_limits` の
-/// とき、本影帯の北/南縁を**厳密な錐接線解**で求める（[`sample_central_point`]・自己整合ζ＋相対速度
-/// 包絡、ISSUE-045 残(5)）。中心線と南北限界線が**同じサンプル列**になるよう、軸または縁が地表を外す
-/// （`RootNotBracketed`）/ 相対速度ゼロのサンプルは**3 本とも**スキップする（lockstep）。
-/// `RootNotBracketed` 以外の `Err` は伝播。始点・終点を必ず含む（端は span にクランプ）。`interval_seconds`
-/// 非正は始点のみ（無限ループ回避）。前提 `start_tt ≤ end_tt`（U1≤U4・逆順は始点のみの無害な縮退）。
+/// とき、本影帯の北/南縁を**厳密な錐接線解**で求め（[`sample_central_point`]・自己整合ζ＋相対速度
+/// 包絡、ISSUE-045 残(5)）、併せて各サンプルの [`PathSample`]（時刻 UTC・中心点・継続・太陽高度・帯幅・
+/// 種別、M9.7）を組む（`delta_t` は太陽高度に使う）。中心線・南北限界線・サンプル列が**同じサンプル列**
+/// になるよう、軸または縁が地表を外す（`RootNotBracketed`）/ 相対速度ゼロのサンプルは**4 本とも**スキップ
+/// する（lockstep）。`include_limits=false` では限界線もサンプルも生成しない（中心線のみ）。
+/// `RootNotBracketed` 以外の `Err`（`bessel.at`/`tt_to_utc` 等）は伝播。始点・終点を必ず含む（端は span に
+/// クランプ）。`interval_seconds` 非正は始点のみ（無限ループ回避）。前提 `start_tt ≤ end_tt`（U1≤U4・逆順は
+/// 始点のみの無害な縮退）。
 #[allow(clippy::type_complexity)]
-fn trace_central(
+fn trace_central<M: DeltaTModel>(
     bessel: &BesselianPolynomial,
+    delta_t: &M,
     start_tt: TtInstant,
     end_tt: TtInstant,
     interval_seconds: f64,
     include_limits: bool,
-) -> Result<(GeoLine, Option<(GeoLine, GeoLine)>), EclipseError> {
+) -> Result<(GeoLine, Option<(GeoLine, GeoLine)>, Vec<PathSample>), EclipseError> {
     let ellipsoid = Ellipsoid::WGS84;
     // 影軸運動 (x', y') と地球自転位相 μ'（基本面・hour 単位）。限界線の相対速度包絡に使う。
     let x_deriv = bessel.x.derivative();
@@ -617,11 +631,13 @@ fn trace_central(
     let mut center_points = Vec::new();
     let mut north_points = Vec::new();
     let mut south_points = Vec::new();
+    let mut samples = Vec::new();
     let mut t_sec = 0.0_f64;
     loop {
         let t = TtInstant::from_jd2(start_tt.jd2().add_days(t_sec / SECONDS_PER_DAY));
         if let Some((center, limits)) = sample_central_point(
             bessel,
+            delta_t,
             &x_deriv,
             &y_deriv,
             &mu_deriv,
@@ -631,9 +647,10 @@ fn trace_central(
             &ellipsoid,
         )? {
             center_points.push(center);
-            if let Some((north, south)) = limits {
+            if let Some((north, south, sample)) = limits {
                 north_points.push(north);
                 south_points.push(south);
+                samples.push(sample);
             }
         }
         if t_sec >= span_seconds || interval_seconds <= 0.0 {
@@ -643,11 +660,12 @@ fn trace_central(
     }
 
     let limits = include_limits.then(|| (GeoLine::new(north_points), GeoLine::new(south_points)));
-    Ok((GeoLine::new(center_points), limits))
+    Ok((GeoLine::new(center_points), limits, samples))
 }
 
-/// 1 サンプル時刻の中心線点（と任意で南北限界点）を求める。軸/縁が地表を外す（`RootNotBracketed`）/
-/// 相対速度ゼロなら `Ok(None)`（lockstep スキップ）。他の `Err` は伝播。
+/// 1 サンプル時刻の中心線点（と任意で南北限界点＋[`PathSample`]）を求める。軸/縁が地表を外す
+/// （`RootNotBracketed`）/ 相対速度ゼロ/ 継続が定義不能なら `Ok(None)`（lockstep スキップ）。他の `Err`
+/// （`bessel.at`/`tt_to_utc` 等）は伝播。
 ///
 /// 限界点は**厳密な錐接線解**（ISSUE-045 残(5)・第一原理から導出。概念出典 Explanatory Supplement
 /// to the Astronomical Almanac §11 / NASA Espenak 経路生成）。各縁点 P は次の 2 条件を**同時に**満たす。
@@ -658,10 +676,17 @@ fn trace_central(
 /// 両条件は (ξ,η,ζ) で結合するため不動点反復（[`solve_limit_edge`]）で解く。WGS84 楕円体投影は
 /// [`surface_point_for_fundamental`] が厳密（root-find）に行うため、Almanac の ρ1/d1 扁平近似は不要。
 /// d'（赤緯変化によるフレーム回転 ~1e-4 rad/hour）は μ'（~0.26）に対し無視する。
+///
+/// `include_limits` のとき返す [`PathSample`]（M9.7）の各量は最大食点（M9.6 `central_width_and_duration`）と
+/// **同一定義**: `center` は中心軸地表点、`duration_seconds = 2|L2'|/|rel|×3600`（`L2'=l2−ζ₀·tan f2`、
+/// rel は中心軸 (x,y,ζ₀) の地表相対速度）、`path_width` は南北本影縁点間の大圏距離、`sun_altitude` は
+/// `center` での太陽幾何高度（大気差なし）、`kind` は `L2'<0` で `Total` / それ以外 `Annular`（l2<0=皆既規約・
+/// hybrid 経路で切替）、`time_utc = tt_to_utc(t)`。
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
-fn sample_central_point(
+fn sample_central_point<M: DeltaTModel>(
     bessel: &BesselianPolynomial,
+    delta_t: &M,
     x_deriv: &crate::polynomial::Polynomial,
     y_deriv: &crate::polynomial::Polynomial,
     mu_deriv: &crate::polynomial::Polynomial,
@@ -669,7 +694,7 @@ fn sample_central_point(
     t: TtInstant,
     include_limits: bool,
     ellipsoid: &Ellipsoid,
-) -> Result<Option<(GeoPoint, Option<(GeoPoint, GeoPoint)>)>, EclipseError> {
+) -> Result<Option<(GeoPoint, Option<(GeoPoint, GeoPoint, PathSample)>)>, EclipseError> {
     let elements = bessel.at(t)?;
     let (center, zeta0) = match surface_point_for_fundamental(
         elements.x,
@@ -694,10 +719,30 @@ fn sample_central_point(
 
     // 北/南縁を相対速度包絡の不動点反復で厳密に解く。初期推定は中心軸 (x,y,ζ0)。
     let (Some(edge_a), Some(edge_b)) = (
-        solve_limit_edge(&elements, zeta0, vx, vy, mu_rate, 1.0, ellipsoid)?,
-        solve_limit_edge(&elements, zeta0, vx, vy, mu_rate, -1.0, ellipsoid)?,
+        solve_limit_edge(
+            &elements,
+            elements.l2,
+            elements.tan_f2,
+            zeta0,
+            vx,
+            vy,
+            mu_rate,
+            1.0,
+            ellipsoid,
+        )?,
+        solve_limit_edge(
+            &elements,
+            elements.l2,
+            elements.tan_f2,
+            zeta0,
+            vx,
+            vy,
+            mu_rate,
+            -1.0,
+            ellipsoid,
+        )?,
     ) else {
-        // どちらかの縁が地表を外す/相対速度ゼロのサンプルは 3 本ともスキップ（lockstep 維持）。
+        // どちらかの縁が地表を外す/相対速度ゼロのサンプルは 4 本ともスキップ（lockstep 維持）。
         return Ok(None);
     };
     // 高緯度側＝北限・低緯度側＝南限（±対称な厳密解の南北割当）。
@@ -706,7 +751,45 @@ fn sample_central_point(
     } else {
         (edge_b, edge_a)
     };
-    Ok(Some((center, Some((north, south)))))
+
+    // --- PathSample（M9.7・M9.6 greatest と同一定義） ---
+    // 中心食継続 = 2|L2'|/|rel|（hour）→ 秒。L2'=l2−ζ₀·tan f2、rel は中心軸 (ξ=x, η=y, ζ₀) の地表相対速度。
+    let (sin_d, cos_d) = elements.declination.0.sin_cos();
+    let rel_x = vx - mu_rate * (zeta0 * cos_d - elements.y * sin_d);
+    let rel_y = vy - mu_rate * elements.x * sin_d;
+    let rel_speed = rel_x.hypot(rel_y);
+    if !(rel_speed > 0.0 && rel_speed.is_finite()) {
+        // 中心軸の相対速度が定義不能（影が地表に静止）→ 継続が定義できないので 4 本ともスキップ。
+        return Ok(None);
+    }
+    let l2p = elements.l2 - zeta0 * elements.tan_f2;
+    let duration_seconds = 2.0 * l2p.abs() / rel_speed * SECONDS_PER_HOUR;
+    // 帯幅 = 南北本影縁点間の大圏距離。種別は中心軸 ζ 補正 L2' の符号（l2<0=皆既規約）。
+    let path_width = Kilometers(great_circle_distance_km(&north, &south));
+    let kind = if l2p < 0.0 {
+        SolarEclipseKind::Total
+    } else {
+        SolarEclipseKind::Annular
+    };
+    // 太陽の幾何学的高度（大気差なし, conventions §7 既定・greatest と同方式）。
+    let sun_altitude = sun_horizontal(
+        center.lat.radians(),
+        center.lon.radians(),
+        t,
+        RefractionModel::None,
+        delta_t,
+    )
+    .altitude_geometric;
+    let time_utc = tt_to_utc(t)?;
+    let sample = PathSample {
+        time_utc,
+        center,
+        duration_seconds,
+        sun_altitude,
+        path_width,
+        kind,
+    };
+    Ok(Some((center, Some((north, south, sample)))))
 }
 
 /// 現在の壁時計 UTC を `UtcInstant` で返す（`generated_at` 用）。std 時計 → UNIX 秒 → UTC-JD。
@@ -1059,7 +1142,10 @@ mod tests {
             "非中心食は限界線を持たない"
         );
         assert!(path.partial_limit.is_none(), "部分食域は未実装で None");
-        assert!(path.samples.is_empty(), "samples は未実装で空");
+        assert!(
+            path.samples.is_empty(),
+            "非中心食は samples を持たない（空）"
+        );
         // greatest_point は global.greatest.position の passthrough。
         assert_eq!(
             path.greatest_point, eclipse.global.greatest.position,
