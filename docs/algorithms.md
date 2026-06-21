@@ -117,6 +117,7 @@ conventions.md（規約）・numerical-policy.md（数値方針）・accuracy.md
 | 8 | 全球条件（Step9: P1/U1/最大/U4/P4, gamma, 種別） | algorithms/08-global.md | 023 |
 | 9 | 局地条件（Step10: 射影/C1-C4/最大食/食分・食面積/高度方位/可視性） | algorithms/09-local.md | 024-028 |
 | 10 | 観測者・楕円体（geodetic→ITRS, ρsinφ′/ρcosφ′） | algorithms/10-observer.md | 010-011 |
+| 11 | 部分食域（partial_limit GeoPolygon・半影限界/rise-set 曲線・**設計ドラフト/未実装**） | algorithms/11-path-partial-domain.md | 045 |
 
 ---
 
