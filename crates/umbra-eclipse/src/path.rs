@@ -39,24 +39,32 @@ pub struct EclipsePath {
 }
 
 impl EclipsePath {
-    /// 経路を GeoJSON `FeatureCollection`（pretty・末尾改行）に直列化する（M9.2）。
+    /// 経路を GeoJSON `FeatureCollection`（pretty・末尾改行）に直列化する（M9.2 / M9.5 限界線）。
     ///
-    /// `greatest_point` を Point feature（`properties.role="greatest"`）、`center_line` が `Some` なら
-    /// 折れ線 feature（`properties.role="center_line"`・LineString/MultiLineString は
-    /// [`GeoLine::geojson_geometry`]）として含む。**北/南限界線・部分食域・`samples` は本スライスでは
-    /// 出力しない**（後続スライス）。座標順は [経度, 緯度]（RFC 7946）。
+    /// feature を決定的順序で含む: `greatest_point`（Point・`role="greatest"`）→ `center_line`（Some 時・
+    /// `role="center_line"`）→ `northern_limit`（Some 時・`role="northern_limit"`）→ `southern_limit`
+    /// （Some 時・`role="southern_limit"`）。折れ線は [`GeoLine::geojson_geometry`]（LineString/MultiLineString・
+    /// ±180 補間）。**部分食域 `partial_limit`（現状 None・GeoPolygon の GeoJSON 化）・`samples` は未出力**
+    /// （後続スライス(3)）。座標順は [経度, 緯度]（RFC 7946）。
     pub fn to_geojson(&self) -> Result<String, serde_json::Error> {
         let mut features = vec![serde_json::json!({
             "type": "Feature",
             "geometry": self.greatest_point.geojson_geometry(),
             "properties": { "role": "greatest" },
         })];
-        if let Some(center) = &self.center_line {
-            features.push(serde_json::json!({
-                "type": "Feature",
-                "geometry": center.geojson_geometry(),
-                "properties": { "role": "center_line" },
-            }));
+        // 折れ線 feature を決定的順序（center_line → northern_limit → southern_limit）で追加。
+        for (line, role) in [
+            (&self.center_line, "center_line"),
+            (&self.northern_limit, "northern_limit"),
+            (&self.southern_limit, "southern_limit"),
+        ] {
+            if let Some(line) = line {
+                features.push(serde_json::json!({
+                    "type": "Feature",
+                    "geometry": line.geojson_geometry(),
+                    "properties": { "role": role },
+                }));
+            }
         }
         let collection = serde_json::json!({
             "type": "FeatureCollection",

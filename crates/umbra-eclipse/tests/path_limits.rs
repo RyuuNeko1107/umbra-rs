@@ -15,7 +15,8 @@
 //! 3. **`include_limits == false`**: 限界線は両方 None（center_line は include_limits に依らず
 //!    中心食なら Some）。
 //! 4. **非中心**（central_begin か central_end が None）: 限界線も center_line も None。
-//! 5. 限界線は GeoJSON にはまだ出さない（本スライスでは to_geojson を変えない）。
+//! 5. 限界線の GeoJSON 出力は本スライス（M9.3）では扱わない。`to_geojson` への限界線 feature 化は
+//!    M9.5（`path_geojson.rs` で検証）。
 //!
 //! ## 厳密性のオラクル（追認回避）
 //! 各限界点 P を **検証済み前方射影** `project_observer_to_fundamental`（ISSUE-024・公開）へ通して

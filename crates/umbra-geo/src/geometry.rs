@@ -69,26 +69,43 @@ impl GeoLine {
         Self { points }
     }
 
-    /// GeoJSON 折れ線ジオメトリ（M9.2）。日付変更線（±180°）を跨ぐ場合は `MultiLineString` に分割し、
-    /// 跨ぎが無ければ `LineString`。座標は [経度, 緯度] 順（RFC 7946）。
+    /// GeoJSON 折れ線ジオメトリ（M9.2 / M9.5 ±180 補間）。日付変更線（±180°）を跨ぐ場合は
+    /// `MultiLineString` に分割し、跨ぎが無ければ `LineString`。座標は [経度, 緯度] 順（RFC 7946）。
     ///
-    /// 跨ぎ判定: 連続 2 点の経度差 `|Δlon| > 180°` をその位置での跨ぎとみなしセグメントを切る（交点の
-    /// ±180 への補間はしない＝後続改良）。点 0/1 個の退行は空/単一座標の `LineString`（panic しない）。
+    /// 跨ぎ判定: 連続 2 点 (lon1,lat1)→(lon2,lat2) の `Δlon=lon2−lon1` が `Δlon < −180`（東進・+180 越え）
+    /// または `Δlon > 180`（西進・−180 越え）。跨ぎ点では交点緯度を子午線上に**線形補間**し、前セグメントの
+    /// 末尾と次セグメントの先頭に境界点を補う（RFC 7946 §3.1.9・隙間を残さない）。
+    /// 東進: `t=(180−lon1)/(360+Δlon)`, 末尾 `[+180, lat_c]` / 先頭 `[−180, lat_c]`。
+    /// 西進: `t=(lon1+180)/(360−Δlon)`, 末尾 `[−180, lat_c]` / 先頭 `[+180, lat_c]`。`lat_c=lat1+t·(lat2−lat1)`。
+    /// `|Δlon|=180` ちょうどは跨ぎとしない（測度ゼロ境界）。点 0/1 個の退行は空/単一座標の `LineString`。
     pub fn geojson_geometry(&self) -> serde_json::Value {
-        // [経度, 緯度] 列を跨ぎ位置（|Δlon| > 180）でセグメントに分割する。
+        // [経度, 緯度] 列を跨ぎ位置で分割し、交点を ±180 子午線へ線形補間して両端に補う。
         let mut segments: Vec<Vec<[f64; 2]>> = Vec::new();
         let mut current: Vec<[f64; 2]> = Vec::new();
-        let mut prev_lon: Option<f64> = None;
+        let mut prev: Option<[f64; 2]> = None;
         for p in &self.points {
             let lon = p.lon.degrees().0;
             let lat = p.lat.degrees().0;
-            if let Some(prev) = prev_lon {
-                if (lon - prev).abs() > 180.0 {
+            if let Some([prev_lon, prev_lat]) = prev {
+                let delta = lon - prev_lon;
+                if delta < -180.0 {
+                    // 東進（+180 越え）: prev_lon→+180→−180→lon。
+                    let t = (180.0 - prev_lon) / (360.0 + delta);
+                    let lat_c = prev_lat + t * (lat - prev_lat);
+                    current.push([180.0, lat_c]);
                     segments.push(std::mem::take(&mut current));
+                    current.push([-180.0, lat_c]);
+                } else if delta > 180.0 {
+                    // 西進（−180 越え）: prev_lon→−180→+180→lon。
+                    let t = (prev_lon + 180.0) / (360.0 - delta);
+                    let lat_c = prev_lat + t * (lat - prev_lat);
+                    current.push([-180.0, lat_c]);
+                    segments.push(std::mem::take(&mut current));
+                    current.push([180.0, lat_c]);
                 }
             }
             current.push([lon, lat]);
-            prev_lon = Some(lon);
+            prev = Some([lon, lat]);
         }
         segments.push(current);
 
