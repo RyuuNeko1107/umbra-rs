@@ -66,29 +66,35 @@
 外れて terminator（ζ=0）に達する。半影限界は **ζ>0 の昼面でのみ存在**し、ζ→0 で rise/set 曲線（11.3）へ
 連結する。`solve_limit_edge` が `RootNotBracketed`（縁が地表を外す）を返す端が連結点の近傍。
 
-### 11.2 terminator（日の出入り境界）— 式 11.2
+### 11.2 terminator（日の出入り境界）— 式 11.2（**WGS84 厳密**・要確認#2 解決）
 
-基本面 ζ=0 の地表大円。球近似では in-plane 単位円 `ξ²+η²=1`。WGS84 では
-`surface_point_for_fundamental(ξ,η,…)` の ζ 根が 0 になる (ξ,η) の軌跡。terminator 上の点は太陽が地平
-（高度 0）＝**日の出または日没の最中**。
-
-### 11.3 rise/set 曲線（terminator 上の半影縁）— 式 11.3
-
-時刻 t に「部分食の接触が日の出/日没ちょうどに起こる」点 = 半影縁 ∩ terminator。**球近似（ζ=0）**で:
+基本面 ζ=0 の地表点（太陽が地平＝日の出入り）の軌跡。`surface_point_for_fundamental` の残差
+`r(ζ)=ρcos²+(ρsin/(1−f))²−1`（子午線楕円拘束）に ζ=0 を代入すると、px=−η sin d・py=ξ・pz=η cos d より
 ```
-円1（terminator）:  ξ² + η² = 1
-円2（半影縁・ζ=0）: (ξ−x)² + (η−y)² = l1²
-差（根軸・直線）:    x·ξ + y·η = c,   c = (x² + y² + 1 − l1²) / 2
+ξ² + k·η² = 1,      k = sin²d + cos²d/(1−f)²        （WGS84 terminator 楕円・基本面 (ξ,η)）
 ```
-直線 ∩ 単位円 ⇒ 0/1/2 交点。t を [P1,P4] で動かすと交点が**日の出側**と**日没側**の 2 曲線を描く。
-rise/set の別は、その点での半影の in-plane 進入方向（食が始まる＝半影が点を覆い始める / 終わる）と
-terminator のどちら側かで決める（**要確認**: 厳密な rise/set・begin/end の 4 分類と本実装が外周に必要と
-する曲線の取捨）。P1・P4 では円2 が円1 に内/外接（交点が 1 点）＝外周の尖点（半影が地球に最初/最後に
-触れる点）。
+（球 f=0 で k=1 ⇒ 単位円。扁平 f>0 で k≥1 ⇒ η 方向に縮む楕円＝極扁平）。**球近似（k=1, 単位円）は
+中心線・限界線の WGS84-exact パイプラインと不整合**（球面上に置いた点を WGS84 前方射影で戻すと ζ≠0、
+~Re·f≈21 km の残差）になり往復オラクルが緩むため、本節は **terminator を上記楕円で厳密化**する（要確認#2 解決）。
 
-> WGS84 では terminator は厳密には楕円体の明暗境界で、ζ=0 の (ξ,η) 軌跡は単位円でなく扁平補正を要する
-> （**要確認**: 11.3 を WGS84 で厳密化するか、limb は球近似で許容し中心線・限界線の sub-km とは別精度域と
-> するか。M9.4 は楕円体投影を厳密化済みだが limb 接線は別問題）。
+### 11.3 rise/set 曲線（terminator 上の半影縁）— 式 11.3（**WGS84 厳密**）
+
+時刻 t に「部分食の接触が日の出/日没ちょうどに起こる」点 = 半影縁 ∩ terminator（ζ=0）。基本面で **円**
+（半影縁）∩ **楕円**（terminator・11.2）を厳密に解く:
+```
+楕円（terminator）:  ξ² + k·η² = 1                       （k = sin²d + cos²d/(1−f)²）
+円（半影縁・ζ=0）:   (ξ−x)² + (η−y)² = l1²               （ζ=0 で半影半径は L1(0)=l1）
+```
+2 二次曲線の交点（幾何的に通常 ≤2）。楕円から `ξ = ±√(1−k·η²)`（|η|≤1/√k）を円へ代入した η の 1 変数
+残差を、既存の粗走査＋Brent（`descending_sign_change_bracket`＋`brent_root`・降順走査機構）で根求めし、
+各根 (ξ,η) を `fundamental_to_geodetic(ξ,η,0,d,μ)` で測地座標化する。**点は 11.2 楕円上にあるので WGS84
+前方射影で ζ≈0 へ往復一致**＝中心線/限界線と同じ WGS84-exact オラクルで検証できる（球近似の不整合を排除）。
+
+t を [P1,P4] で動かすと 2 根が 2 曲線（朝側・夕側 limb）を描く。P1・P4 では円が楕円に接し交点 1 点（外周の
+尖点＝半影が地球に最初/最後に触れる点）。**rise/set/begin/end の 4 分類は出力ラベル（metadata）であり、
+外周ポリゴン自体には不要**（要確認#1 解決）＝外環は 2 根曲線の**両方**（朝側 limb 弧・夕側 limb 弧）を使う。
+朝/夕の別は経度の subsolar 点に対する東西（自転で先行/後行する側）で決め、begin/end は半影の進入/退出
+（in-plane で半影が点を覆い始める/終わる）で決める（必要なら後続でラベル付け）。
 
 ### 11.4 外周ポリゴンの構成 — 式 11.4
 
@@ -103,12 +109,12 @@ terminator のどちら側かで決める（**要確認**: 厳密な rise/set・
 
 ## サブスライス分解（実装順・各 strict）
 
-- **(3a) 半影限界の一般化**: `solve_limit_edge` を半径引数化（`(l1,tan f1)`/`(l2,tan f2)` 両対応）。
-  内部に南北**半影**限界点列を得る（昼面・`RootNotBracketed` 端でスキップ）。本影限界 M9.4 の回帰を保つ
-  （`(l2,tan f2)` 退化で同一出力）。**API 露出なし**（partial_limit は (3c) で組む）。オラクル: 半影半径
-  L1 で前方射影の 2 条件を機械精度＋実 2024 半影限界が NASA ballpark。
-- **(3b) rise/set 曲線**: 11.3 の二円交点を [P1,P4] で解く純関数（球近似）＋ rise/set 分類。FAST 合成で
-  二円交点の閉形式オラクル（既知 x,y,l1 → 交点手計算）。terminator 接点（P1/P4 で 1 交点）の縮退処理。
+- **(3a) 半影限界の一般化** ✅（2026-06-21 実装済み）: `solve_limit_edge` を錐半径引数化（`cone_l`/`cone_tan_f`・
+  `(l1,tan f1)`/`(l2,tan f2)` 両対応）。本影限界 M9.4 は退化呼び出しで完全回帰。mutation 52/51 caught・0 missed
+  （docs/reviews/mutation-limit-line.md 追記）。**API 露出なし**（南北半影限界点列の生成・partial_limit は (3c) で組む）。
+- **(3b) rise/set 曲線**: 11.3 の **円∩terminator 楕円**（WGS84 厳密）を [P1,P4] で解く関数。η の 1 変数残差を
+  粗走査＋Brent で根求め→`fundamental_to_geodetic(ξ,η,0,…)`。FAST 合成で WGS84 前方射影の往復（ζ≈0・楕円上・
+  半影縁上）を機械精度オラクル＋既知 (x,y,l1,d) の交点手計算。terminator 接点（P1/P4 で 1 交点）の縮退処理。
 - **(3c) 外周組立**: (3a)+(3b) を 11.4 の順序で連結し `GeoPolygon` 外環を構成。反子午線 MultiPolygon 分割。
   `partial_limit` を `path()` で Some に（部分食 only の日食含む）。オラクル: 実 2024 で外環が NASA 部分食
   限界（北限/南限/rise/set）の ballpark を内包、頂点数・閉性・環向き。
@@ -120,7 +126,7 @@ terminator のどちら側かで決める（**要確認**: 厳密な rise/set・
 
 ## 受け入れテスト戦略
 
-- **FAST（合成・機械精度）**: 半影限界 2 条件（11.1）、二円交点の閉形式（11.3）、外環の閉性・向き・
+- **FAST（合成・機械精度）**: 半影限界 2 条件（11.1）、円∩terminator 楕円の往復・閉形式（11.3）、外環の閉性・向き・
   反子午線分割（11.4）、GeoJSON 構造（3d）。値は非対称にして取り違え変異を撃つ。
 - **SLOW（実 2024-04-08）**: 外周が NASA 公開部分食限界（北限・南限・eclipse begins/ends at sunrise/sunset）の
   代表座標を ballpark 域で内包。中心線・本影限界（実装済み）との整合（partial ⊃ umbral path）。
@@ -132,15 +138,19 @@ terminator のどちら側かで決める（**要確認**: 厳密な rise/set・
 
 - 半影限界・外周位置: 中心線（accuracy §2.1 sub-km）より緩く、**ballpark（数十 km 規模）**で可（半影縁は
   本影縁より太陽縁の鋭さが鈍く、NASA 公開値の桁も粗い）。fit 残差は `BesselianPolynomial.fit_error` でガード。
-- rise/set 曲線の limb 精度は terminator の球/楕円体近似（11.2/11.3 要確認）に律速。**近似は明記**（conventions §11）。
+- rise/set 曲線は terminator を WGS84 楕円（11.2）で厳密化したので中心線・限界線と同精度域。
+  fit 残差は `BesselianPolynomial.fit_error` でガード。**近似を残す箇所は明記**（conventions §11）。
 
 ---
 
 ## 要確認（一次資料・設計判断の未決事項）
 
-1. **rise/set 曲線の 4 分類**（begin/end × sunrise/sunset）のうち外周に必要なものの取捨（11.3）。
-2. **terminator の WGS84 厳密化**の要否（11.2/11.3 球近似の許容範囲）。
-3. 部分食域の**単連結性**（高緯度での穴・退化、11.4）。
-4. NASA 2024 公開 limits 表の rise/set 曲線座標の入手（オラクル粒度）。
-5. `solve_limit_edge` 半径引数化が本影限界 M9.4 mutation ゲート（docs/reviews/mutation-limit-line.md）に
-   与える影響（退化呼び出しで等価維持の確認）。
+1. ~~rise/set 曲線の 4 分類の取捨~~ **解決（11.3）**: 外周ポリゴンは 2 根曲線（朝側・夕側 limb）の**両方**を使う。
+   begin/end×sunrise/sunset の 4 分類は出力ラベル（metadata）で外周自体には不要。
+2. ~~terminator の WGS84 厳密化~~ **解決（11.2/11.3）**: 球近似は WGS84-exact パイプラインと不整合（~21km・
+   往復オラクルが緩む）ため、terminator を楕円 `ξ²+k·η²=1`（k=sin²d+cos²d/(1−f)²）で厳密化。円∩楕円を求根。
+3. 部分食域の**単連結性**（高緯度での穴・退化、11.4）。通常の中緯度日食は単連結 1 外環の想定。
+4. NASA 2024 公開 limits 表の rise/set 曲線座標の入手（SLOW オラクルの粒度。当面は北限/南限/帯と
+   partial ⊃ umbral path の包含で代用可）。
+5. ~~`solve_limit_edge` 引数化の M9.4 mutation 影響~~ **解決（3a 実装済み）**: 退化呼び出しで本影回帰・
+   mutation 52/51 caught・0 missed を確認（docs/reviews/mutation-limit-line.md）。
