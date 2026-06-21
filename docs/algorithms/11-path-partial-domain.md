@@ -108,9 +108,26 @@ t を [P1,P4] で動かすと 2 根が 2 曲線（朝側・夕側 limb）を描�
 限界線の時系列順を保つので位相が正しい。4 曲線ステッチ（北限界→夕 limb→南限界→朝 limb の端点連結）は limb 端の
 接合が geometry 依存で脆く、v1 では採らない。
 
-**limb（rise/set）bulge の扱い**: 部分食域は厳密には半影帯の端を terminator（日の出入り）まで張り出す bulge を含むが、
-v1 リボンは半影限界帯のみ＝**limb 方向に過小被覆**（中心線内包・partial⊃umbral は満たす）。terminator 張り出しの
-取り込み（(3b) `cone_terminator_intersections` を帯端へ連結）は後続 **(3c-iii)** の精緻化＝v1 は**近似明記**（conventions §11）。
+**limb（rise/set）bulge の扱い — (3c-iii) 確定（terminator 連結）**: 部分食域は半影帯の端を terminator（日の出入り）
+まで張り出す bulge を含む。各サンプル時刻 t で南北縁を次のように定める（11.1 の「ζ→0 で rise/set 曲線へ連結」の実装）:
+- **北縁** = 昼面包絡 `solve_limit_edge(l1,tan f1, sign=+1)` が解ければそれ（昼面 ζ>0 の半影限界）。半影縁が昼面を
+  外れて解けない（`RootNotBracketed`／未収束＝`Ok(None)`）端区間では、**terminator 交点**（`cone_terminator_intersections`・
+  11.3 の円∩terminator 楕円・ζ=0）のうち**高緯度側**で連結する。
+- **南縁** = 同様に `sign=−1` の昼面包絡／解けなければ terminator 交点の**低緯度側**。
+- 北[i]/南[i] は **lockstep** 対（両縁が昼面包絡 or terminator のいずれかで埋まったサンプルのみ採用）。
+
+これで外環は **昼面包絡が欠ける端区間で terminator まで張り出す**（genuine な limb bulge）。terminator 点は ζ=0 ゆえ
+半影縁条件 `面内距離=|l1−ζ·tan f1|=l1` を**厳密に満たす**（11.5「頂点正当性」は terminator 頂点でも成立＝捏造点でない）。
+昼面包絡（時間方向の路限界包絡）と terminator 交点（瞬時の日の出入り境界）の連結点は ζ→0 で両者が一致へ漸近するため
+位相破綻しない。**到達範囲（重要・実 2024 で確認）**: この「昼面包絡が**無い**サンプルだけ terminator で補う」連結は、
+v1 リボンより limb 方向に広いが、**中心線全点の平面 point-in-polygon 内包は達成しない**。実 2024 では中心線の早期端
+（U1 近傍・~6.7°S・sunrise）は、その時刻に昼面南北包絡が**存在する**（軸の東側）一方、領域の西端境界は**朝側 rise/set
+terminator limb**（[P1,P4] 全域で追跡される morning limb）であり、本連結はそれを織り込まないため、平面 PIP で帯の西
+外に落ちる。**真の west/east 境界＝morning/evening terminator limb を [P1,P4] 全域で追跡する 4 曲線境界**（北限界＋夕 limb＋
+南限界＋朝 limb）が full containment には必要だが、これは設計が v1 で「脆い」として回避したステッチであり **後続へ繰り延べ**
+（本スライス (3c-iii) は端区間連結による genuine bulge までを成果物とし、full containment は 4 曲線境界の後続スライスに委ねる）。
+**残る近似**: 端部 limb 過小被覆（中心線の U1/U4 近傍端点は帯外になりうる）＋ terminator 弧の粒度は `sample_interval_seconds`
+律速。反子午線跨ぎ MultiPolygon は (3d) 後続（conventions §11 で近似を明記）。
 
 - 反子午線（|Δlon|>180）跨ぎ MultiPolygon 分割・環向き RFC 7946（外環 CCW・穴 CW）正規化は **(3d)** GeoJSON 化で扱う
   （`partial_limit` 自体はリボンの単一外環として持つ）。境界点 3 未満（半影限界が昼面にほぼ無い極小部分食）は `None`。
@@ -149,7 +166,17 @@ v1 リボンは半影限界帯のみ＝**limb 方向に過小被覆**（中心�
   0 missed（`<=` は ring 長偶数ゆえ等価除外・docs/reviews/mutation-partial-domain.md）。**当初の方位ソートは実 2024 で
   star-shaped 破綻→リボン法へ是正（SLOW オラクルが設計欠陥を捕捉）**。limb bulge の terminator 張り出しは (3c-iii) 精緻化
   ＝v1 は limb 方向に過小被覆を近似明記。`initial_bearing`（geo ユーティリティ）は (3c-iii) で消費予定。
-- **残: (3c-iii) limb bulge 精緻化**（(3b) `cone_terminator_intersections` を帯端へ連結し terminator まで張り出す）。
+- **(3c-iii) limb bulge 精緻化（端区間 terminator 連結・genuine bulge まで）** ✅（2026-06-22・strict）:
+  `trace_penumbral_limits` の各サンプルで、昼面包絡 `solve_limit_edge(l1,tan f1)` が**解けない**端区間を **terminator 交点**
+  （`cone_terminator_intersections`・11.3）へ連結（北縁=高緯度側／南縁=低緯度側・最終対は緯度ソートで北≥南・lockstep 維持）。
+  両昼面包絡が解けるサンプルでは terminator は計算しない（端区間のみの補い）。これで外環が昼面包絡の欠ける端区間で
+  terminator まで張り出す（v1 より limb 方向に広い genuine bulge）。リボン構成（`北(P1→P4)++南(P4→P1 逆順)`）・公開IF
+  （`path()`/`partial_limit`）は不変。terminator 頂点も半影縁条件（ζ=0 で面内距離=l1）を満たすので 11.5「頂点正当性」は維持。
+  **到達範囲（確定）**: 本連結は v1 リボンより limb 方向に広いが **full center-line containment は達成しない**（真の west/east
+  境界＝morning/evening terminator limb の [P1,P4] 全域追跡＝4 曲線境界が必要・上記 §11.4 参照・後続へ繰り延べ）。検証は
+  FAST 合成（端で terminator 連結が発火し ζ≈0 頂点が現れる `limb_continuation_bessel` fixture・リボン不変条件維持）＋
+  SLOW 実 2024（partial_limit=Some・帯が皆既帯より広い・**実データでも terminator 頂点 ζ≈0 が現れる**＝bulge 発火・最大食付近の
+  中心線内包＝partial⊃umbral 核）。**残: full containment 用 4 曲線 terminator-limb 境界**（morning/evening limb の全域追跡）。
 - **(3d) GeoPolygon GeoJSON** ✅（2026-06-22・strict）: `GeoPolygon::geojson_geometry`（RFC 7946 §3.1.6 Polygon・
   閉リング・環向き正規化〔外環 CCW/穴 CW・shoelace `signed_area_lonlat`〕・退行は捏造せず・**v1 は反子午線非分割の単一
   Polygon**）＋ `EclipsePath::to_geojson` に `partial_limit` feature（`role="partial_limit"`・southern_limit の後）。
@@ -186,7 +213,11 @@ v1 リボンは半影限界帯のみ＝**limb 方向に過小被覆**（中心�
 3. ~~部分食域の単連結性~~ **方針確定（11.4・v1＝リボン法）**: 南北半影限界（lockstep）を `北++南逆順` で帯状
    単純多角形に＝位相保存（star-shaped を仮定しない）。**当初の方位ソートは実 2024〔太平洋〜欧州の巨大領域〕で
    中心線端点が外に落ちて破綻**＝是正済み。limb bulge の張り出し・反子午線 MultiPolygon・穴は後続 (3c-iii)/(3d)。
-4. NASA 2024 公開 limits 表の rise/set 曲線座標の入手（SLOW オラクルの粒度。当面は北限/南限/帯と
-   partial ⊃ umbral path の包含で代用可）。
+4. NASA 2024 公開 limits 表の rise/set 曲線座標の入手（SLOW オラクルの粒度）。**(3c-iii) の到達範囲整理**: 端区間 terminator
+   連結（本スライス）では full center-line containment は達成しないため、SLOW オラクルは「partial_limit=Some・帯が皆既帯より広い・
+   実データでも terminator 頂点 ζ≈0 が現れる（bulge 発火）・最大食付近の中心線内包」で締める（NASA 座標粒度に非依存）。
+   **full containment（中心線全点内包）は 4 曲線 terminator-limb 境界（morning/evening limb の [P1,P4] 全域追跡）を要し後続スライスへ繰り延べ**
+   ＝そのスライスで「中心線全点内包」を headline acceptance に昇格する。FAST は terminator 頂点の ζ≈0（forward project）＋半影縁条件で
+   機械精度に縛る（座標表不要）。
 5. ~~`solve_limit_edge` 引数化の M9.4 mutation 影響~~ **解決（3a 実装済み）**: 退化呼び出しで本影回帰・
    mutation 52/51 caught・0 missed を確認（docs/reviews/mutation-limit-line.md）。

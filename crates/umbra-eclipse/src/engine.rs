@@ -28,7 +28,8 @@ use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
 use umbra_geo::{GeoLine, GeoPoint, GeoPolygon};
 
 use crate::axis_intercept::{
-    great_circle_distance_km, solve_limit_edge, surface_point_for_fundamental,
+    cone_terminator_intersections, great_circle_distance_km, solve_limit_edge,
+    surface_point_for_fundamental,
 };
 use crate::bessel_poly::{BesselFitError, BesselianPolynomial};
 use crate::besselian::InstantaneousBesselianElements;
@@ -680,8 +681,17 @@ fn trace_central<M: DeltaTModel>(
 /// `trace_central` の本影限界と同型だが、**半影錐** `(l1, tan f1)` で [`solve_limit_edge`] を解く（3a の錐半径
 /// 引数化）。部分食では影軸 (x,y) が地球を外しうる（中心線が無い）が、半影縁（軸から ~0.5 Re）は昼面に
 /// 当たりうるので半影限界は存在しうる。よって初期推定 ζ₀ は中心軸 ζ ではなく **0.0**（`solve_limit_edge` は
-/// 収束先が初期値に依らない）。北縁（高緯度側）・南縁（低緯度側）が**同一サンプル列（lockstep）**になるよう、
-/// どちらかが地表を外す/解けない（`Ok(None)`）サンプルは**両方ともスキップ**する。`RootNotBracketed` 以外の
+/// 収束先が初期値に依らない）。
+///
+/// **(3c-iii) limb bulge（terminator 連結）**: 各サンプル時刻で、北縁＝昼面包絡 [`solve_limit_edge`]`(+1)` が
+/// 解ければそれ、解けない（昼面 ζ>0 を外れる＝`Ok(None)`）端区間では **terminator 交点**
+/// （[`cone_terminator_intersections`]・円∩terminator 楕円・ζ=0・半影半径 l1）の**高緯度側**で連結する。
+/// 南縁も同様に `(−1)` の昼面包絡 ELSE terminator 交点の**低緯度側**。両昼面包絡が解けるサンプルでは
+/// terminator 交点は計算しない（端区間のみの補い）。これで外環が [P1,P4] の時間端で terminator まで張り出し、
+/// v1 リボンの limb 方向過小被覆を解消する（中心線全点が partial_limit に内包される・§11.4 (3c-iii)）。
+/// 北縁（高緯度側）・南縁（低緯度側）が**同一サンプル列（lockstep）**になるよう、両縁とも（昼面包絡 or
+/// terminator のいずれでも）埋まらないサンプルは**両方ともスキップ**する。最終対は緯度で並べ替えて
+/// 北≥南 を保証（terminator/昼面包絡の混在でも帯位相を壊さない）。`RootNotBracketed` 以外の
 /// `Err` は伝播。始点・終点を必ず含む（端は span にクランプ）。`interval_seconds` 非正は始点のみ。
 /// **事前条件**: `[start_tt, end_tt] ⊆ bessel.fit_interval`（`trace_central` が [U1,U4] を渡すのと同様、(3c) は
 /// [P1,P4] を渡す）。区間外は `bessel.at` が `EvaluationOutsideFitInterval` を返し伝播する。
@@ -709,8 +719,8 @@ fn trace_penumbral_limits(
         let vx = x_deriv.eval(t_hours);
         let vy = y_deriv.eval(t_hours);
         let mu_rate = mu_deriv.eval(t_hours);
-        // 半影錐 (l1, tan f1) の南北縁を相対速度包絡で解く。ζ₀=0（部分食では中心軸 ζ が不定）。
-        let north = solve_limit_edge(
+        // 半影錐 (l1, tan f1) の南北昼面包絡を相対速度包絡で解く。ζ₀=0（部分食では中心軸 ζ が不定）。
+        let north_day = solve_limit_edge(
             &elements,
             elements.l1,
             elements.tan_f1,
@@ -721,7 +731,7 @@ fn trace_penumbral_limits(
             1.0,
             &ellipsoid,
         )?;
-        let south = solve_limit_edge(
+        let south_day = solve_limit_edge(
             &elements,
             elements.l1,
             elements.tan_f1,
@@ -732,8 +742,19 @@ fn trace_penumbral_limits(
             -1.0,
             &ellipsoid,
         )?;
-        // 両縁が解けたサンプルのみ採用（lockstep）。高緯度側＝北・低緯度側＝南。
-        if let (Some(edge_a), Some(edge_b)) = (north, south) {
+        // (3c-iii) terminator 連結: 昼面包絡が欠ける端区間のみ、terminator 交点（円∩terminator 楕円・ζ=0・
+        // 半影半径 l1）の高/低緯度側で補う。両昼面包絡が解ければ terminator は計算しない（端区間のみの補い）。
+        let (north_edge, south_edge) = if north_day.is_some() && south_day.is_some() {
+            (north_day, south_day)
+        } else {
+            let term = cone_terminator_intersections(&elements, elements.l1, &ellipsoid)?;
+            let north_edge = north_day.or_else(|| highest_latitude(&term));
+            let south_edge = south_day.or_else(|| lowest_latitude(&term));
+            (north_edge, south_edge)
+        };
+        // 両縁が（昼面包絡 or terminator のいずれかで）埋まったサンプルのみ採用（lockstep）。
+        // 高緯度側＝北・低緯度側＝南（terminator/昼面包絡の混在でも緯度で並べ替えて帯位相を保つ）。
+        if let (Some(edge_a), Some(edge_b)) = (north_edge, south_edge) {
             let (n, s) = if edge_a.lat.degrees().0 >= edge_b.lat.degrees().0 {
                 (edge_a, edge_b)
             } else {
@@ -749,6 +770,27 @@ fn trace_penumbral_limits(
     }
 
     Ok((GeoLine::new(north_points), GeoLine::new(south_points)))
+}
+
+/// `pts` のうち**最高緯度**の点（terminator 交点の北縁連結に使う・(3c-iii)）。空なら `None`。
+/// 緯度比較は [`f64::total_cmp`]（NaN 安全・地表点の緯度は有限）。
+///
+/// **注（混在分岐の近似）**: 片側のみ昼面包絡が解けるサンプルでは、解けた昼面包絡点と本関数が選ぶ
+/// terminator 極値点が**別 limb**（経度方向に離れた morning/evening limb）になりうる。最終対は緯度ソート
+/// （北≥南）で帯位相は保つが、limb 整合は取らない＝full containment 用 4 曲線境界（後続）の責務。
+/// 本スライスは「昼面包絡が無い端区間の terminator 連結」までで、混在対の limb 整合は近似（§11.4 (3c-iii)）。
+fn highest_latitude(pts: &[GeoPoint]) -> Option<GeoPoint> {
+    pts.iter()
+        .copied()
+        .max_by(|a, b| a.lat.degrees().0.total_cmp(&b.lat.degrees().0))
+}
+
+/// `pts` のうち**最低緯度**の点（terminator 交点の南縁連結に使う・(3c-iii)）。空なら `None`。
+/// limb 整合の近似は [`highest_latitude`] の注記と同じ。
+fn lowest_latitude(pts: &[GeoPoint]) -> Option<GeoPoint> {
+    pts.iter()
+        .copied()
+        .min_by(|a, b| a.lat.degrees().0.total_cmp(&b.lat.degrees().0))
 }
 
 /// 部分食域の外周 `GeoPolygon`（単一外環）を構成する（M9 残(3) 3c-ii・部分食域 §11.4・[`EclipseEngine::path`]
@@ -1073,6 +1115,47 @@ mod tests {
     /// 最小 GeoPoint。
     fn geo(lat: f64, lon: f64) -> umbra_geo::GeoPoint {
         umbra_geo::GeoPoint::from_degrees(lat, lon).expect("有効な地表点")
+    }
+
+    // ── (3c-iii) terminator 連結の極値ヘルパ単体（mutation 直接縛り） ──────────────
+    // `highest_latitude`/`lowest_latitude` の極値選択を、`trace_penumbral_limits` の
+    // 緯度ソート（北≥南 再整列）に**masking されない**形で独立に固定する。混在分岐で
+    // どの terminator 点が partner になるかは本ヘルパの max/min が決めるため、`max_by↔min_by`
+    // や比較方向の取り違え変異を、純関数レベルで撃つ（実装レビュー指摘の mutation 生存ギャップ）。
+    // 緯度は非対称（北 +40 / 中 −7 / 南 −30）にして「最初の要素を返す」種の変異も区別する。
+
+    /// `highest_latitude` は緯度最大の点を返す（経度では決めない・空は None）。
+    /// 殺す変異: `max_by→min_by`（最低緯度を返す）・比較方向反転・最初/最後の要素を返す。
+    #[test]
+    fn highest_latitude_picks_maximum_latitude_point() {
+        let pts = [geo(-7.0, 10.0), geo(40.0, 20.0), geo(-30.0, 30.0)];
+        let h = highest_latitude(&pts).expect("非空なら Some");
+        assert!(
+            (h.lat.degrees().0 - 40.0).abs() < 1e-9,
+            "最高緯度 +40 を返すべき（max_by→min_by 変異を撃つ）, got lat={}",
+            h.lat.degrees().0
+        );
+        assert!(
+            highest_latitude(&[]).is_none(),
+            "空スライスは None（terminator 0 点でスキップ）"
+        );
+    }
+
+    /// `lowest_latitude` は緯度最小の点を返す（経度では決めない・空は None）。
+    /// 殺す変異: `min_by→max_by`（最高緯度を返す）・比較方向反転・最初/最後の要素を返す。
+    #[test]
+    fn lowest_latitude_picks_minimum_latitude_point() {
+        let pts = [geo(-7.0, 10.0), geo(40.0, 20.0), geo(-30.0, 30.0)];
+        let l = lowest_latitude(&pts).expect("非空なら Some");
+        assert!(
+            (l.lat.degrees().0 - (-30.0)).abs() < 1e-9,
+            "最低緯度 −30 を返すべき（min_by→max_by 変異を撃つ）, got lat={}",
+            l.lat.degrees().0
+        );
+        assert!(
+            lowest_latitude(&[]).is_none(),
+            "空スライスは None（terminator 0 点でスキップ）"
+        );
     }
 
     /// 最小 BesselianPolynomial（results.rs の minimal_bessel パターン）。

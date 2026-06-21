@@ -180,6 +180,49 @@ fn rigorous_bessel() -> BesselianPolynomial {
     }
 }
 
+/// M9 残(3) 3c-iii: **limb bulge（terminator 連結）**を発火させる合成 bessel。
+///
+/// `rigorous_bessel` と同形（μ'≠0・x 二次で t_hours 依存）だが、影軸を**地球の縁寄り**に置く
+/// （x ベース 1.15・y ベース −0.08）ことで、[P1,P4]＝epoch±1.5h の**時間端で半影縁が昼面（ζ>0）を
+/// 外れる**＝`solve_limit_edge(l1)` が `Ok(None)`（`RootNotBracketed`／未収束）になる端区間を作る。
+/// その端では昼面包絡が無く terminator 交点（円∩terminator 楕円・ζ=0）で連結すべき領域になる。
+///
+/// 中央付近のサンプルでは南北とも昼面包絡が解ける（v1 リボンの種＝`partial_limit=Some`・非退化を保つ）一方、
+/// 端区間は terminator 連結が必要。**v1（連結未実装）の外環は昼面包絡頂点のみ＝ζ≈0 terminator 頂点を含まない**
+/// → 3c-iii の FAST red の発火源。連結実装後は端が terminator まで張り出し ζ≈0 頂点が現れる。
+///
+/// 値は `rigorous_bessel` と非対称（x/y/μ/l1/l2/tan_f が別値）で取り違え変異を撃つ。影軸位置オフセット
+/// （x 定数 1.15・y 定数 −0.08）以外は `rigorous_bessel` を踏襲し、fit_interval（epoch±2h）に [P1,P4]±1.5h を収める。
+fn limb_continuation_bessel() -> BesselianPolynomial {
+    let epoch = synth_epoch();
+    let p = |coeffs: Vec<f64>| Polynomial {
+        coefficients: coeffs,
+    };
+    BesselianPolynomial {
+        epoch_tt: epoch,
+        // x(t)=1.15 + 0.45 t + 0.02 t²（影軸を縁寄りに・東進・t_hours 依存で変異露出）。
+        x: p(vec![1.15, 0.45, 0.02]),
+        // y(t)=−0.08 + 0.06 t（縁寄り・端で半影縁が昼面を外す）。
+        y: p(vec![-0.08, 0.06]),
+        d: p(vec![0.20]),
+        mu: p(vec![1.2, 0.26]),
+        l1: p(vec![0.54]),
+        l2: p(vec![-0.009]),
+        tan_f1: 0.004_65,
+        tan_f2: 0.004_63,
+        fit_interval: TimeInterval {
+            start: tt_at_hours(epoch, -2.0),
+            end: tt_at_hours(epoch, 2.0),
+        },
+        fit_error: BesselFitError {
+            max_x: 1.0e-7,
+            max_y: 1.0e-7,
+            max_l1: 1.0e-7,
+            max_l2: 1.0e-7,
+        },
+    }
+}
+
 /// 与えた bessel で中心食 SolarEclipse を構築する（central_begin/end=Some, ±span_hours）。
 fn central_eclipse_with_bessel(bessel: BesselianPolynomial, span_hours: f64) -> SolarEclipse {
     let epoch = bessel.epoch_tt;
@@ -1515,6 +1558,36 @@ fn vertex_is_legitimate(
     false
 }
 
+/// M9 残(3) 3c-iii: 外環頂点 P が **terminator（日の出入り・ζ=0）上の半影縁点**かを判定する独立オラクル。
+/// terminator 点は ζ=0 ゆえ、前方射影で **(i) |ζ|≈0** かつ **(ii) 軸からの面内距離 ≈ l1**
+/// （ζ=0 で `|l1 − ζ·tan f1| = l1`）を同時に満たす。どのサンプル時刻由来か不定なので [P1,P4] の各時刻で試し、
+/// いずれか 1 時刻で両条件を満たせば terminator 頂点とみなす。期待値 l1 は bessel 多項式（path とは独立な
+/// 入力）から組む＝被テスト関数の戻りを流用しない。
+///
+/// 非対称性: 条件(i) の ζ≈0 を外すと昼面包絡点（ζ>0）が誤って terminator 扱いになるので、ζ_tol は十分小さく。
+/// 条件(ii) を |l2| で測る変異・l1↔l2 取り違えは面内距離が桁違いに外れて偽になる。
+fn vertex_is_terminator(
+    p: &umbra_geo::GeoPoint,
+    bessel: &BesselianPolynomial,
+    sample_times: &[TtInstant],
+    zeta_tol: f64,
+    plane_tol: f64,
+) -> bool {
+    for t in sample_times {
+        let e = match bessel.at(*t) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let of = forward_project(p, &e);
+        let in_plane = (of.xi - e.x).hypot(of.eta - e.y);
+        // (i) ζ≈0（terminator 上）かつ (ii) 面内距離 ≈ l1（ζ=0 の半影半径）。
+        if of.zeta.abs() < zeta_tol && (in_plane - e.l1).abs() < plane_tol {
+            return true;
+        }
+    }
+    false
+}
+
 /// 平面 (lon,lat) ray-casting による point-in-polygon（標準アルゴリズム・star-shaped を仮定しない）。
 /// 点 q から +経度方向へ無限に伸ばした半直線が外環辺と交差する回数の偶奇で内外を判定する。
 /// 経度は度・**反子午線非跨ぎ・非極**の合成/実 2024 を前提（§11.5・(3d) までの制約）。
@@ -1838,27 +1911,169 @@ fn partial_limit_contains_center_line() {
     }
 }
 
+// ============================================================
+// M9 残(3) 3c-iii: limb bulge 精緻化（terminator 連結）
+//
+// 確定仕様（docs/algorithms/11-path-partial-domain.md §11.4 (3c-iii)）:
+//   各サンプル時刻で 北縁=昼面包絡 `solve_limit_edge(l1,+1)` が解ければそれ、ELSE terminator 交点
+//   （`cone_terminator_intersections`・円∩terminator 楕円・ζ=0）の**高緯度側**。南縁=昼面包絡 `(−1)` ELSE
+//   terminator 交点の**低緯度側**。北[i]/南[i] は lockstep。これで外環が [P1,P4] の時間端で terminator まで
+//   張り出し、v1 リボンの limb 方向過小被覆を解消する。
+//
+// 観測契約（要確認#4 解決・§11.5）:
+//   - FAST: 連結が**発火する合成 fixture**（`limb_continuation_bessel`＝影軸が縁寄りで端区間の昼面包絡が
+//       無い）で、外環に **ζ≈0（terminator）かつ面内距離 ≈ l1** の頂点が現れる（前方射影で機械精度）。
+//       v1（連結未実装）の外環は昼面包絡頂点のみ＝ζ≈0 頂点を含まず → RED。リボン不変条件（単一リング・
+//       偶数頂点・北≥南 lockstep）も保つ。
+//   - SLOW: 実 2024 で **terminator bulge が発火**（外環に ζ≈0 ＆ 面内距離 ≈ l1 の terminator 頂点が ≥1）し、
+//       かつ**最大食まわりの核（中心線 ±10 サンプル窓）**が平面 point-in-polygon で内包される。
+//       **中心線全点の内包は本スライスでは未達**（早朝端は deferred な 4 曲線 terminator-limb 境界が必要・要確認#4）。
+// ============================================================
+
+/// FAST / 新規（**3c-iii の主検証**・terminator 連結の発火）: 影軸が縁寄りの合成
+/// （`limb_continuation_bessel`）では [P1,P4] の時間端で半影縁が昼面を外れ、外環は terminator まで
+/// 張り出す。外環に **前方射影で ζ≈0（terminator 上）かつ軸からの面内距離 ≈ l1** の頂点が
+/// **少なくとも 1 つ**現れる（terminator 連結が組み込まれた証拠・捏造でない＝半影縁条件を厳密に満たす）。
+///
+/// red（実装前）: v1 リボンは昼面の南北半影限界点（ζ>0）のみで terminator まで張り出さないため、ζ≈0 頂点が
+///   存在せず本 assert が落ちる。
+///
+/// 殺す変異: 端区間で連結を行わず昼面包絡のみで外環を組む（ζ≈0 頂点が出ない）・terminator 交点を ζ≠0 で
+///   捏造する（前方射影 ζ≈0 を外す）・面内距離を |l2| で測る/連結半径を本影 l2 にする（面内距離 ≈ l1 が破れる）。
+#[test]
+fn partial_limit_ring_includes_terminator_vertices_on_limb() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = limb_continuation_bessel();
+    // [P1,P4]=epoch±1.5h。中央付近は昼面包絡が解ける（partial_limit=Some・非退化）一方、端区間は
+    // 半影縁が昼面を外れ terminator 連結が必要。
+    let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    let poly = path
+        .partial_limit
+        .as_ref()
+        .expect("limb 連結 fixture でも partial_limit=Some（中央は昼面包絡で種が出る）");
+    let ring = &poly.rings[0];
+
+    let p1 = eclipse.global.partial_begin.as_ref().unwrap().time_tt;
+    let p4 = eclipse.global.partial_end.as_ref().unwrap().time_tt;
+    let times = lockstep_sample_times(p1, p4, PathOptions::default().sample_interval_seconds);
+
+    // 外環に terminator 頂点（ζ≈0・面内距離 ≈ l1）が ≥1 つある。前方射影は厳密に閉じる（ζ_tol 小・
+    // plane_tol は半影縁の面内一致）。
+    let terminator_vertices = ring
+        .iter()
+        .filter(|p| vertex_is_terminator(p, &bessel, &times, 1e-6, 1e-6))
+        .count();
+    assert!(
+        terminator_vertices >= 1,
+        "外環に terminator 頂点（前方射影 ζ≈0 ＆ 面内距離 ≈ l1）が無い＝limb 端で terminator 連結未発火 \
+         （v1 リボンの limb 過小被覆・3c-iii 未実装）。ring={} 頂点",
+        ring.len()
+    );
+}
+
+/// FAST / 新規（3c-iii・**頂点正当性は terminator 連結後も維持**）: limb 連結 fixture でも外環の各頂点が
+/// 半影縁条件（面内距離 ≈ |l1 − ζ·tan f1|・自己整合ζ）を満たす。terminator 頂点（ζ=0）でも
+/// `|l1 − 0·tan f1| = l1` ゆえ半影縁条件を厳密に満たす（捏造点が無い・§11.5）。
+///
+/// 殺す変異: 連結頂点を半影縁から外れた地球縁（半径≠l1）に置く・terminator 交点を本影半径 l2 で解く・
+///   昼面包絡頂点と terminator 頂点で半径式を取り違える。
+#[test]
+fn partial_limit_limb_vertices_satisfy_penumbral_conditions() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = limb_continuation_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+    let ring = &poly.rings[0];
+
+    let p1 = eclipse.global.partial_begin.as_ref().unwrap().time_tt;
+    let p4 = eclipse.global.partial_end.as_ref().unwrap().time_tt;
+    let times = lockstep_sample_times(p1, p4, PathOptions::default().sample_interval_seconds);
+
+    for (j, p) in ring.iter().enumerate() {
+        assert!(
+            vertex_is_legitimate(p, &bessel, &times, 1e-6),
+            "limb 連結外環の頂点[{j}] (lat={}, lon={}) が半影縁条件を満たさない（捏造点）",
+            lat_deg(p),
+            lon_deg(p)
+        );
+    }
+}
+
+/// FAST / 新規（3c-iii・**リボン不変条件は連結後も維持**）: limb 連結 fixture でも外環は単一リング・
+/// 偶数頂点 2n・各リボン対で北緯度 ≥ 南緯度（lockstep の北南割当）。terminator 連結は昼面包絡を端で
+/// 置き換えるだけで `北(P1→P4)++南(P4→P1 逆順)` の帯位相を壊さない。
+///
+/// 殺す変異: 連結で北南を取り違える（高緯度側を南へ）・連結頂点を片側にだけ追加して北南の点数を食い違わせる
+///   （奇数頂点 or 対崩れ）・リングを複数に割る。
+#[test]
+fn partial_limit_limb_ring_preserves_ribbon_invariants() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = limb_continuation_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+    assert_eq!(
+        poly.rings.len(),
+        1,
+        "外環は単一リング, got {}",
+        poly.rings.len()
+    );
+    let ring = &poly.rings[0];
+    let m = ring.len();
+
+    assert_eq!(
+        m % 2,
+        0,
+        "外環頂点数は偶数 2n（北 n ++ 南 n 逆順）, got {m}"
+    );
+    let n = m / 2;
+    assert!(n >= 2, "片側半影限界は ≥2 点（非退化リボン）, got n={n}");
+
+    const EPS: f64 = 1.0e-6;
+    for i in 0..n {
+        let north = lat_deg(&ring[i]);
+        let south = lat_deg(&ring[m - 1 - i]);
+        assert!(
+            north >= south - EPS,
+            "リボン対 i={i}: 前半（北限界/連結）緯度 {north} ≥ 後半（南限界/連結）緯度 {south} でない \
+             （連結で北南反転 or 逆順欠落）"
+        );
+    }
+}
+
 // ------------------------------------------------------------
 // SLOW: 実 2024-04-08 — partial_limit ballpark
 // ------------------------------------------------------------
 
-/// SLOW / 新規（リボン法・方位ソートから是正）: 実エンジンで 2024-04-08 皆既を search → path()。
-/// partial_limit=Some・外環 ≥3 頂点・各頂点が妥当な緯度経度・(a) 部分食域が皆既帯より緯度方向に広い
-/// （リボンのスパン > 中心線スパン・北端が中心線北端より外）・(b) 最大食付近の中心線サンプルが
-/// **平面 (lon,lat) ray-casting point-in-polygon** で部分食域に包含（partial ⊃ umbral path）。
-/// NASA 緯度経度の直接一致は中心線位置精度律速ゆえ縛らず、桁の整合（広さ＋最大食付近の包含）で締める。
-/// de440s 不要（解析暦）。
+/// SLOW / 改訂（3c-iii・**実データで limb bulge 発火＋核内包**・要確認#4 / §11.4 (3c-iii)）:
+/// 実エンジンで 2024-04-08 皆既を search → path()。partial_limit=Some・外環 ≥3 頂点・各頂点が妥当な緯度経度・
+/// (a) 部分食域が皆既帯より緯度方向に広い（リボンのスパン > 中心線スパン・北端が中心線北端より外）・
+/// (3) **実データで terminator bulge が発火**（外環に前方射影 ζ≈0 ＆ 軸からの面内距離 ≈ l1 の terminator 頂点が
+///   ≥1 つ＝端区間で昼面包絡を terminator まで連結した証拠）・(4) **最大食まわりの核（中心線）が内包**
+///   （greatest 最近サンプルの ±10 サンプル窓を平面 (lon,lat) ray-casting point-in-polygon で内包＝partial ⊃ umbral 核）。
+/// NASA 緯度経度の直接一致は中心線位置精度律速ゆえ縛らず、桁の整合（広さ＋bulge 発火＋核内包）で締める。de440s 不要（解析暦）。
 ///
-/// 注（v1 リボンの limb 過小被覆・§11.4・要確認3）: リボンは昼面の半影限界帯のみで limb（terminator）方向に
-/// 張り出さない。実 2024 では [P1,P4] の端で半影縁が地球の縁（terminator）へ届き北限界が高緯度（~73°N）へ
-/// 膨らむ一方、中心線の南端（早期・~6.7°S）/北東端（晩期）は帯の同位相を外れる。よって**中心線全点の包含は
-/// v1 では成立しない**（§11.4 の「中心線内包」は方位ソート是正前の前提で、実 2024 の planar PIP では端部が外）。
-/// テストは §11.5 の弱オラクル方針に従い「帯が皆既帯より広い」＋「最大食付近（半影帯が最も広い）の中心線が内包」で
-/// partial ⊃ umbral path の本質を縛る（全点内包は過小被覆と衝突するため縛らない）。terminator 張り出しの
-/// 取り込み（(3c-iii)）で全点内包が回復したら本テストを全点版へ強化できる。
+/// **正直な達成範囲（3c-iii の scope）**: 本スライス (3c-iii) は v1（3c-ii）リボンより limb（terminator）方向へ広い
+/// **真の bulge** を生み、合成だけでなく**実 2024 データでも発火する**。ただし**中心線全点の planar 内包は本スライスでは
+/// 達成しない**: 早朝 sunrise 端の中心線南端（~6.7°S）は帯の西側に落ち、その真の西境界は朝の terminator limb（円∩terminator
+/// 楕円を [P1,P4] 全域で辿る「4 曲線 terminator-limb 境界」）であり、これは**先送り**（deferred）。残差は [P1,P4] の時間端
+/// （中心線 U1/U4 近傍）の limb 過小被覆。よって本テストは**全点内包を表明せず**、最大食まわりの核内包（4）＋ 実データ bulge
+/// 発火（3）で 3c-iii の改善を honest に縛る（要確認#4・docs/algorithms/11-path-partial-domain.md §11.4 (3c-iii)）。
 ///
-/// 殺す変異: 実日食で partial_limit を None/捏造にする・外環を皆既帯より狭く縮める・最大食付近で中心線を
-///   含まない・リボンの北南を取り違える/逆順を欠いて自己交差させる。
+/// 殺す変異: 実日食で partial_limit を None/捏造にする・外環を皆既帯より狭く縮める（(a) 破れ）・端区間で
+///   terminator 連結を行わず実データで terminator 頂点が出ない＝bulge 未発火（(3) 破れ）・リボンの北南を取り違える/
+///   逆順を欠いて自己交差させ最大食窓の核内包を壊す（(4) 破れ）。
 #[test]
 fn real_2024_eclipse_partial_limit_is_plausible() {
     let engine = standard_engine(bundled_time_data());
@@ -1925,10 +2140,38 @@ fn real_2024_eclipse_partial_limit_is_plausible() {
         center_max_lat - center_min_lat
     );
 
-    // (b) 最大食点に最も近い中心線サンプルが部分食域に平面 point-in-polygon で包含される
-    //     （partial ⊃ umbral path の本質。最大食付近は半影帯の幅が最大ゆえ確実に内側）。
-    //     v1 リボンは limb 方向に過小被覆で中心線の端部（U1/U4 近傍）は外に出ることがある（§11.4）ため
-    //     全点内包は縛らず、最大食付近の連続窓で内包を確認する（追認回避＝窓は greatest との距離で選ぶ）。
+    // (3) **実データで terminator bulge が発火**: 外環に前方射影で ζ≈0（terminator 上）かつ軸からの面内距離 ≈ l1
+    //     （ζ=0 の半影半径）の terminator 頂点が ≥1 つある。これは 3c-iii の端区間 terminator 連結が**合成 fixture
+    //     だけでなく実 2024 でも発火した**証拠（v1 リボンは昼面包絡頂点 ζ>0 のみで terminator 頂点を持たない）。
+    //     [P1,P4] のサンプル時刻列は FAST テストと同じ `lockstep_sample_times` で、P1/P4=partial_begin/end・
+    //     bessel=eclipse.bessel から独立に組む（被テスト関数の戻りを流用しない）。
+    //
+    //     許容（zeta_tol/plane_tol）: FAST 合成は前方射影が厳密に閉じるので 1e-6 だが、実 2024 は l2/tan_f/d/μ の
+    //     実暦評価＋中心線位置律速で round-trip がやや緩む。
+    //       - plane_tol = 5e-4 [Re]（≈3 km）: 同ファイルの実日食用厳密 2 条件 `assert_exact_limit_conditions_real`
+    //         で採用済みの面内距離許容と同値（実暦の半影縁面内一致のロバスト下限）。
+    //       - zeta_tol = 1e-3: ζ=sin(太陽高度) なので 1e-3 は太陽高度 ≈0.057°。terminator（ζ=0）近傍だけを拾い、
+    //         **昼面包絡頂点を誤分類しない**。実 2024 の昼面半影帯の典型 ζ は高度 数十° ＝ ζ~O(0.3–0.9) で、
+    //         1e-3 とは 2–3 桁の隔たりがある（zeta_tol ≪ 帯の典型 ζ）。よって day-side ζ>0 頂点が (i) を満たすことはない。
+    let p1 = eclipse.global.partial_begin.as_ref().unwrap().time_tt;
+    let p4 = eclipse.global.partial_end.as_ref().unwrap().time_tt;
+    let times = lockstep_sample_times(p1, p4, PathOptions::default().sample_interval_seconds);
+    let terminator_vertices = ring
+        .iter()
+        .filter(|p| vertex_is_terminator(p, &eclipse.bessel, &times, 1e-3, 5e-4))
+        .count();
+    assert!(
+        terminator_vertices >= 1,
+        "実 2024 の外環に terminator 頂点（前方射影 ζ≈0 ＆ 面内距離 ≈ l1）が無い＝limb bulge が実データで未発火 \
+         （3c-iii の terminator 連結が実 2024 で効いていない）。ring={} 頂点",
+        ring.len()
+    );
+
+    // (4) **最大食まわりの核（中心線）が内包**: 最大食点に最も近い中心線サンプルを中心とする ±10 サンプル窓が
+    //     平面 point-in-polygon で部分食域に内包される（partial ⊃ umbral 核）。最大食付近は半影帯の幅が最大ゆえ
+    //     確実に内側。**全点内包は本スライスでは達成しない**（早朝端の中心線南端は朝 terminator limb 境界が必要・
+    //     これは deferred な 4 曲線 terminator-limb 境界）ため、v1 と同じ窓内包に留める（要確認#4）。窓は greatest
+    //     との距離で選ぶ（追認回避＝path() の内部に依存しない）。
     let g_lat = lat_deg(greatest);
     let g_lon = lon_deg(greatest);
     let mid = (0..center.points.len())
@@ -1946,7 +2189,7 @@ fn real_2024_eclipse_partial_limit_is_plausible() {
         let c = &center.points[i];
         assert!(
             point_in_polygon(ring, c),
-            "実 2024: 最大食付近の中心線点[{i}] (lat={}, lon={}) が部分食域の外（partial ⊅ umbral path）",
+            "実 2024: 最大食付近の中心線点[{i}] (lat={}, lon={}) が部分食域の外（partial ⊅ umbral 核）",
             lat_deg(c),
             lon_deg(c)
         );
