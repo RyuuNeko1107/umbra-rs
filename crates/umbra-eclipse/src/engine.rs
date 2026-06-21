@@ -663,6 +663,84 @@ fn trace_central<M: DeltaTModel>(
     Ok((GeoLine::new(center_points), limits, samples))
 }
 
+/// 部分食域の昼面**南北半影限界**を `[start_tt, end_tt]`（＝[P1,P4]）を `interval_seconds` 刻みでサンプルして
+/// 追跡する（M9 残(3) 3c-i・部分食域 §11.1・[`EclipseEngine::path`] の partial_limit 組立 (3c) が消費）。
+///
+/// `trace_central` の本影限界と同型だが、**半影錐** `(l1, tan f1)` で [`solve_limit_edge`] を解く（3a の錐半径
+/// 引数化）。部分食では影軸 (x,y) が地球を外しうる（中心線が無い）が、半影縁（軸から ~0.5 Re）は昼面に
+/// 当たりうるので半影限界は存在しうる。よって初期推定 ζ₀ は中心軸 ζ ではなく **0.0**（`solve_limit_edge` は
+/// 収束先が初期値に依らない）。北縁（高緯度側）・南縁（低緯度側）が**同一サンプル列（lockstep）**になるよう、
+/// どちらかが地表を外す/解けない（`Ok(None)`）サンプルは**両方ともスキップ**する。`RootNotBracketed` 以外の
+/// `Err` は伝播。始点・終点を必ず含む（端は span にクランプ）。`interval_seconds` 非正は始点のみ。
+/// **事前条件**: `[start_tt, end_tt] ⊆ bessel.fit_interval`（`trace_central` が [U1,U4] を渡すのと同様、(3c) は
+/// [P1,P4] を渡す）。区間外は `bessel.at` が `EvaluationOutsideFitInterval` を返し伝播する。
+// 外環組立 (3c-ii) が partial_limit 生成で消費するまで production からは未呼出（テストのみ）。
+#[allow(dead_code)]
+fn trace_penumbral_limits(
+    bessel: &BesselianPolynomial,
+    start_tt: TtInstant,
+    end_tt: TtInstant,
+    interval_seconds: f64,
+) -> Result<(GeoLine, GeoLine), EclipseError> {
+    let ellipsoid = Ellipsoid::WGS84;
+    let x_deriv = bessel.x.derivative();
+    let y_deriv = bessel.y.derivative();
+    let mu_deriv = bessel.mu.derivative();
+    let epoch = bessel.epoch_tt;
+    let span_seconds = end_tt.jd2().days_since(start_tt.jd2()) * SECONDS_PER_DAY;
+
+    let mut north_points = Vec::new();
+    let mut south_points = Vec::new();
+    let mut t_sec = 0.0_f64;
+    loop {
+        let t = TtInstant::from_jd2(start_tt.jd2().add_days(t_sec / SECONDS_PER_DAY));
+        let elements = bessel.at(t)?;
+        let t_hours = t.jd2().days_since(epoch.jd2()) * 24.0;
+        let vx = x_deriv.eval(t_hours);
+        let vy = y_deriv.eval(t_hours);
+        let mu_rate = mu_deriv.eval(t_hours);
+        // 半影錐 (l1, tan f1) の南北縁を相対速度包絡で解く。ζ₀=0（部分食では中心軸 ζ が不定）。
+        let north = solve_limit_edge(
+            &elements,
+            elements.l1,
+            elements.tan_f1,
+            0.0,
+            vx,
+            vy,
+            mu_rate,
+            1.0,
+            &ellipsoid,
+        )?;
+        let south = solve_limit_edge(
+            &elements,
+            elements.l1,
+            elements.tan_f1,
+            0.0,
+            vx,
+            vy,
+            mu_rate,
+            -1.0,
+            &ellipsoid,
+        )?;
+        // 両縁が解けたサンプルのみ採用（lockstep）。高緯度側＝北・低緯度側＝南。
+        if let (Some(edge_a), Some(edge_b)) = (north, south) {
+            let (n, s) = if edge_a.lat.degrees().0 >= edge_b.lat.degrees().0 {
+                (edge_a, edge_b)
+            } else {
+                (edge_b, edge_a)
+            };
+            north_points.push(n);
+            south_points.push(s);
+        }
+        if t_sec >= span_seconds || interval_seconds <= 0.0 {
+            break;
+        }
+        t_sec = (t_sec + interval_seconds).min(span_seconds);
+    }
+
+    Ok((GeoLine::new(north_points), GeoLine::new(south_points)))
+}
+
 /// 1 サンプル時刻の中心線点（と任意で南北限界点＋[`PathSample`]）を求める。軸/縁が地表を外す
 /// （`RootNotBracketed`）/ 相対速度ゼロ/ 継続が定義不能なら `Ok(None)`（lockstep スキップ）。他の `Err`
 /// （`bessel.at`/`tt_to_utc` 等）は伝播。
@@ -2777,5 +2855,277 @@ mod tests {
             t_sec = (t_sec + interval_seconds).min(span);
         }
         out
+    }
+
+    // ==================================================================
+    // 10. trace_penumbral_limits: 昼面の南北半影限界（部分食域・M9 残(3) 3c-i）
+    //
+    // 確定仕様（docs/algorithms/11-path-partial-domain.md §11.1）: 部分食区間 [P1,P4] を
+    // interval_seconds 刻みでサンプルし、各時刻で**半影錐** (l1, tan f1) の南北縁点を
+    // `solve_limit_edge(.., cone_l=l1, cone_tan_f=tan_f1, ..)` で解いて (北半影限界, 南半影限界) の
+    // GeoLine ペアを返す private free fn:
+    //   fn trace_penumbral_limits(bessel, start_tt, end_tt, interval_seconds)
+    //       -> Result<(GeoLine, GeoLine), EclipseError>
+    //
+    // ループ規約は trace_central と同一（始点・終点を必ず含む・終点へクランプ・interval≤0 は始点のみ）。
+    // 北縁・南縁は lockstep（どちらかが解けないサンプルは両方スキップ）・同点数・非空。北=高緯度側。
+    //
+    // ## オラクル戦略（strict・追認回避）
+    // 返る各縁点 P を **検証済み前方射影** project_observer_to_fundamental（forward_project ヘルパ・
+    // ISSUE-024 独立検証済）へ通し、自身の (ξ,η,ζ) を独立復元して §11.1 の 2 条件を絶対値で表明する
+    // （本影版 limits_satisfy_cone_exact_self_consistent_zeta / limits_offset_perpendicular_to_
+    // relative_velocity と同形・**半径を |l1 − ζ·tan f1|** に替えるのみ）:
+    //   条件1（錐exact・自己整合ζ）: hypot(ξ−x, η−y) == |l1 − ζ·tan_f1|（ζ は点自身の値）。
+    //   条件2（包絡・⊥rel）: (ξ−x)·rel_vx + (η−y)·rel_vy ≈ 0,
+    //       rel_vx = x' − μ'·(ζ·cos d − η·sin d), rel_vy = y' − μ'·ξ·sin d。
+    // 真値 x,y,d,μ,l1,tan_f1 は bessel.at(t)（検証済）、微分 x',y',μ' は bessel.{x,y,mu}.derivative()
+    // （検証済）から独立に組む。被テスト関数の戻りを期待値生成に流用しない。μ'≠0 の rigorous_bessel
+    // で包絡条件に分離力を与える（影速度のみに垂直な近似は条件2 を満たせない）。
+    //
+    // ## red 設計（本体未実装）
+    // trace_penumbral_limits は未実装ゆえ **コンパイルエラー（未定義シンボル）で red**。
+    // ------------------------------------------------------------------
+
+    /// 部分食区間を模す合成「半影が地表に当たる」bessel。rigorous_bessel(epoch) を流用する
+    /// （μ'≠0・x 二次で t_hours 依存・gamma≪1 で半影縁 l1≈0.5 が両側とも昼面に当たる）。
+    /// 半影限界の P1/P4 は中心食の U1/U4 より広いが、合成テストでは epoch±span_hours を直接渡す。
+    fn penumbral_bessel(epoch: TtInstant) -> crate::bessel_poly::BesselianPolynomial {
+        rigorous_bessel(epoch)
+    }
+
+    /// **主検証（厳密 2 条件・半影 l1）**: μ'≠0 の合成で [P1,P4] を追跡し、北・南の各半影縁点が
+    /// 前方射影で 2 条件（半径=|l1−ζ·tan f1|・⊥rel）を機械精度で満たす。
+    ///
+    /// 殺す変異:
+    /// - 半径に l2/tan_f2（本影）を使う（l1↔l2 取り違え）→ 条件1 で面内距離が桁違いに外れる。
+    /// - 半径式 |l1 − ζ·tan_f1| の演算子（−→+/*//）・tan_f1 の符号反転。
+    /// - |L1'| を中心軸 ζ₀ で計算する（点自身の ζ でない）→ 条件1 ズレ（μ' で ζ≠0）。
+    /// - rel に μ' 項を含めない近似 → 条件2 で dot≠0（μ'≠0 ゆえ）。
+    /// - rel_vx/rel_vy の cos d↔sin d・ξ↔η・ζ の取り違え。
+    #[test]
+    fn penumbral_limits_satisfy_exact_cone_and_envelope_conditions() {
+        let epoch = tt(2_451_545.0, 0.0);
+        let bessel = penumbral_bessel(epoch);
+        let x_deriv = bessel.x.derivative();
+        let y_deriv = bessel.y.derivative();
+        let mu_deriv = bessel.mu.derivative();
+
+        // μ'≠0 を独立確認（包絡条件の分離力の前提）。
+        assert!(
+            mu_deriv.eval(0.0).abs() > 1e-6,
+            "μ'={} ≠ 0（rel 速度に μ' が効く構成）",
+            mu_deriv.eval(0.0)
+        );
+
+        // [P1,P4] = epoch ±1h。trace_central と同じ 60s 刻みで追跡。
+        let p1 = TtInstant::from_jd2(epoch.jd2().add_days(-1.0 / 24.0));
+        let p4 = TtInstant::from_jd2(epoch.jd2().add_days(1.0 / 24.0));
+        let interval = PathOptions::default().sample_interval_seconds;
+
+        let (north, south) =
+            trace_penumbral_limits(&bessel, p1, p4, interval).expect("半影限界の追跡は Ok");
+
+        // 北縁・南縁は同点数（lockstep）・非空。
+        assert_eq!(
+            north.points.len(),
+            south.points.len(),
+            "北半影縁・南半影縁は同点数（lockstep）"
+        );
+        assert!(
+            !north.points.is_empty(),
+            "半影限界は非空（合成は半影縁が両側とも地表に当たる）"
+        );
+
+        let sample_times = lockstep_sample_times(p1, p4, interval);
+        // 合成は全サンプルで両縁が地表ヒットゆえ index 対応する（外すと len 不一致で先に落ちる）。
+        const CONE_TOL: f64 = 1e-7; // 前方射影は厳密に閉じる（axis_intercept TOL_ROUNDTRIP 同等）。
+        const DOT_TOL: f64 = 1e-9; // |offset|·|rel| ~ 0.5·0.5 スケールに対し十分小さい。
+        for (i, t) in sample_times.iter().enumerate() {
+            if i >= north.points.len() {
+                break;
+            }
+            let e = bessel.at(*t).expect("区間内サンプルは評価成功");
+            let t_hours = t.jd2().days_since(epoch.jd2()) * 24.0;
+            let vx = x_deriv.eval(t_hours);
+            let vy = y_deriv.eval(t_hours);
+            let mu_rate = mu_deriv.eval(t_hours);
+            let (sin_d, cos_d) = e.declination.0.sin_cos();
+            for p in [&north.points[i], &south.points[i]] {
+                let of = forward_project(p, &e);
+                let off_x = of.xi - e.x;
+                let off_y = of.eta - e.y;
+                // 条件1: 面内距離 = ζ補正**半影**半径 |l1 − ζ·tan f1|（自己整合ζ）。
+                let in_plane = off_x.hypot(off_y);
+                let penumbral = (e.l1 - of.zeta * e.tan_f1).abs();
+                assert!(
+                    (in_plane - penumbral).abs() < CONE_TOL,
+                    "サンプル{i}: 面内距離 {in_plane} = ζ補正半影半径 {penumbral}（自己整合ζ={}）でない",
+                    of.zeta
+                );
+                // 条件2: offset ⊥ rel 速度（μ' 項込み）。
+                let rel_vx = vx - mu_rate * (of.zeta * cos_d - of.eta * sin_d);
+                let rel_vy = vy - mu_rate * of.xi * sin_d;
+                let dot = off_x * rel_vx + off_y * rel_vy;
+                assert!(
+                    dot.abs() < DOT_TOL,
+                    "サンプル{i}: offset·rel = {dot}（≈0 でない＝包絡条件違反）"
+                );
+            }
+        }
+    }
+
+    /// **lockstep・南北割当**: 北縁・南縁が同点数・非空、各 index で北緯度 ≥ 南緯度（高緯度=北）。
+    ///
+    /// 殺す変異: 北縁と南縁を入れ替える（北↔南割当反転）・両縁を同一点にする（緯度差0）・
+    ///   北南でサンプル列を食い違わせる（点数不一致）・空列を返す。
+    #[test]
+    fn penumbral_limits_are_lockstep_north_above_south() {
+        let epoch = tt(2_451_545.0, 0.0);
+        let bessel = penumbral_bessel(epoch);
+        let p1 = TtInstant::from_jd2(epoch.jd2().add_days(-1.0 / 24.0));
+        let p4 = TtInstant::from_jd2(epoch.jd2().add_days(1.0 / 24.0));
+        let interval = PathOptions::default().sample_interval_seconds;
+
+        let (north, south) =
+            trace_penumbral_limits(&bessel, p1, p4, interval).expect("半影限界の追跡は Ok");
+
+        assert_eq!(
+            north.points.len(),
+            south.points.len(),
+            "北半影縁・南半影縁は同点数（lockstep）"
+        );
+        assert!(north.points.len() >= 2, "半影限界は ≥2 点（区間追跡）");
+
+        for i in 0..north.points.len() {
+            let n = north.points[i].lat.degrees().0;
+            let s = south.points[i].lat.degrees().0;
+            // 高緯度側=北限。半影は太く緯度差が大きいので明確に分離する。
+            assert!(
+                n >= s - 1e-9,
+                "サンプル{i}: 北半影縁緯度 {n} ≥ 南半影縁緯度 {s}（高緯度側=北）"
+            );
+            assert!(
+                n - s > 1e-6,
+                "サンプル{i}: 北南が分離している（緯度差 {} > 0）",
+                n - s
+            );
+        }
+    }
+
+    /// **半影 vs 本影の距離差**: 同一サンプルで半影縁（l1）の軸からの面内距離 > 本影縁（l2）のそれ。
+    /// 半影限界の各点 (l1≈0.5) と、同一時刻・同一 sign で `solve_limit_edge(.., l2, tan_f2, ..)` で
+    /// 別途解いた本影縁 (|l2|≈0.01) を前方射影し、軸からの面内距離を独立に比較する。l1≫|l2| ゆえ
+    /// 半影縁は本影縁より桁違いに軸から遠い（半径取り違え l1↔l2 を撃つ）。
+    ///
+    /// 殺す変異: trace_penumbral_limits が cone_l=l2 を使う（本影半径＝差が消える）・cone_l↔cone_tan_f
+    ///   取り違え・半影縁を本影と同一視する。
+    #[test]
+    fn penumbral_edge_is_farther_from_axis_than_umbral() {
+        let epoch = tt(2_451_545.0, 0.0);
+        let bessel = penumbral_bessel(epoch);
+        let x_deriv = bessel.x.derivative();
+        let y_deriv = bessel.y.derivative();
+        let mu_deriv = bessel.mu.derivative();
+        let p1 = TtInstant::from_jd2(epoch.jd2().add_days(-1.0 / 24.0));
+        let p4 = TtInstant::from_jd2(epoch.jd2().add_days(1.0 / 24.0));
+        let interval = PathOptions::default().sample_interval_seconds;
+        let ellipsoid = Ellipsoid::WGS84;
+
+        let (north, _south) =
+            trace_penumbral_limits(&bessel, p1, p4, interval).expect("半影限界の追跡は Ok");
+        let sample_times = lockstep_sample_times(p1, p4, interval);
+
+        // 代表サンプル（中央）で半影北縁 vs 本影北縁（sign=+1）の軸距離を比較。
+        let i = north.points.len() / 2;
+        let t = sample_times[i];
+        let e = bessel.at(t).expect("区間内サンプルは評価成功");
+        let t_hours = t.jd2().days_since(epoch.jd2()) * 24.0;
+        let vx = x_deriv.eval(t_hours);
+        let vy = y_deriv.eval(t_hours);
+        let mu_rate = mu_deriv.eval(t_hours);
+        // 中心軸 ζ₀（本影縁 solve の初期推定）。
+        let (_center, zeta0) =
+            surface_point_for_fundamental(e.x, e.y, e.declination, e.mu, &ellipsoid)
+                .expect("合成中心食の影軸は地表に当たる");
+
+        // 本影北縁（sign=+1）を独立に解く（半径 l2/tan_f2）。
+        let umbral_north =
+            solve_limit_edge(&e, e.l2, e.tan_f2, zeta0, vx, vy, mu_rate, 1.0, &ellipsoid)
+                .expect("本影縁の解は Ok")
+                .expect("本影北縁点が存在する（gamma≪1）");
+
+        // 半影北縁・本影北縁を前方射影して軸 (x,y) からの面内距離を独立に測る。
+        let of_pen = forward_project(&north.points[i], &e);
+        let of_umb = forward_project(&umbral_north, &e);
+        let off_pen = (of_pen.xi - e.x).hypot(of_pen.eta - e.y);
+        let off_umb = (of_umb.xi - e.x).hypot(of_umb.eta - e.y);
+
+        assert!(
+            off_pen > off_umb,
+            "半影縁の面内距離 {off_pen} > 本影縁 {off_umb}（l1≫|l2|）"
+        );
+        // 桁差（l1≈0.5 vs |l2|≈0.01）: 半影は本影の 10 倍超遠い（取り違えで近接する変異を撃つ）。
+        assert!(
+            off_pen > 10.0 * off_umb,
+            "半影縁は本影縁の 10 倍超遠いはず: penumbra {off_pen}, umbra {off_umb}"
+        );
+    }
+
+    /// **interval 規約**: 粗い interval で点数が減る・始点終点を含む（trace_central のループ規約準拠）。
+    /// 細かい刻みと粗い刻みで点数が単調（細 ≥ 粗）になり、両端のサンプルが含まれることを縛る。
+    /// 始点・終点の包含は、半影縁が始点/終点時刻の半影半径で前方射影 2 条件を満たすことで確認する。
+    ///
+    /// 殺す変異: interval を無視して固定点数にする・始点/終点を取りこぼす・終点クランプを外す・
+    ///   interval≤0 で無限ループ/空列にする。
+    #[test]
+    fn penumbral_limits_respect_interval_loop_contract() {
+        let epoch = tt(2_451_545.0, 0.0);
+        let bessel = penumbral_bessel(epoch);
+        let p1 = TtInstant::from_jd2(epoch.jd2().add_days(-1.0 / 24.0));
+        let p4 = TtInstant::from_jd2(epoch.jd2().add_days(1.0 / 24.0));
+
+        // 細かい刻み（60s）と粗い刻み（600s）で点数を比較。
+        let (fine_n, _fine_s) =
+            trace_penumbral_limits(&bessel, p1, p4, 60.0).expect("細刻みの追跡は Ok");
+        let (coarse_n, _coarse_s) =
+            trace_penumbral_limits(&bessel, p1, p4, 600.0).expect("粗刻みの追跡は Ok");
+
+        assert!(
+            fine_n.points.len() > coarse_n.points.len(),
+            "細刻み {} 点 > 粗刻み {} 点（interval が点数に効く）",
+            fine_n.points.len(),
+            coarse_n.points.len()
+        );
+        assert!(coarse_n.points.len() >= 2, "粗刻みでも始点・終点で ≥2 点");
+
+        // interval≤0 は始点のみ（無限ループ回避）。
+        let (only_start, only_start_s) =
+            trace_penumbral_limits(&bessel, p1, p4, 0.0).expect("interval=0 の追跡は Ok");
+        assert_eq!(
+            only_start.points.len(),
+            1,
+            "interval≤0 は始点のみ（1 点）, got {}",
+            only_start.points.len()
+        );
+        assert_eq!(
+            only_start_s.points.len(),
+            1,
+            "interval≤0 は南縁も始点のみ（1 点）"
+        );
+
+        // 始点・終点の包含: 細刻みの先頭縁点は p1 時刻、末尾縁点は p4 時刻の半影半径で前方射影 2 条件を
+        // 満たす（始点/終点取りこぼし・終点クランプ外しを撃つ）。
+        const CONE_TOL: f64 = 1e-7;
+        for (idx, t) in [(0usize, p1), (fine_n.points.len() - 1, p4)] {
+            let e = bessel.at(t).expect("端サンプルは評価成功");
+            let of = forward_project(&fine_n.points[idx], &e);
+            let in_plane = (of.xi - e.x).hypot(of.eta - e.y);
+            let penumbral = (e.l1 - of.zeta * e.tan_f1).abs();
+            assert!(
+                (in_plane - penumbral).abs() < CONE_TOL,
+                "端 index {idx}（時刻 {t:?}）の北半影縁が当該時刻の半影半径 {penumbral} に整合しない \
+                 (面内距離 {in_plane})＝始点/終点取りこぼし or 終点クランプ外し"
+            );
+        }
     }
 }

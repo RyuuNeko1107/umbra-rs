@@ -16,7 +16,8 @@
 - **M9残(3) 部分食域**（`docs/algorithms/11-path-partial-domain.md`・第一原理＋NASA 2024-04-08 オラクル）。設計ドラフト→厳密化済み（要確認 #1 rise/set は外周に 2 根曲線の両方使用・4 分類は出力ラベル／#2 terminator は WGS84 楕円 `ξ²+k·η²=1`（k=sin²d+cos²d/(1−f)²）で厳密化／#5 solve_limit_edge 一般化の M9.4 mutation 影響なしを確認、で解決）。サブスライス:
   - **(3a) 半影限界の半径引数化** ✅（2026-06-21・strict）: `solve_limit_edge` に錐半径 `(cone_l,cone_tan_f)` を引数化＝本影 `(l2,tan f2)`／半影 `(l1,tan f1)` 両対応。本影 M9.4 退化で完全回帰。mutation 52/51 caught・0 missed。併せて mutation.yml の未エスケープ `||`（空 alternation で全除外＝CI mutation no-op バグ）を `\|\|` へ修正。
   - **(3b) rise/set limb 点** ✅（2026-06-21・strict）: `cone_terminator_intersections`＝錐縁 ∩ WGS84 terminator 楕円（θ 媒介の円残差を粗走査＋Brent、機構は `scan_periodic_sign_change_roots` に分離）→ `fundamental_to_geodetic(ζ=0)`。WGS84 前方射影往復（ζ≈0・面内距離=cone_l）＋d=π/2 二円閉形式で検証。mutation 40/39 caught・0 missed（機構は wholesale 除外）。API 露出なし。
-  - **残: (3c) 外環組立**（(3a)+(3b) を §11.4 順で `GeoPolygon` 外環化・`partial_limit` を `path()` で Some・反子午線 MultiPolygon）、**(3d) GeoPolygon GeoJSON**（`GeoPolygon::geojson_geometry`＋`to_geojson` の partial_limit feature）。要確認 #3（高緯度の単連結性）・#4（NASA rise/set 座標の入手粒度）は (3c) で詰める。
+  - **(3c-i) 南北半影限界の曲線化** ✅（2026-06-21・strict）: `trace_penumbral_limits`＝[P1,P4] を sample し `solve_limit_edge(l1,tan f1)` で南北半影限界の lockstep 2 GeoLine。`trace_central` と同型・ζ₀=0（部分食で軸が地球を外しうる）。FAST 4（2 条件・lockstep・半影>本影距離・ループ規約）。mutation 14/11 caught・2 timeout（ループ制御＝ハング検出）・0 missed。API 露出なし。
+  - **残: (3c-ii) 外環組立**（(3c-i)+(3b) を §11.4 順で `GeoPolygon` 外環化・`partial_limit` を `path()` で Some・反子午線 MultiPolygon）、**(3d) GeoPolygon GeoJSON**（`GeoPolygon::geojson_geometry`＋`to_geojson` の partial_limit feature）。要確認 #3（高緯度の単連結性）・#4（NASA rise/set 座標の入手粒度）は (3c-ii) で詰める。
 
 ## 目的
 `umbra-geo` の経路 API（中心線・限界線・部分食域・GeoJSON）の **公開型と境界のみを v0.1 で確定**し、**本実装を Milestone 9 へ明示的に後回し**する方針を文書化する（レビュー minor 確定事項 / milestone0-review §Minor「045 umbra-geo/path はv0.1スコープ外だが結果型が bessel多項式(022)必須 → v0.1は path未実装方針を明文化」）。
