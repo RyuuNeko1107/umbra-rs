@@ -25,7 +25,7 @@ use umbra_core::{
     TimeData, TimeInterval, TimeRange, TimeScales, TtInstant, UtcInstant,
 };
 use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
-use umbra_geo::{GeoLine, GeoPoint};
+use umbra_geo::{GeoLine, GeoPoint, GeoPolygon};
 
 use crate::axis_intercept::{
     great_circle_distance_km, solve_limit_edge, surface_point_for_fundamental,
@@ -571,11 +571,22 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
                 }
                 _ => (None, None, None, Vec::new()),
             };
+        // 部分食域（M9.7 残(3) 3c-ii）。部分食 phase（P1/P4 両 Some）かつ include_limits のとき、
+        // 南北半影限界＋rise/set limb 点を最大食点まわりの方位ソートで外環化（中心線とは独立＝部分食 only も Some）。
+        let partial_limit = match (&eclipse.global.partial_begin, &eclipse.global.partial_end) {
+            (Some(p1), Some(p4)) if options.include_limits => build_partial_limit(
+                &eclipse.bessel,
+                p1.time_tt,
+                p4.time_tt,
+                options.sample_interval_seconds,
+            )?,
+            _ => None,
+        };
         Ok(EclipsePath {
             center_line,
             northern_limit,
             southern_limit,
-            partial_limit: None,
+            partial_limit,
             greatest_point,
             samples,
         })
@@ -674,8 +685,7 @@ fn trace_central<M: DeltaTModel>(
 /// `Err` は伝播。始点・終点を必ず含む（端は span にクランプ）。`interval_seconds` 非正は始点のみ。
 /// **事前条件**: `[start_tt, end_tt] ⊆ bessel.fit_interval`（`trace_central` が [U1,U4] を渡すのと同様、(3c) は
 /// [P1,P4] を渡す）。区間外は `bessel.at` が `EvaluationOutsideFitInterval` を返し伝播する。
-// 外環組立 (3c-ii) が partial_limit 生成で消費するまで production からは未呼出（テストのみ）。
-#[allow(dead_code)]
+/// (3c-ii) `build_partial_limit`（→`path()` の `partial_limit`）が消費する。
 fn trace_penumbral_limits(
     bessel: &BesselianPolynomial,
     start_tt: TtInstant,
@@ -739,6 +749,38 @@ fn trace_penumbral_limits(
     }
 
     Ok((GeoLine::new(north_points), GeoLine::new(south_points)))
+}
+
+/// 部分食域の外周 `GeoPolygon`（単一外環）を構成する（M9 残(3) 3c-ii・部分食域 §11.4・[`EclipseEngine::path`]
+/// の `partial_limit` が消費）。`[start_tt, end_tt]`＝[P1,P4]。
+///
+/// **リボン法（位相保存）**: 昼面の南北半影限界（[`trace_penumbral_limits`]・(3c-i)）を **lockstep**（北[i]/南[i] が
+/// 同一サンプル時刻の対）で得て、外環 = `北限界(P1→P4 時刻順)` ++ `南限界(P4→P1 逆順)` の帯状単純多角形とする。
+/// 北限界が南限界の北を保つ（lockstep の北南割当）ため自己交差せず、umbral path（中心線）は半影帯の内側に
+/// 確実に内包される。境界点が 3 未満（半影限界が昼面にほぼ無い＝極小部分食）なら `None`。
+///
+/// **方位ソートからの是正（重要）**: 当初は全境界点を最大食点まわりの方位ソートで外環化したが、実 2024 のような
+/// **巨大領域は star-shaped でなく**中心線端点が外に落ちた（方位ソートは位相を壊す）。リボン法は限界線の
+/// 時系列順を保つので位相が正しい。**limb（rise/set）bulge** の取り込み（(3b) `cone_terminator_intersections`）は
+/// 帯の端を terminator まで張り出す**後続の精緻化 (3c-iii)**＝v1 リボンは limb 方向に過小被覆（中心線内包・partial⊃umbral
+/// は満たす・accuracy/conventions §11 で近似明記）。**前提**: `[start_tt,end_tt] ⊆ bessel.fit_interval`。反子午線
+/// MultiPolygon 分割・環向き正規化は GeoJSON 化 (3d)。
+fn build_partial_limit(
+    bessel: &BesselianPolynomial,
+    start_tt: TtInstant,
+    end_tt: TtInstant,
+    interval_seconds: f64,
+) -> Result<Option<GeoPolygon>, EclipseError> {
+    // 昼面の南北半影限界（lockstep＝北[i]/南[i] は同一時刻の対）。
+    let (north, south) = trace_penumbral_limits(bessel, start_tt, end_tt, interval_seconds)?;
+    // 帯の外環 = 北(P1→P4) ++ 南(P4→P1 逆順)。lockstep ゆえ自己交差しない単純多角形。
+    let mut ring = north.points;
+    ring.extend(south.points.into_iter().rev());
+
+    if ring.len() < 3 {
+        return Ok(None);
+    }
+    Ok(Some(GeoPolygon::new(vec![ring])))
 }
 
 /// 1 サンプル時刻の中心線点（と任意で南北限界点＋[`PathSample`]）を求める。軸/縁が地表を外す

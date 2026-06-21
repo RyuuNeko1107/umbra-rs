@@ -285,7 +285,8 @@ fn central_eclipse_produces_nonempty_center_line() {
     );
 
     // M9.3 以降: 中心食＋include_limits 既定(true) では北/南限界線は Some（中心線同様に生成）。
-    // M9.7 以降: samples も中心線と lockstep で充足（部分食域は依然 None）。詳細フィールド
+    // M9.7 以降: samples も中心線と lockstep で充足。`central_eclipse` は部分 phase（P1/P4）を持たない
+    // ので partial_limit は None（3c-ii リボン法は部分 phase があるときのみ部分食域を組む）。詳細フィールド
     // オラクルは path_limits.rs が担保。ここでは充足と lockstep（中心線と同点数）のみ縛る。
     assert!(
         path.northern_limit.is_some(),
@@ -297,7 +298,7 @@ fn central_eclipse_produces_nonempty_center_line() {
     );
     assert!(
         path.partial_limit.is_none(),
-        "partial_limit は本スライスでは None"
+        "central_eclipse は部分 phase 無し（P1/P4=None）ゆえ partial_limit=None"
     );
     assert_eq!(
         path.samples.len(),
@@ -387,10 +388,16 @@ fn noncentral_eclipse_has_no_center_line() {
             path.greatest_point, greatest_position,
             "非中心でも greatest_point は passthrough"
         );
-        // 限界線 None・samples 空。
+        // 本影南北限界線 None・samples 空（中心食でない）。
         assert!(path.northern_limit.is_none(), "northern_limit None");
         assert!(path.southern_limit.is_none(), "southern_limit None");
-        assert!(path.partial_limit.is_none(), "partial_limit None");
+        // 部分食域 partial_limit は中心食と独立（M9 残(3) 3c-ii リボン法）: この fixture は
+        // partial_begin/partial_end=Some（部分 phase あり）＋include_limits 既定(true) なので
+        // 非中心でも partial_limit=Some（部分食 only でも部分食域は存在しうる・center_line とは別経路）。
+        assert!(
+            path.partial_limit.is_some(),
+            "非中心でも部分 phase（P1/P4=Some）＋include_limits=true なら partial_limit=Some（中心食と独立）"
+        );
         assert!(
             path.samples.is_empty(),
             "samples は空, got {} 点",
@@ -484,7 +491,8 @@ fn real_2017_eclipse_center_line_crosses_north_america() {
         "中心線は最大食点の近傍を通る（最近点 {min_deg}° < 3°）"
     );
 
-    // 実皆既＋include_limits 既定(true) では北/南限界線も Some（M9.3）。partial_limit は None。
+    // 実皆既＋include_limits 既定(true) では北/南限界線も Some（M9.3）。実皆既は部分 phase（P1/P4）も
+    // 持つので partial_limit も Some（M9 残(3) 3c-ii リボン法・部分食域は中心食と独立に存在）。
     // M9.7 以降: samples も中心線と lockstep で充足（詳細フィールドは path_limits.rs で縛る）。
     assert!(
         path.northern_limit.is_some(),
@@ -494,7 +502,10 @@ fn real_2017_eclipse_center_line_crosses_north_america() {
         path.southern_limit.is_some(),
         "皆既＋既定 で southern_limit=Some（M9.3）"
     );
-    assert!(path.partial_limit.is_none(), "partial_limit None");
+    assert!(
+        path.partial_limit.is_some(),
+        "実皆既は部分 phase を持つので partial_limit=Some（3c-ii リボン法）"
+    );
     assert_eq!(
         path.samples.len(),
         path.center_line.as_ref().unwrap().points.len(),

@@ -1407,3 +1407,548 @@ fn real_2024_greatest_path_width_and_central_duration_match_nasa() {
         "2024 greatest central_duration {duration} s not in NASA ballpark [250,286] (NASA≈268.1 s)"
     );
 }
+
+// ============================================================
+// M9 残(3) 3c-ii: 部分食域 partial_limit の外環組立（**リボン法**・方位ソートから是正）
+//
+// 確定仕様（docs/algorithms/11-path-partial-domain.md §11.4/§11.5）:
+//   部分食 phase（global.partial_begin / partial_end が両方 Some）かつ include_limits=true の日食で
+//   path().partial_limit = Some(GeoPolygon)。外環は
+//     (3c-i) 南北半影限界（lockstep＝北[i]/南[i] が同一サンプル時刻の対）を
+//     `北限界(P1→P4 時刻順)` ++ `南限界(P4→P1 逆順)` で繋いだ**帯状の単純多角形**。
+//   limb（rise/set）点は v1 リボンでは使わない（terminator 張り出しは後続 (3c-iii) 精緻化）。
+//   ゆえに外環頂点は**全て (3c-i) 半影限界点**で、頂点数は偶数 2n（前半 n=北限界・後半 n=南限界逆順）。
+//   include_limits=false／部分 phase 無し（P1 or P4 None）では None。center_line（中心食のみ）と独立。
+//
+// オラクル戦略（strict・観測契約 §11.5）:
+//   - 存在: 上記の Some/None 分岐を縛る。
+//   - 頂点の正当性: 各外環頂点 P を **検証済み前方射影**（forward_project）で基本面へ戻し、
+//       半影縁条件（面内距離 ≈ |l1 − ζ·tan f1|, ζ は P 自身）を機械精度で満たす（捏造点が無い）。
+//       リボン頂点は全て半影限界点ゆえ terminator 枝は不要（§11.5）。被テスト関数の戻りは流用しない。
+//   - リボン位相: 外環頂点数が偶数 2n で、前半 i 番と後半 (2n−1−i) 番は同一サンプル時刻の北/南対
+//       ＝前半点の緯度 ≥ 後半対応点の緯度（帯の北南割当）。方位単調の前提は捨てる。
+//   - 非退化: ≥3 頂点。
+//   - 包含（partial ⊃ umbral path）: greatest_point・中心線各点が **平面 (lon,lat) ray-casting
+//       point-in-polygon**（star-shaped を仮定しない）で外環の内側。
+//   - SLOW: 実 2024 で partial_limit=Some・南北端が中心線より外・中心線全点を平面包含。
+// ============================================================
+
+/// 部分食 phase（partial_begin/partial_end=Some・P1/P4）を持つ合成中心食を `rigorous_bessel` で組む。
+/// 部分食区間 [P1,P4] は中心食区間 [U1,U4]（±span_hours）より広く（±partial_span_hours）、
+/// `rigorous_bessel` の fit_interval（epoch±2h）に収める。これにより build_partial_limit が
+/// [P1,P4] で半影限界・limb 点を収集でき partial_limit=Some になる。
+fn partial_eclipse_with_bessel(
+    bessel: BesselianPolynomial,
+    span_hours: f64,
+    partial_span_hours: f64,
+) -> SolarEclipse {
+    let epoch = bessel.epoch_tt;
+    let p1 = contact(tt_at_hours(epoch, -partial_span_hours));
+    let p4 = contact(tt_at_hours(epoch, partial_span_hours));
+    let u1 = contact(tt_at_hours(epoch, -span_hours));
+    let u4 = contact(tt_at_hours(epoch, span_hours));
+    let global = GlobalCircumstances {
+        kind: SolarEclipseKind::Total,
+        partial_begin: Some(p1),
+        central_begin: Some(u1),
+        greatest: greatest_at(geo(0.0, 0.0)),
+        central_end: Some(u4),
+        partial_end: Some(p4),
+        gamma: 0.05,
+    };
+    SolarEclipse {
+        event_key: "synthetic-partial#0".to_string(),
+        kind: SolarEclipseKind::Total,
+        global,
+        bessel,
+        metadata: metadata(),
+    }
+}
+
+/// 部分食 phase を持つ「部分食 only」（central_begin/end=None）の合成日食。
+/// 中心線は出ない（center_line=None）が、部分食域 partial_limit は Some になりうる（中心食と独立）。
+fn partial_only_eclipse(bessel: BesselianPolynomial, partial_span_hours: f64) -> SolarEclipse {
+    let epoch = bessel.epoch_tt;
+    let p1 = contact(tt_at_hours(epoch, -partial_span_hours));
+    let p4 = contact(tt_at_hours(epoch, partial_span_hours));
+    let global = GlobalCircumstances {
+        kind: SolarEclipseKind::Partial,
+        partial_begin: Some(p1),
+        central_begin: None,
+        greatest: greatest_at(geo(0.0, 0.0)),
+        central_end: None,
+        partial_end: Some(p4),
+        gamma: 0.05,
+    };
+    SolarEclipse {
+        event_key: "synthetic-partial-only#0".to_string(),
+        kind: SolarEclipseKind::Partial,
+        global,
+        bessel,
+        metadata: metadata(),
+    }
+}
+
+/// 外環頂点が **半影縁条件（面内距離 ≈ |l1 − ζ·tan f1|・自己整合ζ）** を満たすか（§11.5「頂点の正当性」）。
+/// リボン法では外環頂点は全て (3c-i) 半影限界点ゆえ terminator 枝は不要。どの瞬時要素 e で評価するか
+/// 不定なので [P1,P4] のサンプル時刻すべてで試し、いずれか 1 時刻で成立すれば妥当とする。
+/// 期待値は bessel 多項式（path とは独立な入力）から組む＝被テスト関数の戻りを流用しない。
+fn vertex_is_legitimate(
+    p: &umbra_geo::GeoPoint,
+    bessel: &BesselianPolynomial,
+    sample_times: &[TtInstant],
+    cone_tol: f64,
+) -> bool {
+    for t in sample_times {
+        let e = match bessel.at(*t) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let of = forward_project(p, &e);
+        // 半影縁条件: 面内距離 = |l1 − ζ·tan f1|（自己整合ζ）。
+        let in_plane = (of.xi - e.x).hypot(of.eta - e.y);
+        let penumbral = (e.l1 - of.zeta * e.tan_f1).abs();
+        if (in_plane - penumbral).abs() < cone_tol {
+            return true;
+        }
+    }
+    false
+}
+
+/// 平面 (lon,lat) ray-casting による point-in-polygon（標準アルゴリズム・star-shaped を仮定しない）。
+/// 点 q から +経度方向へ無限に伸ばした半直線が外環辺と交差する回数の偶奇で内外を判定する。
+/// 経度は度・**反子午線非跨ぎ・非極**の合成/実 2024 を前提（§11.5・(3d) までの制約）。
+/// リボン外環の位相（北南）を裏返す変異は包含を破るので非対称オラクルになる。
+fn point_in_polygon(ring: &[umbra_geo::GeoPoint], q: &umbra_geo::GeoPoint) -> bool {
+    let n = ring.len();
+    let (qx, qy) = (lon_deg(q), lat_deg(q));
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (lon_deg(&ring[i]), lat_deg(&ring[i]));
+        let (xj, yj) = (lon_deg(&ring[j]), lat_deg(&ring[j]));
+        // 辺 (i,j) が q の緯度 qy を跨ぎ、その交点経度が q の東（>qx）にあれば交差 1 回。
+        let crosses = (yi > qy) != (yj > qy);
+        if crosses {
+            let x_at = xi + (qy - yi) / (yj - yi) * (xj - xi);
+            if x_at > qx {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+// ------------------------------------------------------------
+// FAST: 存在（Some/None 分岐）
+// ------------------------------------------------------------
+
+/// FAST / 新規: 部分食 phase（P1/P4=Some）＋include_limits=true で partial_limit=Some(GeoPolygon)・
+/// 外環は単一リング（rings.len()==1）・≥3 頂点（非退化）。
+///
+/// 殺す変異: partial_limit を常に None にする・include_limits を無視・外環を空/2 点未満にする・
+///   rings を 0 本にする。
+#[test]
+fn partial_phase_with_limits_produces_some_polygon() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+
+    let poly = path
+        .partial_limit
+        .as_ref()
+        .expect("部分食 phase＋include_limits=true では partial_limit=Some");
+    assert_eq!(
+        poly.rings.len(),
+        1,
+        "外環は単一リング, got {}",
+        poly.rings.len()
+    );
+    assert!(
+        poly.rings[0].len() >= 3,
+        "外環は ≥3 頂点（非退化）, got {}",
+        poly.rings[0].len()
+    );
+}
+
+/// FAST / 新規: include_limits=false なら partial_limit=None（部分食 phase があっても）。
+///
+/// 殺す変異: include_limits を無視して常に partial_limit を作る・フラグを反転して解釈する。
+#[test]
+fn partial_limit_none_when_include_limits_false() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
+
+    let path = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                include_limits: false,
+                ..PathOptions::default()
+            },
+        )
+        .expect("path() は成功する");
+    assert!(
+        path.partial_limit.is_none(),
+        "include_limits=false では partial_limit=None"
+    );
+}
+
+/// FAST / 新規: 部分食 phase 無し（partial_begin か partial_end が None）なら partial_limit=None。
+/// 中心食でも P1/P4 が無ければ部分食域は組まない（partial_begin/end の && 条件）。
+/// `central_eclipse`（partial_begin/end=None）で確認。
+///
+/// 殺す変異: P1/P4 を見ずに中心食で常に partial_limit を作る・片方だけ見て作る（|| 化）。
+#[test]
+fn partial_limit_none_without_partial_phase() {
+    let engine = standard_engine(bundled_time_data());
+    // central_eclipse は partial_begin/partial_end=None（中心食のみ・部分 phase 無し）。
+    let eclipse = central_eclipse(geo(0.0, 0.0));
+    // 前提を独立確認（部分 phase が無いこと）。
+    assert!(
+        eclipse.global.partial_begin.is_none() && eclipse.global.partial_end.is_none(),
+        "central_eclipse は部分 phase 無し（P1/P4=None）"
+    );
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("中心食の path() は成功する");
+    assert!(
+        path.partial_limit.is_none(),
+        "部分 phase 無し（P1/P4=None）では partial_limit=None"
+    );
+    // 中心線・限界線は中心食ゆえ Some のまま（partial_limit None が他を巻き込まない）。
+    assert!(path.center_line.is_some(), "中心食なので center_line=Some");
+}
+
+/// FAST / 新規: 部分食 only（central_begin/end=None・P1/P4=Some）でも partial_limit=Some。
+/// center_line は None（中心食でない）。部分食域は中心食と**独立**（center_line とは別経路）。
+///
+/// 殺す変異: partial_limit を center_line（中心食）と連動させる・部分食 only で partial_limit を
+///   None にする・center_line=None のとき partial_limit も無条件 None にする。
+#[test]
+fn partial_only_eclipse_has_partial_limit_but_no_center_line() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = partial_only_eclipse(bessel, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 only の path() は成功する");
+
+    assert!(
+        path.partial_limit.is_some(),
+        "部分食 only でも P1/P4=Some なら partial_limit=Some（中心食と独立）"
+    );
+    assert!(
+        path.center_line.is_none(),
+        "部分食 only では center_line=None（中心食でない）"
+    );
+    assert!(
+        path.northern_limit.is_none() && path.southern_limit.is_none(),
+        "部分食 only では本影南北限界線も None（中心食でない）"
+    );
+}
+
+/// FAST / 新規: `sample_interval_seconds = 0.0` では `trace_penumbral_limits` が 1 サンプルのみ
+/// 評価し、外環は北 1 点＋南 1 点 = 2 頂点（または 0）＝多角形を成さない（退化ガード `ring.len()<3`）。
+/// よって partial_limit=None。
+///
+/// 殺す変異: `build_partial_limit` の退化ガード `if ring.len() < 3 { return Ok(None); }` の
+///   `< → ==`（`ring.len() == 3`）。`==3` 変異だと 1 サンプルの 2 頂点 ≠ 3 で `Some`（退化多角形）を返す。
+///   interval=0 で partial_limit=None を縛れば `==` を撃てる。ring 長は北 n＋南 n で**常に偶数**ゆえ
+///   3 になり得ず、`<3`↔`<=3` は等価（本テストは `==3` を狙う）。
+#[test]
+fn partial_limit_none_when_single_sample_degenerate() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    // partial_phase_with_limits_produces_some_polygon と同じ fixture（P1/P4=±1.5h ⊆ fit_interval ±2h）。
+    let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
+
+    let path = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                sample_interval_seconds: 0.0,
+                include_limits: true,
+                // split_antimeridian は既定値（partial_limit=None の判定には無関係）。
+                split_antimeridian: PathOptions::default().split_antimeridian,
+            },
+        )
+        .expect("interval=0 でも path() は成功する");
+
+    // interval=0 では center_line 等も 1 点になるが、本テストは partial_limit=None のみを縛る
+    //（他フィールドは別テストの責務）。
+    assert!(
+        path.partial_limit.is_none(),
+        "interval=0（1 サンプル）では外環頂点 < 3＝帯を成さず partial_limit=None。`ring.len()==3` 変異を撃つ"
+    );
+}
+
+// ------------------------------------------------------------
+// FAST: 頂点の正当性・方位ソート・非退化
+// ------------------------------------------------------------
+
+/// FAST / 新規（**頂点の正当性の主検証**）: 外環の各頂点が、半影縁条件（面内距離 ≈ |l1 − ζ·tan f1|・
+/// 自己整合ζ）を機械精度で満たす（捏造点が無い・§11.5）。リボン頂点は全て半影限界点ゆえ terminator 枝は不要。
+/// 期待値は bessel 多項式から独立に組む（被テスト関数の戻りを流用しない）。
+///
+/// 殺す変異: 外環に半影縁でない捏造点を入れる・面内距離を |l2|（本影）で測る（半径取り違え・桁違い）・
+///   |L1'| を中心軸 ζ₀ で測る（点自身の ζ でない）・l1↔l2 や tan_f1↔tan_f2 の取り違え。
+#[test]
+fn partial_limit_vertices_satisfy_penumbral_conditions() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+    let ring = &poly.rings[0];
+
+    // [P1,P4] のサンプル時刻列（build_partial_limit が収集に使う区間）。
+    let p1 = eclipse.global.partial_begin.as_ref().unwrap().time_tt;
+    let p4 = eclipse.global.partial_end.as_ref().unwrap().time_tt;
+    let times = lockstep_sample_times(p1, p4, PathOptions::default().sample_interval_seconds);
+
+    // 前方射影は厳密に閉じるが、頂点がどのサンプル時刻由来か不定なので各時刻で試す。
+    // cone_tol は半影縁の面内距離一致（厳密 ~1e-7）、zeta_tol は terminator 点の ζ≈0。
+    for (j, p) in ring.iter().enumerate() {
+        assert!(
+            vertex_is_legitimate(p, &bessel, &times, 1e-6),
+            "外環頂点[{j}] (lat={}, lon={}) が半影縁条件を満たさない（捏造点）",
+            lat_deg(p),
+            lon_deg(p)
+        );
+    }
+}
+
+/// FAST / 新規（**リボン位相の主検証**・方位ソートから是正）: 外環は `北限界(P1→P4) ++ 南限界(P4→P1 逆順)`
+/// の帯状単純多角形。頂点数は偶数 2n で、前半 i 番（北限界・時刻順）と後半 (2n−1−i) 番（南限界・逆順）は
+/// 同一サンプル時刻の北/南対＝前半点の緯度 ≥ 後半対応点の緯度（帯の北南割当）。方位単調の前提は捨てる。
+///
+/// 殺す変異: 北南を入れ替えてリボンを組む（前半が南・後半が北になり緯度大小が反転）・南限界を逆順にせず
+///   そのまま繋ぐ（位相が壊れ前半 i↔後半 (2n−1−i) の同時刻対が崩れて緯度大小が破れる）・北南を同点列に
+///   する（緯度差ゼロで分離消失）・前半/後半の長さを食い違わせる（頂点数が奇数 or n がズレ対が崩れる）。
+#[test]
+fn partial_limit_ring_has_ribbon_phase_north_then_south_reversed() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+    let ring = &poly.rings[0];
+    let m = ring.len();
+
+    // 頂点数は偶数 2n（前半=北限界 n 点・後半=南限界 n 点逆順）。
+    assert_eq!(
+        m % 2,
+        0,
+        "外環頂点数は偶数 2n（北 n ++ 南 n 逆順）, got {m}"
+    );
+    let n = m / 2;
+    assert!(n >= 2, "片側半影限界は ≥2 点（非退化リボン）, got n={n}");
+
+    // 前半 i 番（北・時刻順）と後半 (2n−1−i) 番（南・逆順）は同一サンプル時刻の北/南対。
+    // 北限界 ≥ 南限界（lockstep の北南割当）。等号は微小マージン許容。
+    const EPS: f64 = 1.0e-6;
+    let mut max_gap = 0.0_f64;
+    for i in 0..n {
+        let north = lat_deg(&ring[i]);
+        let south = lat_deg(&ring[m - 1 - i]);
+        assert!(
+            north >= south - EPS,
+            "リボン対 i={i}: 前半（北限界）緯度 {north} ≥ 後半（南限界）緯度 {south} でない（北南反転/逆順欠落）"
+        );
+        max_gap = max_gap.max(north - south);
+    }
+    // 帯が実際に分離している（北南が同点列＝幅ゼロでない）ことを補強。
+    assert!(
+        max_gap > 1.0e-3,
+        "リボンの北南緯度差が全対でほぼゼロ（帯が分離していない・北南同点列の疑い）, max_gap={max_gap}"
+    );
+
+    // **逆順欠落の直接撃ち**（緯度大小だけでは合成経路次第で生存しうる変異を、経度の時系列で確実に撃つ）:
+    // 合成経路は東進（lon 単調増加）。前半（北・P1→P4 時刻順）の経度は単調増加し、後半（南・P4→P1 逆順）の
+    // 経度は単調減少する。南限界を逆順にせずそのまま繋ぐ変異では後半が単調増加になり、この向きが破れる。
+    // 期待値は path() でなく「東進＋リボン位相（北++南逆順）」の定義から独立に組む（追認回避）。
+    for i in 0..(n - 1) {
+        let front_a = lon_deg(&ring[i]);
+        let front_b = lon_deg(&ring[i + 1]);
+        assert!(
+            front_b > front_a,
+            "前半（北限界・時刻順）の経度が単調増加でない（i={i}: {front_a}→{front_b}）"
+        );
+        let back_a = lon_deg(&ring[n + i]);
+        let back_b = lon_deg(&ring[n + i + 1]);
+        assert!(
+            back_b < back_a,
+            "後半（南限界・逆順）の経度が単調減少でない（南限界の逆順欠落の疑い・i={i}: {back_a}→{back_b}）"
+        );
+    }
+}
+
+// ------------------------------------------------------------
+// FAST: 包含（greatest_point・中心線点が外環内側）— 平面 point-in-polygon
+// ------------------------------------------------------------
+
+/// FAST / 新規（**包含の主検証**）: 中心線の各点が、**平面 (lon,lat) ray-casting point-in-polygon**
+/// （star-shaped を仮定しない）で外環（半影帯リボン）の内側にある（partial ⊃ umbral path・§11.5）。
+/// 中心軸は半影帯の内側を通るので、本影中心線は半影リボンに内包される。
+///
+/// 注: `path.greatest_point` は合成メタデータの便宜値（geo(0,0)）で実際の半影帯（≈30–49°N）上に無いため
+/// 包含判定の対象にしない。包含の本質は中心線（実 bessel 由来）が半影帯に入ること。
+///
+/// 殺す変異: リボンの北南を取り違える/逆順を欠いて自己交差させる（包含が崩れる）・外環を中心線より
+///   内側に縮める・南北を取り違えて中心線が外に出る・外環頂点を捏造して領域が中心線を含まなくなる。
+#[test]
+fn partial_limit_contains_center_line() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+    let ring = &poly.rings[0];
+
+    // 中心線の各点が外環内側（partial ⊃ umbral path）。
+    let center = path
+        .center_line
+        .as_ref()
+        .expect("中心食なので center_line=Some");
+    for (i, c) in center.points.iter().enumerate() {
+        assert!(
+            point_in_polygon(ring, c),
+            "中心線点[{i}] (lat={}, lon={}) が部分食域の外（partial ⊅ umbral path）",
+            lat_deg(c),
+            lon_deg(c)
+        );
+    }
+}
+
+// ------------------------------------------------------------
+// SLOW: 実 2024-04-08 — partial_limit ballpark
+// ------------------------------------------------------------
+
+/// SLOW / 新規（リボン法・方位ソートから是正）: 実エンジンで 2024-04-08 皆既を search → path()。
+/// partial_limit=Some・外環 ≥3 頂点・各頂点が妥当な緯度経度・(a) 部分食域が皆既帯より緯度方向に広い
+/// （リボンのスパン > 中心線スパン・北端が中心線北端より外）・(b) 最大食付近の中心線サンプルが
+/// **平面 (lon,lat) ray-casting point-in-polygon** で部分食域に包含（partial ⊃ umbral path）。
+/// NASA 緯度経度の直接一致は中心線位置精度律速ゆえ縛らず、桁の整合（広さ＋最大食付近の包含）で締める。
+/// de440s 不要（解析暦）。
+///
+/// 注（v1 リボンの limb 過小被覆・§11.4・要確認3）: リボンは昼面の半影限界帯のみで limb（terminator）方向に
+/// 張り出さない。実 2024 では [P1,P4] の端で半影縁が地球の縁（terminator）へ届き北限界が高緯度（~73°N）へ
+/// 膨らむ一方、中心線の南端（早期・~6.7°S）/北東端（晩期）は帯の同位相を外れる。よって**中心線全点の包含は
+/// v1 では成立しない**（§11.4 の「中心線内包」は方位ソート是正前の前提で、実 2024 の planar PIP では端部が外）。
+/// テストは §11.5 の弱オラクル方針に従い「帯が皆既帯より広い」＋「最大食付近（半影帯が最も広い）の中心線が内包」で
+/// partial ⊃ umbral path の本質を縛る（全点内包は過小被覆と衝突するため縛らない）。terminator 張り出しの
+/// 取り込み（(3c-iii)）で全点内包が回復したら本テストを全点版へ強化できる。
+///
+/// 殺す変異: 実日食で partial_limit を None/捏造にする・外環を皆既帯より狭く縮める・最大食付近で中心線を
+///   含まない・リボンの北南を取り違える/逆順を欠いて自己交差させる。
+#[test]
+fn real_2024_eclipse_partial_limit_is_plausible() {
+    let engine = standard_engine(bundled_time_data());
+    let range = umbra_core::TimeRange {
+        start: utc(2024, 4, 8, 0, 0, 0.0),
+        end: utc(2024, 4, 9, 0, 0, 0.0),
+    };
+    let eclipses = engine
+        .search(range)
+        .expect("2024-04-08 範囲の search は成功する");
+    let eclipse = eclipses
+        .iter()
+        .find(|e| matches!(e.kind, SolarEclipseKind::Total))
+        .expect("2024-04-08 皆既が見つかる");
+
+    let path = engine
+        .path(eclipse, PathOptions::default())
+        .expect("実皆既の path() は成功する");
+
+    let poly = path
+        .partial_limit
+        .as_ref()
+        .expect("実 2024 は部分食 phase を持つので partial_limit=Some");
+    let ring = &poly.rings[0];
+    assert!(ring.len() >= 3, "実外環は ≥3 頂点, got {}", ring.len());
+    for p in ring {
+        assert!(
+            lat_lon_in_range(p),
+            "外環頂点が妥当な緯度経度域にない: lat={} lon={}",
+            lat_deg(p),
+            lon_deg(p)
+        );
+    }
+
+    let center = path
+        .center_line
+        .as_ref()
+        .expect("皆既なので center_line=Some");
+    let greatest = &path.greatest_point;
+
+    // (a) 部分食域は本影帯より緯度方向に広い（半影帯 ⊃ 皆既帯）。リボンの緯度スパンが中心線より大きく、
+    //     北端は中心線北端より外（半影縁は皆既帯の外側へ張り出す）。v1 リボンは limb 方向に過小被覆
+    //     （§11.4・要確認3）なので南端の厳密外側化までは縛らず、スパン優位と北端外側で「広い」を締める。
+    let ring_max_lat = ring.iter().map(lat_deg).fold(f64::NEG_INFINITY, f64::max);
+    let ring_min_lat = ring.iter().map(lat_deg).fold(f64::INFINITY, f64::min);
+    let center_max_lat = center
+        .points
+        .iter()
+        .map(lat_deg)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let center_min_lat = center
+        .points
+        .iter()
+        .map(lat_deg)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        ring_max_lat > center_max_lat,
+        "部分食域の北端緯度 {ring_max_lat} が中心線北端 {center_max_lat} より北（半影帯は皆既帯より広い）"
+    );
+    assert!(
+        (ring_max_lat - ring_min_lat) > (center_max_lat - center_min_lat),
+        "部分食域の緯度スパン {} が中心線スパン {} より広い（半影帯 ⊃ 皆既帯）",
+        ring_max_lat - ring_min_lat,
+        center_max_lat - center_min_lat
+    );
+
+    // (b) 最大食点に最も近い中心線サンプルが部分食域に平面 point-in-polygon で包含される
+    //     （partial ⊃ umbral path の本質。最大食付近は半影帯の幅が最大ゆえ確実に内側）。
+    //     v1 リボンは limb 方向に過小被覆で中心線の端部（U1/U4 近傍）は外に出ることがある（§11.4）ため
+    //     全点内包は縛らず、最大食付近の連続窓で内包を確認する（追認回避＝窓は greatest との距離で選ぶ）。
+    let g_lat = lat_deg(greatest);
+    let g_lon = lon_deg(greatest);
+    let mid = (0..center.points.len())
+        .min_by(|&a, &b| {
+            let da = (lat_deg(&center.points[a]) - g_lat).powi(2)
+                + (lon_deg(&center.points[a]) - g_lon).powi(2);
+            let db = (lat_deg(&center.points[b]) - g_lat).powi(2)
+                + (lon_deg(&center.points[b]) - g_lon).powi(2);
+            da.partial_cmp(&db).expect("有限距離")
+        })
+        .expect("中心線は非空");
+    let lo = mid.saturating_sub(10);
+    let hi = (mid + 11).min(center.points.len());
+    for i in lo..hi {
+        let c = &center.points[i];
+        assert!(
+            point_in_polygon(ring, c),
+            "実 2024: 最大食付近の中心線点[{i}] (lat={}, lon={}) が部分食域の外（partial ⊅ umbral path）",
+            lat_deg(c),
+            lon_deg(c)
+        );
+    }
+}

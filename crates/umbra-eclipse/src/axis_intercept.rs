@@ -345,6 +345,20 @@ pub(crate) fn great_circle_distance_km(a: &GeoPoint, b: &GeoPoint) -> f64 {
     2.0 * EARTH_MEAN_RADIUS_KM * h.sqrt().asin()
 }
 
+/// `from` から `to` への大圏**初期方位**（bearing, rad・`[0, 2π)`・北=0・東=π/2・南=π・西=3π/2）。
+///
+/// 部分食域の外周組立（§11.4・(3c-ii)）で、全境界点を最大食点まわりの方位で整列するのに使う。
+/// 標準式 `θ = atan2(sinΔλ·cosφ2, cosφ1·sinφ2 − sinφ1·cosφ2·cosΔλ)`（Δλ=λ2−λ1）を `[0,2π)` へ正規化する。
+/// 経度ラップに非依存（Δλ の三角関数経由）。
+pub(crate) fn initial_bearing(from: &GeoPoint, to: &GeoPoint) -> f64 {
+    let phi1 = from.lat.radians().0;
+    let phi2 = to.lat.radians().0;
+    let dlon = to.lon.radians().0 - from.lon.radians().0;
+    let y = dlon.sin() * phi2.cos();
+    let x = phi1.cos() * phi2.sin() - phi1.sin() * phi2.cos() * dlon.cos();
+    y.atan2(x).rem_euclid(TAU)
+}
+
 #[cfg(test)]
 mod tests {
     //! ISSUE-023 S6a-i 受け入れテスト（strict・逆射影 = 前方射影の逆）。
@@ -1245,6 +1259,122 @@ mod tests {
         assert!(
             (got - expected).abs() < 0.5,
             "diagonal pair: got {got} km, expected ≈{expected} km"
+        );
+    }
+
+    // ====================================================================
+    // initial_bearing の純関数ユニットテスト（高速・既知方位の閉形式オラクル, M9 残(3) 3c-ii）
+    //
+    // 確定仕様（docs/algorithms/11-path-partial-domain.md §11.4）:
+    //   θ = atan2(sinΔλ·cosφ2, cosφ1·sinφ2 − sinφ1·cosφ2·cosΔλ) を [0,2π) 正規化（Δλ=lon2−lon1）。
+    //   北=0・東=π/2・南=π・西=3π/2。
+    //
+    // 戦略（mutation 意識・非対称オラクル）: from を非赤道・非自明な点（35°N,139°E）に置き、
+    // 四方位（真北・真東・真南・真西）の既知値を絶対値で縛る。atan2 引数順の取り違え（x↔y）は
+    // 90°回した値になり落ちる。sinΔλ↔cosΔλ・cosφ↔sinφ の取り違え・[0,2π) 正規化の脱落も撃つ。
+    // ====================================================================
+
+    /// 真東: 同緯度・東隣（赤道上で φ1=φ2=0・lon2>lon1）の初期方位 = π/2（東）。
+    /// 赤道では大圏初期方位は厳密に真東。atan2 引数順を x↔y に取り違えると 0（北）になり落ちる。
+    #[test]
+    fn initial_bearing_due_east_on_equator() {
+        let from = GeoPoint::from_degrees(0.0, 0.0).expect("valid");
+        let to = GeoPoint::from_degrees(0.0, 10.0).expect("valid");
+        let b = initial_bearing(&from, &to);
+        assert!(
+            close(b, PI / 2.0, 1e-9),
+            "赤道で東隣の初期方位は π/2（東）, got {b}"
+        );
+    }
+
+    /// 真西: 赤道上で西隣（lon2<lon1）の初期方位 = 3π/2（西・[0,2π) 正規化後）。
+    /// 素の atan2 は −π/2 を返すが、[0,2π) 正規化で +3π/2。正規化脱落（−π/2 のまま）を撃つ。
+    #[test]
+    fn initial_bearing_due_west_normalized_to_three_half_pi() {
+        let from = GeoPoint::from_degrees(0.0, 0.0).expect("valid");
+        let to = GeoPoint::from_degrees(0.0, -10.0).expect("valid");
+        let b = initial_bearing(&from, &to);
+        assert!(
+            close(b, 3.0 * PI / 2.0, 1e-9),
+            "赤道で西隣の初期方位は 3π/2（西・正規化後）, got {b}"
+        );
+        // 正規化されて [0,2π) に収まる（負値のまま返さない）。
+        assert!(
+            (0.0..TAU).contains(&b),
+            "方位は [0,2π) に正規化される, got {b}"
+        );
+    }
+
+    /// 真北: 同経度・高緯度側（Δλ=0・φ2>φ1）の初期方位 = 0（北）。
+    /// sinΔλ=0 ゆえ y 成分=0、x 成分=cosφ1·sinφ2−sinφ1·cosφ2·1=sin(φ2−φ1)>0 ⇒ atan2(0,+)=0。
+    /// 非赤道 from（35°N）で sinφ1≠0・cosφ1≠0 の両項を効かせる（cosφ↔sinφ 取り違えを撃つ）。
+    #[test]
+    fn initial_bearing_due_north_same_meridian() {
+        let from = GeoPoint::from_degrees(35.0, 139.0).expect("valid");
+        let to = GeoPoint::from_degrees(60.0, 139.0).expect("valid");
+        let b = initial_bearing(&from, &to);
+        assert!(
+            close(b, 0.0, 1e-9),
+            "同経度で北側の初期方位は 0（北）, got {b}"
+        );
+    }
+
+    /// 真南: 同経度・低緯度側（Δλ=0・φ2<φ1）の初期方位 = π（南）。
+    /// y 成分=0、x 成分=sin(φ2−φ1)<0 ⇒ atan2(0,−)=π。非赤道 from で全項を効かせる。
+    #[test]
+    fn initial_bearing_due_south_same_meridian() {
+        let from = GeoPoint::from_degrees(35.0, 139.0).expect("valid");
+        let to = GeoPoint::from_degrees(10.0, 139.0).expect("valid");
+        let b = initial_bearing(&from, &to);
+        assert!(
+            close(b, PI, 1e-9),
+            "同経度で南側の初期方位は π（南）, got {b}"
+        );
+    }
+
+    /// 非自明な斜め方位の絶対値ピン（北東向き）: from=35°N,139°E → to=45°N,150°E。
+    /// 標準式から独立に手計算した θ（[0,2π) 正規化）と機械精度で一致。第1象限（0<θ<π/2）の北東。
+    /// atan2 引数順（x↔y）・sinΔλ↔cosΔλ・cosφ1·sinφ2 と sinφ1·cosφ2·cosΔλ の項取り違え・符号を撃つ。
+    #[test]
+    fn initial_bearing_diagonal_matches_closed_form() {
+        let from = GeoPoint::from_degrees(35.0, 139.0).expect("valid");
+        let to = GeoPoint::from_degrees(45.0, 150.0).expect("valid");
+        // 独立な閉形式（contract の式をそのまま組む。被テスト関数の戻りは使わない）。
+        let phi1 = 35.0_f64.to_radians();
+        let phi2 = 45.0_f64.to_radians();
+        let dlon = (150.0_f64 - 139.0).to_radians();
+        let y = dlon.sin() * phi2.cos();
+        let x = phi1.cos() * phi2.sin() - phi1.sin() * phi2.cos() * dlon.cos();
+        let expected = {
+            let raw = y.atan2(x);
+            raw.rem_euclid(TAU)
+        };
+        let b = initial_bearing(&from, &to);
+        assert!(
+            close(b, expected, 1e-9),
+            "斜め方位 {b} が閉形式 {expected} に一致しない"
+        );
+        // 北東＝第1象限（0<θ<π/2）であることも独立に確認（東 π/2 と北 0 の取り違えを補強）。
+        assert!(
+            b > 0.0 && b < PI / 2.0,
+            "北東向きは第1象限 (0,π/2), got {b}"
+        );
+    }
+
+    /// 方位の向き非対称性: bearing(A→B) と bearing(B→A) は同じでない（東隣の往復で π/2 vs 3π/2）。
+    /// Δλ=lon2−lon1 の引き算方向（lon1↔lon2 取り違え＝Δλ の符号反転）を撃つ。
+    #[test]
+    fn initial_bearing_is_directional_not_symmetric() {
+        let a = GeoPoint::from_degrees(0.0, 0.0).expect("valid");
+        let b = GeoPoint::from_degrees(0.0, 10.0).expect("valid");
+        let ab = initial_bearing(&a, &b);
+        let ba = initial_bearing(&b, &a);
+        assert!(close(ab, PI / 2.0, 1e-9), "A→B は東 π/2, got {ab}");
+        assert!(close(ba, 3.0 * PI / 2.0, 1e-9), "B→A は西 3π/2, got {ba}");
+        // 明示的に非対称（Δλ 符号反転＝両者が一致する変異を撃つ）。
+        assert!(
+            !close(ab, ba, 1e-6),
+            "方位は向き依存（A→B ≠ B→A）でなければならない: {ab} vs {ba}"
         );
     }
 }
