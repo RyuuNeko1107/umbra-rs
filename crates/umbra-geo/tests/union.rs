@@ -1346,3 +1346,633 @@ fn union_regression_asymmetric_point_contact_rectangle_and_triangle() {
         &[(0.0, 0.0), (3.0, 0.0), (3.0, 2.0), (0.0, 2.0)],
     );
 }
+
+// ============================================================
+// 回帰（§11.7 手順 7・8 と退化方針「共線重なり」を直接観測する）
+// ============================================================
+
+/// 穴を**符号付き面積の絶対値**で探す（穴の並び順は契約外なので順序に依存しない）。
+fn find_hole_by_area(poly: &GeoPolygon, area: f64) -> &[GeoPoint] {
+    poly.rings[1..]
+        .iter()
+        .find(|h| close(signed_area(h).abs(), area, AREA_TOL))
+        .unwrap_or_else(|| {
+            let got: Vec<f64> = poly.rings[1..].iter().map(|h| signed_area(h)).collect();
+            panic!("面積 {area} の穴が無い（穴の符号付き面積 {got:?}）")
+        })
+}
+
+/// 出力リングに同一頂点が 2 度現れない（自己接触環・重複辺の残留を検出する）。
+fn assert_no_repeated_vertex(r: &[GeoPoint]) {
+    let coords: Vec<(f64, f64)> = r.iter().map(lonlat).collect();
+    for i in 0..coords.len() {
+        for j in (i + 1)..coords.len() {
+            assert!(
+                !(close(coords[i].0, coords[j].0, TOL) && close(coords[i].1, coords[j].1, TOL)),
+                "同一頂点 {:?} がリングに重複して出現",
+                coords[i]
+            );
+        }
+    }
+}
+
+/// **§11.7 手順 8「各穴を、それを含む最小面積の外環に割り当てる」**（二重入れ子）。
+///
+/// 4 本のバーで大アニュラス（外環 `(0,0)-(20,16)`＝320・穴 `(1,1)-(19,15)`＝252）を作り、
+/// その穴の中に 4 本の細いバーで**島アニュラス**（外環 `(5,4)-(13,11)`＝56・穴 `(6,5)-(12,10)`＝30）
+/// を置く。島の穴は幾何的に**2 つの外環**（大外環・島外環）に含まれるので、
+/// 「含む外環のうち最小のもの」＝島外環に割り当てられねばならない。
+///
+/// 期待: 2 多角形（面積降順 320 → 56）で、**それぞれちょうど 1 つの穴**を持つ。
+/// 正味面積は 320−252=68 と 56−30=26。
+///
+/// 殺す変異: 穴を「最初に見つかった含む外環」や「最大の含む外環」へ割り当てる（先頭多角形が
+/// 穴 2 つ・島が穴なし＝正味 38 と 56）・穴の包含判定を外環ではなく穴で行う・島の穴を
+/// 独立多角形として返す（out.len()==3）・面積降順の崩れ。
+#[test]
+fn union_regression_hole_assigned_to_smallest_containing_outer_ring() {
+    let big = [
+        rect(0.0, 0.0, 20.0, 1.0),
+        rect(0.0, 15.0, 20.0, 16.0),
+        rect(0.0, 0.0, 1.0, 16.0),
+        rect(19.0, 0.0, 20.0, 16.0),
+    ];
+    let island = [
+        rect(5.0, 4.0, 13.0, 5.0),
+        rect(5.0, 10.0, 13.0, 11.0),
+        rect(5.0, 4.0, 6.0, 11.0),
+        rect(12.0, 4.0, 13.0, 11.0),
+    ];
+    let inputs: Vec<Vec<GeoPoint>> = big.iter().chain(island.iter()).cloned().collect();
+    let out = union_rings(&inputs);
+
+    assert_eq!(out.len(), 2, "大アニュラス + 島アニュラス = 2 多角形");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+
+    // 先頭 = 大アニュラス。穴はちょうど 1 つ（島の穴を奪ってはならない）。
+    assert_eq!(out[0].rings.len(), 2, "大アニュラスの穴はちょうど 1 つ");
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[(0.0, 0.0), (20.0, 0.0), (20.0, 16.0), (0.0, 16.0)],
+    );
+    assert!(
+        close(signed_area(&out[0].rings[1]), -252.0, AREA_TOL),
+        "大アニュラスの穴の符号付き面積 {}",
+        signed_area(&out[0].rings[1])
+    );
+    assert_ring_matches(
+        &out[0].rings[1],
+        &[(1.0, 1.0), (1.0, 15.0), (19.0, 15.0), (19.0, 1.0)],
+    );
+    assert!(
+        close(net_area(&out[0]), 68.0, AREA_TOL),
+        "{}",
+        net_area(&out[0])
+    );
+
+    // 2 番目 = 島アニュラス。自分の穴をちょうど 1 つ持つ。
+    assert_eq!(out[1].rings.len(), 2, "島アニュラスの穴はちょうど 1 つ");
+    assert_ring_matches(
+        &out[1].rings[0],
+        &[(5.0, 4.0), (13.0, 4.0), (13.0, 11.0), (5.0, 11.0)],
+    );
+    assert!(
+        close(signed_area(&out[1].rings[1]), -30.0, AREA_TOL),
+        "島の穴の符号付き面積 {}",
+        signed_area(&out[1].rings[1])
+    );
+    assert_ring_matches(
+        &out[1].rings[1],
+        &[(6.0, 5.0), (6.0, 10.0), (12.0, 10.0), (12.0, 5.0)],
+    );
+    assert!(
+        close(net_area(&out[1]), 26.0, AREA_TOL),
+        "{}",
+        net_area(&out[1])
+    );
+}
+
+/// **§11.7 手順 7「各頂点の出辺を入射辺の逆向きからの角度で選ぶ（最も右回り側）」**:
+/// 穴が**内部の 1 点でくびれて 2 つに分かれる**配置。
+///
+/// 下バー `(0,0)-(10,1)`・上バー `(0,9)-(10,10)`・左バー `(0,0)-(1,10)` と、右側を塞ぐ
+/// くさび三角形 `[(10,0),(10,10),(1,4)]`。くさびの頂点 `(1,4)` は左バーの右辺 `lon=1` の
+/// 途中に乗る。頂点 `(1,4)` には境界半辺が 4 本（`lon=1` の上下 2 本・くさびの 2 辺、
+/// 傾き −4/9 と 2/3 で非対称）集まる。
+///
+/// 期待: 1 多角形、外環は正方形 `(0,0)-(10,10)`（面積 100）、穴は**2 つ**:
+/// 下穴 `(1,1),(7.75,1),(1,4)`（面積 10.125）・上穴 `(1,4),(8.5,9),(1,9)`（面積 18.75）。
+/// 正味 100 − 28.875 = 71.125。
+///
+/// 殺す変異: 分岐頂点で最も右回りでなく最も左回り（または入射順・任意）の出辺を選ぶ
+/// （2 穴が `(1,4)` を 2 度通る 1 本の自己接触環になり rings.len()==2・穴の頂点 6）・
+/// 角度比較の基準を入射辺の逆向きにしない・くさびの端点接触 `(1,4)` を分割点にしない
+/// （穴が 1 つになり面積が変わる）。
+#[test]
+fn union_regression_branch_vertex_pinches_hole_into_two_holes() {
+    let bottom = rect(0.0, 0.0, 10.0, 1.0);
+    let top = rect(0.0, 9.0, 10.0, 10.0);
+    let left = rect(0.0, 0.0, 1.0, 10.0);
+    let wedge = ring(&[(10.0, 0.0), (10.0, 10.0), (1.0, 4.0)]);
+    let inputs = vec![bottom, top, left, wedge];
+    let out = union_rings(&inputs);
+
+    assert_eq!(out.len(), 1, "くびれた穴は同じ外環の 2 穴（多角形は 1 つ）");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(
+        out[0].rings.len(),
+        3,
+        "外環 1 + 穴 2（自己接触した 1 穴に融合してはならない）"
+    );
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+    );
+
+    let lower = find_hole_by_area(&out[0], 10.125);
+    assert_eq!(lower.len(), 3, "下穴は三角形");
+    assert_ring_matches(lower, &[(1.0, 1.0), (1.0, 4.0), (7.75, 1.0)]);
+    let upper = find_hole_by_area(&out[0], 18.75);
+    assert_eq!(upper.len(), 3, "上穴は三角形");
+    assert_ring_matches(upper, &[(1.0, 4.0), (1.0, 9.0), (8.5, 9.0)]);
+
+    assert!(
+        close(net_area(&out[0]), 71.125, AREA_TOL),
+        "{}",
+        net_area(&out[0])
+    );
+}
+
+/// **§11.7 手順 7（最も右回りの出辺）**: 穴の角が**外環に 1 点で接する**配置。
+///
+/// 下バー `(0,0)-(10,1)`・上バー `(0,9)-(10,10)`・右バー `(9,0)-(10,10)` と、左側を塞ぐ
+/// 2 つの三角形 `[(0,0),(2.5,0),(0,5)]`・`[(0,5),(0,10),(5,10)]`。2 三角形は `(0,5)` だけを
+/// 共有し、そこで外環（`lon=0` の上下）と穴の 2 辺（傾き 5/−2.5 と 5/5、非対称）の
+/// 計 4 本の境界半辺が集まる。
+///
+/// 期待: 1 多角形、外環は正方形 `(0,0)-(10,10)`（面積 100・全頂点が正方形の境界上）、
+/// 穴はちょうど 1 つ `(0,5),(4,9),(9,9),(9,1),(2,1)`（CW・面積 60）。正味 40。
+///
+/// 殺す変異: 分岐頂点 `(0,5)` で外環の歩行が穴の辺へ曲がる（外環と穴が 1 本の自己接触環に
+/// 融合して rings.len()==1・正味面積が 40 と一致しない）・穴側の歩行が外環へ抜ける・
+/// 接触点 `(0,5)` を穴の頂点から落とす（穴が 4 頂点・面積 60 以外になる）。
+#[test]
+fn union_regression_branch_vertex_hole_touching_outer_ring_stays_hole() {
+    let bottom = rect(0.0, 0.0, 10.0, 1.0);
+    let top = rect(0.0, 9.0, 10.0, 10.0);
+    let right = rect(9.0, 0.0, 10.0, 10.0);
+    let lower_wedge = ring(&[(0.0, 0.0), (2.5, 0.0), (0.0, 5.0)]);
+    let upper_wedge = ring(&[(0.0, 5.0), (0.0, 10.0), (5.0, 10.0)]);
+    let inputs = vec![bottom, top, right, lower_wedge, upper_wedge];
+    let out = union_rings(&inputs);
+
+    assert_eq!(out.len(), 1, "穴が外環に接しても多角形は 1 つ");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(
+        out[0].rings.len(),
+        2,
+        "外環 1 + 穴 1（融合して 1 環になってはならない）"
+    );
+
+    // 外環: 正方形 (0,0)-(10,10)。接触点 (0,5) は lon=0 上の共線点なので頂点数は縛らず、
+    // 面積 100・全頂点が正方形の境界上・4 隅の存在で縛る。
+    assert!(
+        close(signed_area(&out[0].rings[0]), 100.0, AREA_TOL),
+        "外環面積 {}",
+        signed_area(&out[0].rings[0])
+    );
+    for pt in &out[0].rings[0] {
+        let (lon, lat) = lonlat(pt);
+        let on_v = close(lon, 0.0, TOL) || close(lon, 10.0, TOL);
+        let on_h = close(lat, 0.0, TOL) || close(lat, 10.0, TOL);
+        assert!(
+            (on_v && (-TOL..=10.0 + TOL).contains(&lat))
+                || (on_h && (-TOL..=10.0 + TOL).contains(&lon)),
+            "外環頂点 ({lon},{lat}) が正方形 (0,0)-(10,10) の境界上にない（穴と融合している疑い）"
+        );
+    }
+    for corner in [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)] {
+        assert!(
+            out[0].rings[0]
+                .iter()
+                .any(|pt| close(lonlat(pt).0, corner.0, TOL) && close(lonlat(pt).1, corner.1, TOL)),
+            "隅 {corner:?} が外環頂点に無い"
+        );
+    }
+
+    // 穴: 5 頂点・CW・面積 60。接触点 (0,5) を頂点として含む。
+    assert_eq!(out[0].rings[1].len(), 5, "穴は 5 頂点");
+    assert!(
+        close(signed_area(&out[0].rings[1]), -60.0, AREA_TOL),
+        "穴の符号付き面積 {}",
+        signed_area(&out[0].rings[1])
+    );
+    assert_ring_matches(
+        &out[0].rings[1],
+        &[(0.0, 5.0), (4.0, 9.0), (9.0, 9.0), (9.0, 1.0), (2.0, 1.0)],
+    );
+    assert!(
+        close(net_area(&out[0]), 40.0, AREA_TOL),
+        "{}",
+        net_area(&out[0])
+    );
+}
+
+/// **§11.7 手順 3「共線重なりも分割点として登録する」＋手順 5「無向重複除去」**:
+/// 共線重なりの分割点が、共線登録**以外**からは得られない配置（外周側・水平）。
+///
+/// `A=(0,0)-(10,2)` と `B=[(3,0),(6,0),(12,0),(12,5),(3,5)]`。両者は下辺 `lat=0` を
+/// `lon∈[3,10]` で共線重複し、この区間は**両方から見て外側**（＝和の境界に残る）。
+/// B の頂点 `(6,0)` は A の下辺の内部に乗るが、その両隣の辺 `(3,0)-(6,0)`・`(6,0)-(12,0)` は
+/// ともに A の辺と共線で、`(6,0)` を通る横断辺は存在しない。したがって A の下辺の `lon=6` での
+/// 分割は共線重なりの登録からしか生じない。分割されないと A の断片 `(3,0)-(10,0)` と
+/// B の断片 `(3,0)-(6,0)`・`(6,0)-(10,0)` が別キーとなって畳まれず、境界辺が二重に残る。
+///
+/// 期待: 1 多角形・穴なし・外環は `(0,0),(12,0),(12,5),(3,5),(3,2),(0,2)`（共線点は落ちる）・
+/// 面積 20+45−14 = **51**・同一頂点の重複なし。
+///
+/// 殺す変異: 共線重なりの分割点登録を無効化する／端点だけ登録し内部の頂点を落とす
+/// （境界辺の二重残留＝頂点の重複出現・余計な頂点・面積不一致）・重複除去を分割前に行う。
+#[test]
+fn union_regression_collinear_overlap_is_sole_split_source_horizontal() {
+    let a = rect(0.0, 0.0, 10.0, 2.0);
+    let b = ring(&[(3.0, 0.0), (6.0, 0.0), (12.0, 0.0), (12.0, 5.0), (3.0, 5.0)]);
+    let inputs = vec![a, b];
+    let out = union_rings(&inputs);
+
+    assert_eq!(out.len(), 1, "重なるので単一成分");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(out[0].rings.len(), 1, "穴は無い");
+    assert_no_repeated_vertex(&out[0].rings[0]);
+    assert!(
+        close(net_area(&out[0]), 51.0, AREA_TOL),
+        "{}",
+        net_area(&out[0])
+    );
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 5.0),
+            (3.0, 5.0),
+            (3.0, 2.0),
+            (0.0, 2.0),
+        ],
+    );
+}
+
+/// **§11.7 手順 3・5（共線重なりの登録と重複除去）**: 同上を**垂直辺・共線頂点が反対側のリング**
+/// にある配置で縛る（座標軸の取り違え・「短い辺側だけ登録」の欠陥を検出）。
+///
+/// `A=[(0,0),(2,0),(2,10),(0,10),(0,7)]`（左辺 `lon=0` に共線頂点 `(0,7)`）と
+/// `B=(0,3)-(5,14)`。両者は左辺 `lon=0` を `lat∈[3,10]` で共線重複し、この区間は外周。
+/// `(0,7)` の両隣の辺は B の左辺と共線で、横断辺は無い。
+///
+/// 期待: 1 多角形・穴なし・外環 `(0,0),(2,0),(2,3),(5,3),(5,14),(0,14)`・
+/// 面積 20+55−14 = **61**・同一頂点の重複なし。
+///
+/// 殺す変異: 共線重なりの登録を水平辺（`lat` 一致）にしか適用しない・重なり端点だけを
+/// 登録し相手辺の内部頂点を落とす・共線判定に `lon` と `lat` を取り違える。
+#[test]
+fn union_regression_collinear_overlap_is_sole_split_source_vertical() {
+    let a = ring(&[(0.0, 0.0), (2.0, 0.0), (2.0, 10.0), (0.0, 10.0), (0.0, 7.0)]);
+    let b = rect(0.0, 3.0, 5.0, 14.0);
+    let inputs = vec![a, b];
+    let out = union_rings(&inputs);
+
+    assert_eq!(out.len(), 1, "重なるので単一成分");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(out[0].rings.len(), 1, "穴は無い");
+    assert_no_repeated_vertex(&out[0].rings[0]);
+    assert!(
+        close(net_area(&out[0]), 61.0, AREA_TOL),
+        "{}",
+        net_area(&out[0])
+    );
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 3.0),
+            (5.0, 3.0),
+            (5.0, 14.0),
+            (0.0, 14.0),
+        ],
+    );
+}
+
+/// **§11.7 手順 3・5（共線重なりの登録と重複除去）**: **両リングとも**共線区間の内部に
+/// 共線頂点を持ち、互いに相手の辺の内部で分割点を要求する配置。
+///
+/// `A=[(0,0),(8,0),(10,0),(10,2),(0,2)]`（下辺に共線頂点 `(8,0)`）と
+/// `B=[(3,0),(6,0),(12,0),(12,5),(3,5)]`（下辺に共線頂点 `(6,0)`）。共線重複区間は
+/// `lon∈[3,10]`。`(6,0)` は A の辺 `(0,0)-(8,0)` の内部、`(8,0)` は B の辺 `(6,0)-(12,0)` の
+/// 内部にあり、いずれも横断辺を持たない。両方向の登録が無いと畳めない断片が残る。
+///
+/// 期待: 1 多角形・穴なし・外環 `(0,0),(12,0),(12,5),(3,5),(3,2),(0,2)`・面積 **51**・
+/// 同一頂点の重複なし。
+///
+/// 殺す変異: 辺ペアの片側（第 1 辺）にだけ分割点を登録する・重なり区間の端点のみ登録する・
+/// 共線重なりの `t` を一方の辺のパラメータで両辺に流用する。
+#[test]
+fn union_regression_collinear_overlap_split_required_on_both_rings() {
+    let a = ring(&[(0.0, 0.0), (8.0, 0.0), (10.0, 0.0), (10.0, 2.0), (0.0, 2.0)]);
+    let b = ring(&[(3.0, 0.0), (6.0, 0.0), (12.0, 0.0), (12.0, 5.0), (3.0, 5.0)]);
+    let inputs = vec![a, b];
+    let out = union_rings(&inputs);
+
+    assert_eq!(out.len(), 1, "重なるので単一成分");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(out[0].rings.len(), 1, "穴は無い");
+    assert_no_repeated_vertex(&out[0].rings[0]);
+    assert!(
+        close(net_area(&out[0]), 51.0, AREA_TOL),
+        "{}",
+        net_area(&out[0])
+    );
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 5.0),
+            (3.0, 5.0),
+            (3.0, 2.0),
+            (0.0, 2.0),
+        ],
+    );
+}
+
+/// **§11.7 手順 7（最も右回りの出辺）＋退化方針「点接触」**: 2 領域が**2 つの異なる頂点だけ**で接する配置
+/// （軸平行）。
+///
+/// `A=(0,2)-(10,4)` と `B=[(0,0),(10,0),(8,2),(5,1),(2,2)]`。B の頂点 `(2,2)`・`(8,2)` は A の下辺の
+/// 内部に乗るが、B の上縁 `(2,2)-(5,1)-(8,2)` は A の下辺から離れるので、A と B は**辺を共有せず**
+/// 2 点でのみ接する。内部は繋がっていないので §11.7「点接触は分離した多角形」により **2 多角形**
+/// （A と B がそのまま）で、両者に囲まれた三角形 `(2,2),(8,2),(5,1)` は**どちらの穴にもならない**。
+/// 両接触点では境界半辺が 4 本ずつ集まる。
+///
+/// 殺す変異: 分岐頂点で右回りでなく左回りの出辺を選ぶ（(2,2)/(8,2) で A のチェーンと B のチェーンが
+/// 対にされ、三角形を囲む 1 環＝面積 36 の外環＋穴、または向きの逆転した環になる。2 点接触は同一頂点を
+/// 2 度通らないので頂点重複の分割では修復できない）・接触点の落とし。
+#[test]
+fn union_regression_two_regions_touching_at_two_vertices_stay_separate_axis_aligned() {
+    let a = rect(0.0, 2.0, 10.0, 4.0);
+    let b = ring(&[(0.0, 0.0), (10.0, 0.0), (8.0, 2.0), (5.0, 1.0), (2.0, 2.0)]);
+    let inputs = vec![a, b];
+    let out = union_rings(&inputs);
+
+    assert_eq!(out.len(), 2, "2 点接触のみ＝内部が繋がらないので 2 多角形");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(out[0].rings.len(), 1, "A に穴は無い");
+    assert_eq!(out[1].rings.len(), 1, "B に穴は無い");
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[(0.0, 2.0), (10.0, 2.0), (10.0, 4.0), (0.0, 4.0)],
+    );
+    assert!(
+        close(signed_area(&out[0].rings[0]), 20.0, AREA_TOL),
+        "{}",
+        signed_area(&out[0].rings[0])
+    );
+    assert_ring_matches(
+        &out[1].rings[0],
+        &[(0.0, 0.0), (10.0, 0.0), (8.0, 2.0), (5.0, 1.0), (2.0, 2.0)],
+    );
+    assert!(
+        close(signed_area(&out[1].rings[0]), 13.0, AREA_TOL),
+        "{}",
+        signed_area(&out[1].rings[0])
+    );
+}
+
+/// **§11.7 手順 7（最も右回りの出辺）＋退化方針「点接触」**: 同上を**非軸平行**な配置で縛る
+/// （角度の鏡映ミスも検出）。
+///
+/// `A=[(0,2),(10,3),(10,6),(1,5)]`（下辺は `lat = 2 + 0.1·lon` の斜線）と
+/// `B=[(0,0),(10,0),(8,2.8),(5,1),(2,2.2)]`。B の頂点 `(2,2.2)`・`(8,2.8)` は A の斜めの下辺の
+/// 内部に乗り、A と B は 2 点でのみ接する。各接触点に集まる 4 半辺の角度はすべて異なる。
+/// 期待: **2 多角形**（A: 面積 28・B: 面積 15.5）・穴なし。
+///
+/// 殺す変異: 出辺選択の角度符号の反転／鏡映（軸平行では偶然通る）・入射辺の逆向きを基準にしない・
+/// 接触点の落とし・A と B の融合。
+#[test]
+fn union_regression_two_regions_touching_at_two_vertices_stay_separate_skewed() {
+    let a = ring(&[(0.0, 2.0), (10.0, 3.0), (10.0, 6.0), (1.0, 5.0)]);
+    let b = ring(&[(0.0, 0.0), (10.0, 0.0), (8.0, 2.8), (5.0, 1.0), (2.0, 2.2)]);
+    let inputs = vec![a, b];
+    let out = union_rings(&inputs);
+
+    assert_eq!(out.len(), 2, "2 点接触のみ＝内部が繋がらないので 2 多角形");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(out[0].rings.len(), 1, "A に穴は無い");
+    assert_eq!(out[1].rings.len(), 1, "B に穴は無い");
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[(0.0, 2.0), (10.0, 3.0), (10.0, 6.0), (1.0, 5.0)],
+    );
+    assert!(
+        close(signed_area(&out[0].rings[0]), 28.0, AREA_TOL),
+        "{}",
+        signed_area(&out[0].rings[0])
+    );
+    assert_ring_matches(
+        &out[1].rings[0],
+        &[(0.0, 0.0), (10.0, 0.0), (8.0, 2.8), (5.0, 1.0), (2.0, 2.2)],
+    );
+    assert!(
+        close(signed_area(&out[1].rings[0]), 15.5, AREA_TOL),
+        "{}",
+        signed_area(&out[1].rings[0])
+    );
+}
+
+/// 共線重なり＋点接触の共通検証: 主多角形（面積 51・6 頂点）と点接触する三角形 C（面積 3）が
+/// **別々の 2 多角形**として、どちらも失われずに返る。
+fn assert_collinear_overlap_plus_touching_triangle(
+    inputs: &[Vec<GeoPoint>],
+    c_expected: &[(f64, f64)],
+    label: &str,
+) {
+    let out = union_rings(inputs);
+    assert_eq!(
+        out.len(),
+        2,
+        "{label}: 点接触の C は別多角形（主 + C = 2、実際 {} 件）",
+        out.len()
+    );
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(inputs, &out);
+
+    // 先頭 = 主多角形（面積 51・穴なし・頂点の重複なし）。
+    assert_eq!(out[0].rings.len(), 1, "{label}: 主多角形に穴は無い");
+    assert_no_repeated_vertex(&out[0].rings[0]);
+    assert!(
+        close(net_area(&out[0]), 51.0, AREA_TOL),
+        "{label}: 主多角形の面積 {}",
+        net_area(&out[0])
+    );
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 5.0),
+            (3.0, 5.0),
+            (3.0, 2.0),
+            (0.0, 2.0),
+        ],
+    );
+
+    // 2 番目 = C（面積 3・三角形そのもの）。
+    assert_eq!(out[1].rings.len(), 1, "{label}: C に穴は無い");
+    assert_eq!(out[1].rings[0].len(), 3, "{label}: C は三角形");
+    assert!(
+        close(net_area(&out[1]), 3.0, AREA_TOL),
+        "{label}: C の面積 {}",
+        net_area(&out[1])
+    );
+    assert_ring_matches(&out[1].rings[0], c_expected);
+}
+
+/// **§11.7 手順 3・5（共線重なりの登録と重複除去）＋点接触方針**: 共線重なりの**遠端**
+/// `(10,0)`（A の頂点・B の辺 `(6,0)-(12,0)` の内部）に、第三の三角形 C が 1 点で接する。
+///
+/// `A=(0,0)-(10,2)`・`B=[(3,0),(6,0),(12,0),(12,5),(3,5)]`・`C=[(10,0),(9,-3),(11,-3)]`。
+/// 共線重複区間 `lon∈[3,10]` が正しく分割・畳み込みされないと、二重に残った断片が
+/// `(10,0)` で C の境界へ継ぎ足され、開いた歩行の切り捨てでは消えない誤環（C と主多角形の
+/// 融合・C の欠落・面積のずれ）が生じる。入力順は **C が先頭／末尾** の両方を検証する
+/// （歩行順で切り捨て挙動が変わりうる）。
+///
+/// 期待: 2 多角形（主 51 → C 3）。主は 6 頂点、C は三角形 `(9,-3),(11,-3),(10,0)` そのもの。
+///
+/// 殺す変異: 共線重なりの分割点登録を無効化する・重複除去を分割前に行う・点接触で C を主へ
+/// 融合する・歩行の打ち切りで C を落とす。
+#[test]
+fn union_regression_collinear_overlap_with_triangle_touching_far_endpoint() {
+    let a = rect(0.0, 0.0, 10.0, 2.0);
+    let b = ring(&[(3.0, 0.0), (6.0, 0.0), (12.0, 0.0), (12.0, 5.0), (3.0, 5.0)]);
+    let c = ring(&[(10.0, 0.0), (9.0, -3.0), (11.0, -3.0)]);
+    let c_expected = [(9.0, -3.0), (11.0, -3.0), (10.0, 0.0)];
+
+    assert_collinear_overlap_plus_touching_triangle(
+        &[c.clone(), a.clone(), b.clone()],
+        &c_expected,
+        "C 先頭",
+    );
+    assert_collinear_overlap_plus_touching_triangle(&[a, b, c], &c_expected, "C 末尾");
+}
+
+/// **§11.7 手順 3・5（共線重なりの登録と重複除去）＋点接触方針**: 共線重なりの**直進頂点**
+/// `(6,0)`（B の共線頂点・A の下辺の内部）に、第三の三角形 C が 1 点で接する。
+///
+/// `A=(0,0)-(10,2)`・`B=[(3,0),(6,0),(12,0),(12,5),(3,5)]`・`C=[(6,0),(5,-3),(7,-3)]`。
+/// `(6,0)` は共線登録が無ければ A の辺上に分割点として存在しない頂点で、C の接触により
+/// そこに境界半辺が集まる。A の断片が `(6,0)` で割れていないと、`(6,0)` に集まる半辺の
+/// 集合が不整合になり、C の環が主多角形へ継ぎ足されるか失われる。
+/// 入力順は **C が先頭／末尾** の両方を検証する。
+///
+/// 期待: 2 多角形（主 51 → C 3）。主は 6 頂点、C は三角形 `(5,-3),(7,-3),(6,0)` そのもの。
+///
+/// 殺す変異: 共線重なりの分割点登録の無効化（相手辺の内部頂点での分割欠落）・点接触の融合・
+/// 開いた歩行の切り捨てで C を落とす。
+#[test]
+fn union_regression_collinear_overlap_with_triangle_touching_straight_through_vertex() {
+    let a = rect(0.0, 0.0, 10.0, 2.0);
+    let b = ring(&[(3.0, 0.0), (6.0, 0.0), (12.0, 0.0), (12.0, 5.0), (3.0, 5.0)]);
+    let c = ring(&[(6.0, 0.0), (5.0, -3.0), (7.0, -3.0)]);
+    let c_expected = [(5.0, -3.0), (7.0, -3.0), (6.0, 0.0)];
+
+    assert_collinear_overlap_plus_touching_triangle(
+        &[c.clone(), a.clone(), b.clone()],
+        &c_expected,
+        "C 先頭",
+    );
+    assert_collinear_overlap_plus_touching_triangle(&[a, b, c], &c_expected, "C 末尾");
+}
+
+/// **§11.7 手順 3・5（共線重なりの分割点登録）— 縦向き**: 直進頂点に接する三角形の配置
+/// （`union_regression_collinear_overlap_with_triangle_touching_straight_through_vertex`）を
+/// lon/lat を入れ替え（さらに lon を +5 平行移動して負の経度を避ける）**縦の共線重なり**にする。重なりの分割点登録がパラメータ計算を
+/// 横方向でしか正しく行わない（`lon` 成分だけで t を求める・縦線分で 0 除算になる）変異は、
+/// 横向きの配置では通るが縦向きでは分割が失われて主多角形が壊れる。
+///
+/// 期待は横向き配置の転置（外環は転置で向きが反転するので CCW へ戻す）: 主多角形の外環
+/// `(5,0),(7,0),(7,3),(10,3),(10,12),(5,12)`（面積 51・穴なし）、C は `(5,6),(2,7),(2,5)`（直進頂点に接する場合）または `(5,10),(2,11),(2,9)`（遠端に接する場合）（面積 3）。
+#[test]
+fn union_regression_collinear_overlap_with_triangle_touching_straight_through_vertex_vertical() {
+    // 転置＋平行移動: (lon,lat) -> (lat+5, lon)。入力リングは転置で CW になるので反転して CCW に戻す。
+    let t = |pts: &[(f64, f64)]| -> Vec<GeoPoint> {
+        let mut v: Vec<(f64, f64)> = pts.iter().map(|&(x, y)| (y + 5.0, x)).collect();
+        v.reverse();
+        ring(&v)
+    };
+    let a = t(&[(0.0, 0.0), (10.0, 0.0), (10.0, 2.0), (0.0, 2.0)]);
+    let b = t(&[(3.0, 0.0), (6.0, 0.0), (12.0, 0.0), (12.0, 5.0), (3.0, 5.0)]);
+    // C は直進頂点 (6,0) に接する三角形と、重なりの遠端 (10,0) に接する三角形の 2 種
+    // （横向き配置の 2 テストに対応）。遠端側では C の横断辺が (6,0) の分割を供給しないので、
+    // 縦線分の共線重なりの分割点登録が唯一の供給源になる。
+    let c_mid = t(&[(6.0, 0.0), (5.0, -3.0), (7.0, -3.0)]);
+    let c_far = t(&[(10.0, 0.0), (9.0, -3.0), (11.0, -3.0)]);
+    let c_mid_expected = [(5.0, 6.0), (2.0, 7.0), (2.0, 5.0)];
+    let c_far_expected = [(5.0, 10.0), (2.0, 11.0), (2.0, 9.0)];
+
+    for (inputs, c_expected, label) in [
+        (
+            vec![c_mid.clone(), a.clone(), b.clone()],
+            &c_mid_expected,
+            "C(直進頂点) 先頭",
+        ),
+        (
+            vec![a.clone(), b.clone(), c_mid],
+            &c_mid_expected,
+            "C(直進頂点) 末尾",
+        ),
+        (
+            vec![c_far.clone(), a.clone(), b.clone()],
+            &c_far_expected,
+            "C(遠端) 先頭",
+        ),
+        (vec![a, b, c_far], &c_far_expected, "C(遠端) 末尾"),
+    ] {
+        let out = union_rings(&inputs);
+        assert_eq!(out.len(), 2, "{label}: 主 + 点接触の C = 2 多角形");
+        assert_output_structure(&out);
+        assert_no_fabricated_vertices(&inputs, &out);
+        assert_eq!(out[0].rings.len(), 1, "{label}: 主多角形に穴は無い");
+        assert_no_repeated_vertex(&out[0].rings[0]);
+        assert!(
+            close(net_area(&out[0]), 51.0, AREA_TOL),
+            "{label}: 主多角形の面積 {}",
+            net_area(&out[0])
+        );
+        assert_ring_matches(
+            &out[0].rings[0],
+            &[
+                (5.0, 0.0),
+                (7.0, 0.0),
+                (7.0, 3.0),
+                (10.0, 3.0),
+                (10.0, 12.0),
+                (5.0, 12.0),
+            ],
+        );
+        assert_eq!(out[1].rings.len(), 1, "{label}: C に穴は無い");
+        assert!(
+            close(net_area(&out[1]), 3.0, AREA_TOL),
+            "{label}: C の面積 {}",
+            net_area(&out[1])
+        );
+        assert_ring_matches(&out[1].rings[0], c_expected);
+    }
+}

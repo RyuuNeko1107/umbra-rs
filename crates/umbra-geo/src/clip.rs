@@ -125,14 +125,15 @@ fn normalize(ring: &[GeoPoint]) -> Option<Vec<P>> {
 }
 
 /// 共線と分かっている線分 `seg` 上に点 `p` が載るか（パラメータ範囲のみ判定）。
+/// 共線ゆえパラメータは**成分が大きい側の軸 1 本**で決まる（縦線分でも 0 除算にならない）。
 fn param_on_segment(p: P, seg: (P, P)) -> bool {
     let r = sub(seg.1, seg.0);
-    let rr = r[0] * r[0] + r[1] * r[1];
-    if rr == 0.0 {
+    let d = sub(p, seg.0);
+    let axis = if r[0].abs() >= r[1].abs() { 0 } else { 1 };
+    if r[axis] == 0.0 {
         return false;
     }
-    let d = sub(p, seg.0);
-    let t = (d[0] * r[0] + d[1] * r[1]) / rr;
+    let t = d[axis] / r[axis];
     (0.0..=1.0).contains(&t)
 }
 
@@ -181,6 +182,32 @@ fn point_segment_distance(p: P, a: P, b: P) -> f64 {
         0.0
     };
     (p[0] - (a[0] + r[0] * t)).hypot(p[1] - (a[1] + r[1] * t))
+}
+
+/// 閉歩行 `ring` を、同一（量子化）頂点を 2 度通る箇所で単純環に分割する（pinch 分割・§11.7 手順 7）。
+/// 頂点 v を 2 度通る歩行 `[.., v, X.., v, Y..]` は、部分歩行 `[v, X..]` が閉環をなすので切り出し、残り
+/// `[.., v, Y..]` に対して繰り返す。重複が無ければ `ring` をそのまま 1 要素で返す。点を捏造しない。
+fn split_at_repeated_vertices(ring: Vec<P>) -> Vec<Vec<P>> {
+    let mut out = Vec::new();
+    let mut stack: Vec<P> = Vec::with_capacity(ring.len());
+    let mut seen: HashMap<Key, usize> = HashMap::new();
+    for p in ring {
+        let k = key(p);
+        if let Some(&start) = seen.get(&k) {
+            // v の前回出現位置から現在までが閉環。切り出し、v は残りの歩行の頂点として残す。
+            let sub: Vec<P> = stack.drain(start..).collect();
+            for q in &sub {
+                seen.remove(&key(*q));
+            }
+            out.push(sub);
+        }
+        seen.insert(k, stack.len());
+        stack.push(p);
+    }
+    if !stack.is_empty() {
+        out.push(stack);
+    }
+    out
 }
 
 /// 環から**共線の中間頂点**を落とす（直進の継続のみ・180° 折返しは残す）。安定するまで反復する。
@@ -402,9 +429,14 @@ pub fn union_rings(rings: &[Vec<GeoPoint>]) -> Vec<GeoPolygon> {
             }
         }
         if closed {
-            let simplified = drop_collinear(ring);
-            if simplified.len() >= 3 {
-                cycles.push(simplified);
+            // 5'. pinch 分割: 面の境界としての閉歩行は、同じ面に属する 2 つの穴が 1 点で接する場合や
+            //     穴が外環に 1 点で接する場合に、その頂点を 2 度通る**自己接触環**になる（面は 1 つでも
+            //     境界成分は複数）。同一頂点を 2 度通る環は、その頂点で単純環に分割する（§11.7 手順 7）。
+            for loop_ in split_at_repeated_vertices(ring) {
+                let simplified = drop_collinear(loop_);
+                if simplified.len() >= 3 {
+                    cycles.push(simplified);
+                }
             }
         }
     }
