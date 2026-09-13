@@ -269,6 +269,32 @@ pub(crate) fn cone_terminator_intersections(
     cone_l: f64,
     ellipsoid: &Ellipsoid,
 ) -> Result<Vec<GeoPoint>, EclipseError> {
+    Ok(
+        cone_terminator_intersections_detailed(elements, cone_l, ellipsoid)?
+            .into_iter()
+            .map(|(p, _xi)| p)
+            .collect(),
+    )
+}
+
+/// [`cone_terminator_intersections`] と同じ交点を、**基本面 ξ を添えて**返す（morning / evening limb の
+/// 厳密分類・部分食域 §11.6(a)・M9 残(3) 3f）。
+///
+/// 基本面 ζ の時間変化は `dζ/dt = −μ′·cos d·ξ` なので、terminator（ζ=0）上の交点は ξ の符号だけで
+/// 日の出側／日没側に分かれる:
+///
+/// | 符号 | limb |
+/// |---|---|
+/// | `ξ < 0` | **morning**（ζ が増加＝日の出側） |
+/// | `ξ ≥ 0` | **evening**（ζ が減少＝日没側） |
+///
+/// `ξ = 0`（測度ゼロ）は evening 側に入れる（`ξ < 0` を morning とする strict 不等号・§11.6(a)）。
+/// 返り値は `(交点の測地座標, ξ)` の列で、順序は [`cone_terminator_intersections`] と同一（θ 昇順）。
+pub(crate) fn cone_terminator_intersections_detailed(
+    elements: &InstantaneousBesselianElements,
+    cone_l: f64,
+    ellipsoid: &Ellipsoid,
+) -> Result<Vec<(GeoPoint, f64)>, EclipseError> {
     let (sin_d, cos_d) = elements.declination.0.sin_cos();
     let omf = 1.0 - ellipsoid.f; // b/a
                                  // terminator 楕円係数 k（球 f=0 で 1＝単位円・扁平で k≥1＝η 方向に縮む）。
@@ -290,14 +316,17 @@ pub(crate) fn cone_terminator_intersections(
     let mut points = Vec::new();
     for root in scan_periodic_sign_change_roots(&residual)? {
         let (s, c) = root.sin_cos();
-        points.push(fundamental_to_geodetic(
+        points.push((
+            fundamental_to_geodetic(
+                c,
+                s / sqrt_k,
+                0.0,
+                elements.declination,
+                elements.mu,
+                ellipsoid,
+            )?,
             c,
-            s / sqrt_k,
-            0.0,
-            elements.declination,
-            elements.mu,
-            ellipsoid,
-        )?);
+        ));
     }
     Ok(points)
 }

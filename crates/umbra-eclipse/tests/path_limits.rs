@@ -1452,28 +1452,34 @@ fn real_2024_greatest_path_width_and_central_duration_match_nasa() {
 }
 
 // ============================================================
-// M9 残(3) 3c-ii: 部分食域 partial_limit の外環組立（**リボン法**・方位ソートから是正）
+// M9 残(3) (3f): 部分食域 partial_limit ＝ **3 領域の多角形ユニオン**
 //
-// 確定仕様（docs/algorithms/11-path-partial-domain.md §11.4/§11.5）:
+// 確定仕様（docs/algorithms/11-path-partial-domain.md §11.6 (3f) 確定仕様・受け入れテスト戦略）:
 //   部分食 phase（global.partial_begin / partial_end が両方 Some）かつ include_limits=true の日食で
-//   path().partial_limit = Some(GeoPolygon)。外環は
-//     (3c-i) 南北半影限界（lockstep＝北[i]/南[i] が同一サンプル時刻の対）を
-//     `北限界(P1→P4 時刻順)` ++ `南限界(P4→P1 逆順)` で繋いだ**帯状の単純多角形**。
-//   limb（rise/set）点は v1 リボンでは使わない（terminator 張り出しは後続 (3c-iii) 精緻化）。
-//   ゆえに外環頂点は**全て (3c-i) 半影限界点**で、頂点数は偶数 2n（前半 n=北限界・後半 n=南限界逆順）。
+//   path().partial_limit = Some(GeoPolygon)。部分食域は
+//     D = 帯(band) ∪ morning lune ∪ evening lune
+//   の **3 領域の和**であり、`partial_limit` はそのユニオン結果の**最大面積成分ひとつ**
+//   （`rings[0]`=外環・`rings[1..]`=穴。複数成分は落とす＝単一 GeoPolygon）。
 //   include_limits=false／部分 phase 無し（P1 or P4 None）では None。center_line（中心食のみ）と独立。
+//   `sample_interval_seconds=0.0`（1 サンプル）は退化して None。
 //
-// オラクル戦略（strict・観測契約 §11.5）:
-//   - 存在: 上記の Some/None 分岐を縛る。
-//   - 頂点の正当性: 各外環頂点 P を **検証済み前方射影**（forward_project）で基本面へ戻し、
-//       半影縁条件（面内距離 ≈ |l1 − ζ·tan f1|, ζ は P 自身）を機械精度で満たす（捏造点が無い）。
-//       リボン頂点は全て半影限界点ゆえ terminator 枝は不要（§11.5）。被テスト関数の戻りは流用しない。
-//   - リボン位相: 外環頂点数が偶数 2n で、前半 i 番と後半 (2n−1−i) 番は同一サンプル時刻の北/南対
-//       ＝前半点の緯度 ≥ 後半対応点の緯度（帯の北南割当）。方位単調の前提は捨てる。
-//   - 非退化: ≥3 頂点。
-//   - 包含（partial ⊃ umbral path）: greatest_point・中心線各点が **平面 (lon,lat) ray-casting
-//       point-in-polygon**（star-shaped を仮定しない）で外環の内側。
-//   - SLOW: 実 2024 で partial_limit=Some・南北端が中心線より外・中心線全点を平面包含。
+// **撤廃された契約（(3f) §11.6(e)）**: 「外環＝北 n ++ 南 n 逆順」のリボン位相（偶数頂点・前半/後半の
+//   同時刻北南対・経度単調）と、「**全**頂点が半影縁条件を**厳密に**満たす」はもはや成り立たない
+//   （ユニオンは入力リングの断片を繋ぎ直し、交点頂点を導入する）。
+//
+// オラクル戦略（strict・観測契約 §11.6(d) / 受け入れテスト戦略）:
+//   - 存在: 上記の Some/None 分岐を縛る（維持）。
+//   - **頂点の正当性（緩和後）**: 各外環頂点 P を **検証済み前方射影**（forward_project）で基本面へ戻し、
+//       ある [P1,P4] サンプル時刻 t で **閉半影内**（面内距離 ≤ |l1 − ζ·tan f1| + tol）**かつ昼面側**
+//       （ζ ≥ −tol）であること。半影縁点は等号・交点頂点は折れ線離散化の範囲内で満たす。
+//       期待値は bessel 多項式（path とは独立な入力）から組む＝被テスト関数の戻りを流用しない。
+//   - **単純性**: 外環は自己交差しない（隣接しない辺同士が交差しない）。
+//   - **穴の扱い**: `rings[0]`=外環・`rings[1..]`=穴。穴は外環の内側・外環より小面積・互いに素。
+//   - 非退化: 外環 ≥3 頂点。
+//   - **包含（partial ⊃ umbral path）**: 中心線各点が **平面 (lon,lat) ray-casting point-in-polygon** で
+//       外環の内側 **かつ どの穴の内側でもない**。
+//   - SLOW headline（(3f) 昇格）: 実 2024-04-08 で **中心線の全点が例外なく内包**される
+//       （従来の「最大食まわり ±10 サンプル窓」から昇格）。加えて南北端が中心線より外・terminator 頂点 ≥1。
 // ============================================================
 
 /// 部分食 phase（partial_begin/partial_end=Some・P1/P4）を持つ合成中心食を `rigorous_bessel` で組む。
@@ -1532,15 +1538,22 @@ fn partial_only_eclipse(bessel: BesselianPolynomial, partial_span_hours: f64) ->
     }
 }
 
-/// 外環頂点が **半影縁条件（面内距離 ≈ |l1 − ζ·tan f1|・自己整合ζ）** を満たすか（§11.5「頂点の正当性」）。
-/// リボン法では外環頂点は全て (3c-i) 半影限界点ゆえ terminator 枝は不要。どの瞬時要素 e で評価するか
-/// 不定なので [P1,P4] のサンプル時刻すべてで試し、いずれか 1 時刻で成立すれば妥当とする。
-/// 期待値は bessel 多項式（path とは独立な入力）から組む＝被テスト関数の戻りを流用しない。
-fn vertex_is_legitimate(
+/// (3f) §11.6(d): 外環頂点 P が **閉半影内かつ昼面側**か（緩和後の「頂点の正当性」）。
+/// ある [P1,P4] のサンプル時刻 t で
+///   (i) **昼面側**: `ζ ≥ −zeta_tol`（前方射影した P 自身の ζ）
+///   (ii) **閉半影内**: 影軸からの基本面内距離 ≤ `|l1 − ζ·tan f1| + dist_tol`（自己整合ζ）
+/// を同時に満たせば妥当とする。半影縁点（昼面包絡・terminator 交点）は (ii) を等号で、ユニオンが導入する
+/// **交点頂点**は折れ線離散化の範囲内で満たす。どのサンプル時刻由来か不定なので全時刻で試す。
+/// 期待値 l1 / tan f1 は bessel 多項式（path とは独立な入力）から組む＝被テスト関数の戻りを流用しない。
+///
+/// 非対称性: (ii) の半径を |l2|（本影）で測る・l1↔l2 / tan_f1↔tan_f2 取り違えは半影が本影の ~60 倍ゆえ
+/// 大多数の頂点が閉半影外に落ちて偽になる。(i) を外すと夜面（ζ<0）の捏造点を見逃す。
+fn vertex_is_in_closed_penumbra(
     p: &umbra_geo::GeoPoint,
     bessel: &BesselianPolynomial,
     sample_times: &[TtInstant],
-    cone_tol: f64,
+    dist_tol: f64,
+    zeta_tol: f64,
 ) -> bool {
     for t in sample_times {
         let e = match bessel.at(*t) {
@@ -1548,14 +1561,87 @@ fn vertex_is_legitimate(
             Err(_) => continue,
         };
         let of = forward_project(p, &e);
-        // 半影縁条件: 面内距離 = |l1 − ζ·tan f1|（自己整合ζ）。
+        if of.zeta < -zeta_tol {
+            continue; // 夜面側は不可（昼面側の契約）
+        }
         let in_plane = (of.xi - e.x).hypot(of.eta - e.y);
         let penumbral = (e.l1 - of.zeta * e.tan_f1).abs();
-        if (in_plane - penumbral).abs() < cone_tol {
+        if in_plane <= penumbral + dist_tol {
             return true;
         }
     }
     false
+}
+
+/// 線分 (a,b) と (c,d) が **真に交差**するか（端点で触れるだけ・共線は false）。
+/// 平面 (lon,lat) 度。外環の単純性（自己交差なし）判定に使う。
+fn segments_properly_intersect(
+    a: &umbra_geo::GeoPoint,
+    b: &umbra_geo::GeoPoint,
+    c: &umbra_geo::GeoPoint,
+    d: &umbra_geo::GeoPoint,
+) -> bool {
+    let cross = |ox: f64, oy: f64, px: f64, py: f64, qx: f64, qy: f64| {
+        (px - ox) * (qy - oy) - (py - oy) * (qx - ox)
+    };
+    let (ax, ay) = (lon_deg(a), lat_deg(a));
+    let (bx, by) = (lon_deg(b), lat_deg(b));
+    let (cx, cy) = (lon_deg(c), lat_deg(c));
+    let (dx, dy) = (lon_deg(d), lat_deg(d));
+    let d1 = cross(ax, ay, bx, by, cx, cy);
+    let d2 = cross(ax, ay, bx, by, dx, dy);
+    let d3 = cross(cx, cy, dx, dy, ax, ay);
+    let d4 = cross(cx, cy, dx, dy, bx, by);
+    // 真の交差（両線分が互いを厳密に跨ぐ）のみ。端点接触・共線重なりは false（退化は別契約）。
+    ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+}
+
+/// 閉リングが**単純**（隣接しない辺同士が交差しない）か。交差が見つかれば辺 index 対を返す。
+/// 辺 i = (ring[i], ring[(i+1)%n])。隣接辺（index 差 1 / 巻き戻りの先頭-末尾）は端点共有ゆえ除外。
+fn ring_self_intersection(ring: &[umbra_geo::GeoPoint]) -> Option<(usize, usize)> {
+    let n = ring.len();
+    if n < 4 {
+        return None;
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            // 隣接（端点共有）はスキップ。
+            if j == i + 1 || (i == 0 && j == n - 1) {
+                continue;
+            }
+            if segments_properly_intersect(
+                &ring[i],
+                &ring[(i + 1) % n],
+                &ring[j],
+                &ring[(j + 1) % n],
+            ) {
+                return Some((i, j));
+            }
+        }
+    }
+    None
+}
+
+/// 平面 (lon,lat) の shoelace 符号付き面積 [deg²]（向きに依存・絶対値が面積）。
+fn signed_area_deg2(ring: &[umbra_geo::GeoPoint]) -> f64 {
+    let n = ring.len();
+    let mut s = 0.0;
+    let mut j = n - 1;
+    for i in 0..n {
+        s += (lon_deg(&ring[j]) + lon_deg(&ring[i])) * (lat_deg(&ring[j]) - lat_deg(&ring[i]));
+        j = i;
+    }
+    s / 2.0
+}
+
+/// (3f) §11.6(c): `GeoPolygon`（rings[0]=外環・rings[1..]=穴）への包含判定。
+/// 点 q は **外環の内側 かつ どの穴の内側でもない**とき内包される。
+fn polygon_contains(poly: &umbra_geo::GeoPolygon, q: &umbra_geo::GeoPoint) -> bool {
+    if poly.rings.is_empty() || !point_in_polygon(&poly.rings[0], q) {
+        return false;
+    }
+    !poly.rings[1..].iter().any(|hole| point_in_polygon(hole, q))
 }
 
 /// M9 残(3) 3c-iii: 外環頂点 P が **terminator（日の出入り・ζ=0）上の半影縁点**かを判定する独立オラクル。
@@ -1617,11 +1703,12 @@ fn point_in_polygon(ring: &[umbra_geo::GeoPoint], q: &umbra_geo::GeoPoint) -> bo
 // FAST: 存在（Some/None 分岐）
 // ------------------------------------------------------------
 
-/// FAST / 新規: 部分食 phase（P1/P4=Some）＋include_limits=true で partial_limit=Some(GeoPolygon)・
-/// 外環は単一リング（rings.len()==1）・≥3 頂点（非退化）。
+/// FAST / 改訂((3f)): 部分食 phase（P1/P4=Some）＋include_limits=true で partial_limit=Some(GeoPolygon)・
+/// `rings` は非空で `rings[0]`=外環が ≥3 頂点（非退化）。(3f) では**穴（rings[1..]）が存在しうる**ので
+/// `rings.len()==1` は縛らず、外環の非退化と（穴があれば）各穴も ≥3 頂点であることを縛る。
 ///
 /// 殺す変異: partial_limit を常に None にする・include_limits を無視・外環を空/2 点未満にする・
-///   rings を 0 本にする。
+///   rings を 0 本にする・穴に退化リング（<3 頂点）を混ぜる。
 #[test]
 fn partial_phase_with_limits_produces_some_polygon() {
     let engine = standard_engine(bundled_time_data());
@@ -1636,17 +1723,22 @@ fn partial_phase_with_limits_produces_some_polygon() {
         .partial_limit
         .as_ref()
         .expect("部分食 phase＋include_limits=true では partial_limit=Some");
-    assert_eq!(
-        poly.rings.len(),
-        1,
-        "外環は単一リング, got {}",
-        poly.rings.len()
+    assert!(
+        !poly.rings.is_empty(),
+        "partial_limit は少なくとも外環 rings[0] を持つ"
     );
     assert!(
         poly.rings[0].len() >= 3,
         "外環は ≥3 頂点（非退化）, got {}",
         poly.rings[0].len()
     );
+    for (h, hole) in poly.rings[1..].iter().enumerate() {
+        assert!(
+            hole.len() >= 3,
+            "穴[{h}] も ≥3 頂点（退化リングを捏造しない）, got {}",
+            hole.len()
+        );
+    }
 }
 
 /// FAST / 新規: include_limits=false なら partial_limit=None（部分食 phase があっても）。
@@ -1733,10 +1825,11 @@ fn partial_only_eclipse_has_partial_limit_but_no_center_line() {
 /// 評価し、外環は北 1 点＋南 1 点 = 2 頂点（または 0）＝多角形を成さない（退化ガード `ring.len()<3`）。
 /// よって partial_limit=None。
 ///
-/// 殺す変異: `build_partial_limit` の退化ガード `if ring.len() < 3 { return Ok(None); }` の
-///   `< → ==`（`ring.len() == 3`）。`==3` 変異だと 1 サンプルの 2 頂点 ≠ 3 で `Some`（退化多角形）を返す。
-///   interval=0 で partial_limit=None を縛れば `==` を撃てる。ring 長は北 n＋南 n で**常に偶数**ゆえ
-///   3 になり得ず、`<3`↔`<=3` は等価（本テストは `==3` を狙う）。
+/// (3f) 更新: 3 領域ユニオンでも、1 サンプルでは帯も lune も頂点 <3 に退化し、ユニオン入力が全て捨てられる
+/// （§11.6(b)「頂点 3 未満の領域は捨てる」・§11.7 入力正規化）ので結果は空＝`None`。
+///
+/// 殺す変異: 退化ガード（`ring.len() < 3` / ユニオンの「頂点 <3 のリングを捨てる」）を外す・
+///   退化入力から面積 0 の多角形を捏造して `Some` を返す・1 サンプルでも 3 領域のどれかを無理に閉じる。
 #[test]
 fn partial_limit_none_when_single_sample_degenerate() {
     let engine = standard_engine(bundled_time_data());
@@ -1768,14 +1861,19 @@ fn partial_limit_none_when_single_sample_degenerate() {
 // FAST: 頂点の正当性・方位ソート・非退化
 // ------------------------------------------------------------
 
-/// FAST / 新規（**頂点の正当性の主検証**）: 外環の各頂点が、半影縁条件（面内距離 ≈ |l1 − ζ·tan f1|・
-/// 自己整合ζ）を機械精度で満たす（捏造点が無い・§11.5）。リボン頂点は全て半影限界点ゆえ terminator 枝は不要。
+/// FAST / 改訂((3f) §11.6(d)・**頂点の正当性（緩和後）の主検証**): 外環の各頂点は、ある [P1,P4] サンプル
+/// 時刻 t で **閉半影内**（面内距離 ≤ |l1 − ζ·tan f1| + tol・自己整合ζ）**かつ昼面側**（ζ ≥ −tol）にある。
+/// 半影縁点は等号で、ユニオンが導入する**交点頂点**は折れ線離散化の範囲内でこれを満たす。
 /// 期待値は bessel 多項式から独立に組む（被テスト関数の戻りを流用しない）。
 ///
-/// 殺す変異: 外環に半影縁でない捏造点を入れる・面内距離を |l2|（本影）で測る（半径取り違え・桁違い）・
-///   |L1'| を中心軸 ζ₀ で測る（点自身の ζ でない）・l1↔l2 や tan_f1↔tan_f2 の取り違え。
+/// **撤廃**: 「全頂点が半影縁条件を**厳密に**（等号で）満たす」は (3f) で成り立たない（§11.6(d)）ので
+/// 等号契約はここで緩和した。代わりに「閉半影内＋昼面側」を全頂点に課す（捏造点・夜面点を撃つ）。
+///
+/// 殺す変異: 外環に閉半影の外の捏造点を入れる・夜面（ζ<0）の点を混ぜる・面内距離を |l2|（本影）で測る
+///   （半影は本影の ~60 倍ゆえ大多数が閉半影外に落ちる）・|L1'| を中心軸 ζ₀ で測る（点自身の ζ でない）・
+///   l1↔l2 や tan_f1↔tan_f2 の取り違え。
 #[test]
-fn partial_limit_vertices_satisfy_penumbral_conditions() {
+fn partial_limit_vertices_are_inside_closed_penumbra_on_day_side() {
     let engine = standard_engine(bundled_time_data());
     let bessel = rigorous_bessel();
     let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
@@ -1792,26 +1890,44 @@ fn partial_limit_vertices_satisfy_penumbral_conditions() {
     let times = lockstep_sample_times(p1, p4, PathOptions::default().sample_interval_seconds);
 
     // 前方射影は厳密に閉じるが、頂点がどのサンプル時刻由来か不定なので各時刻で試す。
-    // cone_tol は半影縁の面内距離一致（厳密 ~1e-7）、zeta_tol は terminator 点の ζ≈0。
+    // dist_tol=1e-6 [Re]（≈6 m）は半影縁点の等号一致（厳密 ~1e-7）＋交点頂点の離散化残差を包む合成域。
+    // zeta_tol=1e-6 は「昼面側」の境界（terminator ζ=0 を許容しつつ夜面の捏造点を落とす）。
     for (j, p) in ring.iter().enumerate() {
         assert!(
-            vertex_is_legitimate(p, &bessel, &times, 1e-6),
-            "外環頂点[{j}] (lat={}, lon={}) が半影縁条件を満たさない（捏造点）",
+            vertex_is_in_closed_penumbra(p, &bessel, &times, 1e-6, 1e-6),
+            "外環頂点[{j}] (lat={}, lon={}) がどのサンプル時刻でも「閉半影内かつ昼面側」でない（捏造点/夜面点）",
             lat_deg(p),
             lon_deg(p)
         );
     }
+    // 穴の頂点も同じ契約（ユニオンは入力境界上の点しか作らない）。
+    for (h, hole) in poly.rings[1..].iter().enumerate() {
+        for (j, p) in hole.iter().enumerate() {
+            assert!(
+                vertex_is_in_closed_penumbra(p, &bessel, &times, 1e-6, 1e-6),
+                "穴[{h}] の頂点[{j}] (lat={}, lon={}) が「閉半影内かつ昼面側」でない（捏造点）",
+                lat_deg(p),
+                lon_deg(p)
+            );
+        }
+    }
 }
 
-/// FAST / 新規（**リボン位相の主検証**・方位ソートから是正）: 外環は `北限界(P1→P4) ++ 南限界(P4→P1 逆順)`
-/// の帯状単純多角形。頂点数は偶数 2n で、前半 i 番（北限界・時刻順）と後半 (2n−1−i) 番（南限界・逆順）は
-/// 同一サンプル時刻の北/南対＝前半点の緯度 ≥ 後半対応点の緯度（帯の北南割当）。方位単調の前提は捨てる。
+// ------------------------------------------------------------
+// FAST: 単純性・穴構造（(3f) §11.6(c)(e) — リボン位相の撤廃に代わる位相契約）
+// ------------------------------------------------------------
+
+/// FAST / 新規((3f) §11.6(e)・**単純性の主検証**): 外環は**自己交差しない**（隣接しない辺同士が
+/// 真に交差しない）。リボン位相（偶数頂点・前半北/後半南逆順・経度単調）は (3f) で撤廃されたので、
+/// 位相の正しさはここ（単純性）・包含・頂点正当性で縛る。
 ///
-/// 殺す変異: 北南を入れ替えてリボンを組む（前半が南・後半が北になり緯度大小が反転）・南限界を逆順にせず
-///   そのまま繋ぐ（位相が壊れ前半 i↔後半 (2n−1−i) の同時刻対が崩れて緯度大小が破れる）・北南を同点列に
-///   する（緯度差ゼロで分離消失）・前半/後半の長さを食い違わせる（頂点数が奇数 or n がズレ対が崩れる）。
+/// 判定は平面 (lon,lat) の全辺ペア総当たり（端点共有の隣接辺は除外・端点接触/共線は交差としない）。
+/// 反子午線非跨ぎ・非極の合成/実 2024 前提（(3d) までの制約）。
+///
+/// 殺す変異: ユニオンを行わず自己交差する帯をそのまま返す（(3f) 以前の帯は実データで自己交差する）・
+///   環の再結合で断片を誤った順に繋ぐ（八の字）・穴を外環に連結して一本の自己交差リングにする。
 #[test]
-fn partial_limit_ring_has_ribbon_phase_north_then_south_reversed() {
+fn partial_limit_outer_ring_is_simple() {
     let engine = standard_engine(bundled_time_data());
     let bessel = rigorous_bessel();
     let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
@@ -1820,64 +1936,77 @@ fn partial_limit_ring_has_ribbon_phase_north_then_south_reversed() {
         .path(&eclipse, PathOptions::default())
         .expect("部分食 phase の path() は成功する");
     let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
-    let ring = &poly.rings[0];
-    let m = ring.len();
 
-    // 頂点数は偶数 2n（前半=北限界 n 点・後半=南限界 n 点逆順）。
-    assert_eq!(
-        m % 2,
-        0,
-        "外環頂点数は偶数 2n（北 n ++ 南 n 逆順）, got {m}"
-    );
-    let n = m / 2;
-    assert!(n >= 2, "片側半影限界は ≥2 点（非退化リボン）, got n={n}");
-
-    // 前半 i 番（北・時刻順）と後半 (2n−1−i) 番（南・逆順）は同一サンプル時刻の北/南対。
-    // 北限界 ≥ 南限界（lockstep の北南割当）。等号は微小マージン許容。
-    const EPS: f64 = 1.0e-6;
-    let mut max_gap = 0.0_f64;
-    for i in 0..n {
-        let north = lat_deg(&ring[i]);
-        let south = lat_deg(&ring[m - 1 - i]);
-        assert!(
-            north >= south - EPS,
-            "リボン対 i={i}: 前半（北限界）緯度 {north} ≥ 後半（南限界）緯度 {south} でない（北南反転/逆順欠落）"
+    if let Some((i, j)) = ring_self_intersection(&poly.rings[0]) {
+        panic!(
+            "外環が自己交差している（辺{i} × 辺{j}）: 単純多角形でない（ユニオン未実施/環再結合の誤り）。\
+             ring={} 頂点",
+            poly.rings[0].len()
         );
-        max_gap = max_gap.max(north - south);
     }
-    // 帯が実際に分離している（北南が同点列＝幅ゼロでない）ことを補強。
-    assert!(
-        max_gap > 1.0e-3,
-        "リボンの北南緯度差が全対でほぼゼロ（帯が分離していない・北南同点列の疑い）, max_gap={max_gap}"
-    );
+    for (h, hole) in poly.rings[1..].iter().enumerate() {
+        if let Some((i, j)) = ring_self_intersection(hole) {
+            panic!("穴[{h}] が自己交差している（辺{i} × 辺{j}）");
+        }
+    }
+}
 
-    // **逆順欠落の直接撃ち**（緯度大小だけでは合成経路次第で生存しうる変異を、経度の時系列で確実に撃つ）:
-    // 合成経路は東進（lon 単調増加）。前半（北・P1→P4 時刻順）の経度は単調増加し、後半（南・P4→P1 逆順）の
-    // 経度は単調減少する。南限界を逆順にせずそのまま繋ぐ変異では後半が単調増加になり、この向きが破れる。
-    // 期待値は path() でなく「東進＋リボン位相（北++南逆順）」の定義から独立に組む（追認回避）。
-    for i in 0..(n - 1) {
-        let front_a = lon_deg(&ring[i]);
-        let front_b = lon_deg(&ring[i + 1]);
+/// FAST / 新規((3f) §11.6(c)・**穴構造の契約**): `partial_limit` は
+/// `rings[0]`=外環・`rings[1..]`=穴の**単一多角形**（最大面積成分ひとつ）。穴は
+///   (a) 外環より小さい面積、(b) 代表頂点が外環の内側、(c) 互いに入れ子でない（他の穴の内側にない）
+/// を満たす。穴が 0 本でも契約を満たす（穴の存在は強制しない）。
+///
+/// 殺す変異: 2 番目以降の成分（別の外環）を穴として rings に混ぜる（外環の外に出る→(b) 破れ）・
+///   外環と穴を取り違える（面積の大小が反転→(a) 破れ）・穴を重複して二重登録する（(c) 破れ）。
+#[test]
+fn partial_limit_holes_are_nested_inside_the_single_outer_ring() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+
+    let outer_area = signed_area_deg2(&poly.rings[0]).abs();
+    assert!(
+        outer_area > 0.0,
+        "外環の面積が 0（退化多角形を捏造している）"
+    );
+    for (h, hole) in poly.rings[1..].iter().enumerate() {
+        let ha = signed_area_deg2(hole).abs();
         assert!(
-            front_b > front_a,
-            "前半（北限界・時刻順）の経度が単調増加でない（i={i}: {front_a}→{front_b}）"
+            ha > 0.0 && ha < outer_area,
+            "穴[{h}] の面積 {ha} は 0 より大きく外環 {outer_area} より小さい（外環/穴の取り違え）"
         );
-        let back_a = lon_deg(&ring[n + i]);
-        let back_b = lon_deg(&ring[n + i + 1]);
-        assert!(
-            back_b < back_a,
-            "後半（南限界・逆順）の経度が単調減少でない（南限界の逆順欠落の疑い・i={i}: {back_a}→{back_b}）"
-        );
+        for (v, p) in hole.iter().enumerate() {
+            assert!(
+                point_in_polygon(&poly.rings[0], p),
+                "穴[{h}] の頂点[{v}] (lat={}, lon={}) が外環の内側にない（別成分を穴として混入）",
+                lat_deg(p),
+                lon_deg(p)
+            );
+        }
+        for (k, other) in poly.rings[1..].iter().enumerate() {
+            if k == h {
+                continue;
+            }
+            assert!(
+                !hole.iter().all(|p| point_in_polygon(other, p)),
+                "穴[{h}] が穴[{k}] の内側に入れ子になっている（穴の重複登録/割当誤り）"
+            );
+        }
     }
 }
 
 // ------------------------------------------------------------
-// FAST: 包含（greatest_point・中心線点が外環内側）— 平面 point-in-polygon
+// FAST: 包含（中心線点が外環内側かつ穴の外）— 平面 point-in-polygon
 // ------------------------------------------------------------
 
-/// FAST / 新規（**包含の主検証**）: 中心線の各点が、**平面 (lon,lat) ray-casting point-in-polygon**
-/// （star-shaped を仮定しない）で外環（半影帯リボン）の内側にある（partial ⊃ umbral path・§11.5）。
-/// 中心軸は半影帯の内側を通るので、本影中心線は半影リボンに内包される。
+/// FAST / 改訂((3f) §11.6(c)・**包含の主検証**): 中心線の各点が、**平面 (lon,lat) ray-casting
+/// point-in-polygon**（star-shaped を仮定しない）で **外環の内側 かつ どの穴の内側でもない**
+/// （partial ⊃ umbral path）。中心軸は半影域の内側を通るので、本影中心線は部分食域に内包される。
 ///
 /// 注: `path.greatest_point` は合成メタデータの便宜値（geo(0,0)）で実際の半影帯（≈30–49°N）上に無いため
 /// 包含判定の対象にしない。包含の本質は中心線（実 bessel 由来）が半影帯に入ること。
@@ -1894,17 +2023,16 @@ fn partial_limit_contains_center_line() {
         .path(&eclipse, PathOptions::default())
         .expect("部分食 phase の path() は成功する");
     let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
-    let ring = &poly.rings[0];
 
-    // 中心線の各点が外環内側（partial ⊃ umbral path）。
+    // 中心線の各点が「外環の内側 かつ どの穴の内側でもない」（partial ⊃ umbral path）。
     let center = path
         .center_line
         .as_ref()
         .expect("中心食なので center_line=Some");
     for (i, c) in center.points.iter().enumerate() {
         assert!(
-            point_in_polygon(ring, c),
-            "中心線点[{i}] (lat={}, lon={}) が部分食域の外（partial ⊅ umbral path）",
+            polygon_contains(poly, c),
+            "中心線点[{i}] (lat={}, lon={}) が部分食域の外（外環の外 or 穴の中）＝partial ⊅ umbral path",
             lat_deg(c),
             lon_deg(c)
         );
@@ -1975,14 +2103,16 @@ fn partial_limit_ring_includes_terminator_vertices_on_limb() {
     );
 }
 
-/// FAST / 新規（3c-iii・**頂点正当性は terminator 連結後も維持**）: limb 連結 fixture でも外環の各頂点が
-/// 半影縁条件（面内距離 ≈ |l1 − ζ·tan f1|・自己整合ζ）を満たす。terminator 頂点（ζ=0）でも
-/// `|l1 − 0·tan f1| = l1` ゆえ半影縁条件を厳密に満たす（捏造点が無い・§11.5）。
+/// FAST / 改訂((3f) §11.6(d)・**頂点正当性はユニオン後も維持**): limb fixture でも外環の各頂点が
+/// 「閉半影内（面内距離 ≤ |l1 − ζ·tan f1| + tol）かつ昼面側（ζ ≥ −tol）」を満たす。terminator 頂点（ζ=0）も
+/// 半影縁点も等号で、ユニオンの交点頂点は離散化の範囲内で満たす（捏造点が無い）。
 ///
-/// 殺す変異: 連結頂点を半影縁から外れた地球縁（半径≠l1）に置く・terminator 交点を本影半径 l2 で解く・
-///   昼面包絡頂点と terminator 頂点で半径式を取り違える。
+/// **撤廃**: 厳密な等号（半影縁条件を全頂点が満たす）は (3f) で撤廃（交点頂点が入るため）。
+///
+/// 殺す変異: 連結/交点頂点を閉半影の外（半径 > |l1−ζ·tan f1|）に置く・terminator 交点を本影半径 l2 で解く・
+///   夜面（ζ<0）の点を境界に混ぜる・昼面包絡頂点と terminator 頂点で半径式を取り違える。
 #[test]
-fn partial_limit_limb_vertices_satisfy_penumbral_conditions() {
+fn partial_limit_limb_vertices_are_inside_closed_penumbra_on_day_side() {
     let engine = standard_engine(bundled_time_data());
     let bessel = limb_continuation_bessel();
     let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
@@ -1999,22 +2129,22 @@ fn partial_limit_limb_vertices_satisfy_penumbral_conditions() {
 
     for (j, p) in ring.iter().enumerate() {
         assert!(
-            vertex_is_legitimate(p, &bessel, &times, 1e-6),
-            "limb 連結外環の頂点[{j}] (lat={}, lon={}) が半影縁条件を満たさない（捏造点）",
+            vertex_is_in_closed_penumbra(p, &bessel, &times, 1e-6, 1e-6),
+            "limb fixture の外環頂点[{j}] (lat={}, lon={}) が「閉半影内かつ昼面側」でない（捏造点/夜面点）",
             lat_deg(p),
             lon_deg(p)
         );
     }
 }
 
-/// FAST / 新規（3c-iii・**リボン不変条件は連結後も維持**）: limb 連結 fixture でも外環は単一リング・
-/// 偶数頂点 2n・各リボン対で北緯度 ≥ 南緯度（lockstep の北南割当）。terminator 連結は昼面包絡を端で
-/// 置き換えるだけで `北(P1→P4)++南(P4→P1 逆順)` の帯位相を壊さない。
+/// FAST / 新規((3f) §11.6(e) 置換・limb fixture の位相契約): limb fixture（terminator 連結が発火し
+/// 帯が自己交差しうる fixture）でも、ユニオン後の外環は**単純**（自己交差なし）で、穴があれば
+/// 外環の内側に入れ子になる。撤廃された「単一リング・偶数頂点・北南 lockstep 対」の代わりの契約。
 ///
-/// 殺す変異: 連結で北南を取り違える（高緯度側を南へ）・連結頂点を片側にだけ追加して北南の点数を食い違わせる
-///   （奇数頂点 or 対崩れ）・リングを複数に割る。
+/// 殺す変異: 自己交差する帯をユニオンせずそのまま返す・環再結合で断片を誤って繋ぐ（八の字）・
+///   別成分を穴として混ぜる（外環の外に出る）。
 #[test]
-fn partial_limit_limb_ring_preserves_ribbon_invariants() {
+fn partial_limit_limb_polygon_is_simple_with_nested_holes() {
     let engine = standard_engine(bundled_time_data());
     let bessel = limb_continuation_bessel();
     let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
@@ -2023,32 +2153,35 @@ fn partial_limit_limb_ring_preserves_ribbon_invariants() {
         .path(&eclipse, PathOptions::default())
         .expect("部分食 phase の path() は成功する");
     let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
-    assert_eq!(
-        poly.rings.len(),
-        1,
-        "外環は単一リング, got {}",
-        poly.rings.len()
-    );
-    let ring = &poly.rings[0];
-    let m = ring.len();
 
-    assert_eq!(
-        m % 2,
-        0,
-        "外環頂点数は偶数 2n（北 n ++ 南 n 逆順）, got {m}"
+    assert!(
+        poly.rings[0].len() >= 3,
+        "外環は ≥3 頂点, got {}",
+        poly.rings[0].len()
     );
-    let n = m / 2;
-    assert!(n >= 2, "片側半影限界は ≥2 点（非退化リボン）, got n={n}");
-
-    const EPS: f64 = 1.0e-6;
-    for i in 0..n {
-        let north = lat_deg(&ring[i]);
-        let south = lat_deg(&ring[m - 1 - i]);
-        assert!(
-            north >= south - EPS,
-            "リボン対 i={i}: 前半（北限界/連結）緯度 {north} ≥ 後半（南限界/連結）緯度 {south} でない \
-             （連結で北南反転 or 逆順欠落）"
+    if let Some((i, j)) = ring_self_intersection(&poly.rings[0]) {
+        panic!(
+            "limb fixture の外環が自己交差している（辺{i} × 辺{j}）: ユニオン未実施/環再結合の誤り。\
+             ring={} 頂点",
+            poly.rings[0].len()
         );
+    }
+    let outer_area = signed_area_deg2(&poly.rings[0]).abs();
+    for (h, hole) in poly.rings[1..].iter().enumerate() {
+        assert!(hole.len() >= 3, "穴[{h}] は ≥3 頂点, got {}", hole.len());
+        if let Some((i, j)) = ring_self_intersection(hole) {
+            panic!("穴[{h}] が自己交差している（辺{i} × 辺{j}）");
+        }
+        assert!(
+            signed_area_deg2(hole).abs() < outer_area,
+            "穴[{h}] の面積が外環以上（外環/穴の取り違え）"
+        );
+        for (v, p) in hole.iter().enumerate() {
+            assert!(
+                point_in_polygon(&poly.rings[0], p),
+                "穴[{h}] の頂点[{v}] が外環の内側にない（別成分の混入）"
+            );
+        }
     }
 }
 
@@ -2056,24 +2189,25 @@ fn partial_limit_limb_ring_preserves_ribbon_invariants() {
 // SLOW: 実 2024-04-08 — partial_limit ballpark
 // ------------------------------------------------------------
 
-/// SLOW / 改訂（3c-iii・**実データで limb bulge 発火＋核内包**・要確認#4 / §11.4 (3c-iii)）:
+/// SLOW / 改訂((3f)・**headline acceptance＝中心線全点内包**・§11.6 / 受け入れテスト戦略):
 /// 実エンジンで 2024-04-08 皆既を search → path()。partial_limit=Some・外環 ≥3 頂点・各頂点が妥当な緯度経度・
-/// (a) 部分食域が皆既帯より緯度方向に広い（リボンのスパン > 中心線スパン・北端が中心線北端より外）・
-/// (3) **実データで terminator bulge が発火**（外環に前方射影 ζ≈0 ＆ 軸からの面内距離 ≈ l1 の terminator 頂点が
-///   ≥1 つ＝端区間で昼面包絡を terminator まで連結した証拠）・(4) **最大食まわりの核（中心線）が内包**
-///   （greatest 最近サンプルの ±10 サンプル窓を平面 (lon,lat) ray-casting point-in-polygon で内包＝partial ⊃ umbral 核）。
-/// NASA 緯度経度の直接一致は中心線位置精度律速ゆえ縛らず、桁の整合（広さ＋bulge 発火＋核内包）で締める。de440s 不要（解析暦）。
+/// (a) 部分食域が皆既帯より緯度方向に広い（スパン > 中心線スパン・北端が中心線北端より外）・
+/// (3) **実データで terminator 頂点が現れる**（外環に前方射影 ζ≈0 ＆ 軸からの面内距離 ≈ l1 の頂点が ≥1＝
+///   terminator limb が境界に織り込まれた証拠）・
+/// (4) **headline: 中心線の全点（194 点規模）が例外なく内包**される（外環の内側 かつ どの穴の内側でもない・
+///   平面 (lon,lat) ray-casting point-in-polygon）・(5) 外環が**自己交差しない**（単純）。
+/// NASA 緯度経度の直接一致は中心線位置精度律速ゆえ縛らず、桁の整合（広さ）＋位相（全点内包・単純性）で締める。
+/// de440s 不要（解析暦）。
 ///
-/// **正直な達成範囲（3c-iii の scope）**: 本スライス (3c-iii) は v1（3c-ii）リボンより limb（terminator）方向へ広い
-/// **真の bulge** を生み、合成だけでなく**実 2024 データでも発火する**。ただし**中心線全点の planar 内包は本スライスでは
-/// 達成しない**: 早朝 sunrise 端の中心線南端（~6.7°S）は帯の西側に落ち、その真の西境界は朝の terminator limb（円∩terminator
-/// 楕円を [P1,P4] 全域で辿る「4 曲線 terminator-limb 境界」）であり、これは**先送り**（deferred）。残差は [P1,P4] の時間端
-/// （中心線 U1/U4 近傍）の limb 過小被覆。よって本テストは**全点内包を表明せず**、最大食まわりの核内包（4）＋ 実データ bulge
-/// 発火（3）で 3c-iii の改善を honest に縛る（要確認#4・docs/algorithms/11-path-partial-domain.md §11.4 (3c-iii)）。
+/// **(3f) での昇格**: 従来（3c-iii）は「最大食まわり ±10 サンプル窓だけ内包」という正直な妥協だった
+/// （帯単独では U1/U4 近傍の中心線 4 点が帯の外に落ちる）。(3f) は部分食域を
+/// **帯 ∪ morning lune ∪ evening lune** の多角形ユニオンとして組むため、morning/evening limb が境界に入り
+/// **全点内包が達成されるべき契約**になる。よって窓限定を廃し、全点内包を headline として表明する。
 ///
-/// 殺す変異: 実日食で partial_limit を None/捏造にする・外環を皆既帯より狭く縮める（(a) 破れ）・端区間で
-///   terminator 連結を行わず実データで terminator 頂点が出ない＝bulge 未発火（(3) 破れ）・リボンの北南を取り違える/
-///   逆順を欠いて自己交差させ最大食窓の核内包を壊す（(4) 破れ）。
+/// 殺す変異: 実日食で partial_limit を None/捏造にする・外環を皆既帯より狭く縮める（(a) 破れ）・
+///   morning lune / evening lune をユニオン入力から落とす（U1/U4 近傍の中心線点が外に落ち (4) 破れ）・
+///   ユニオンを行わず帯だけを返す（(4)(5) 同時破れ＝実 2024 の帯は自己交差する）・
+///   ユニオン結果の最大面積成分でなく別成分を返す（(4) 破れ）・穴を外環と取り違える（(4) 破れ）。
 #[test]
 fn real_2024_eclipse_partial_limit_is_plausible() {
     let engine = standard_engine(bundled_time_data());
@@ -2167,31 +2301,46 @@ fn real_2024_eclipse_partial_limit_is_plausible() {
         ring.len()
     );
 
-    // (4) **最大食まわりの核（中心線）が内包**: 最大食点に最も近い中心線サンプルを中心とする ±10 サンプル窓が
-    //     平面 point-in-polygon で部分食域に内包される（partial ⊃ umbral 核）。最大食付近は半影帯の幅が最大ゆえ
-    //     確実に内側。**全点内包は本スライスでは達成しない**（早朝端の中心線南端は朝 terminator limb 境界が必要・
-    //     これは deferred な 4 曲線 terminator-limb 境界）ため、v1 と同じ窓内包に留める（要確認#4）。窓は greatest
-    //     との距離で選ぶ（追認回避＝path() の内部に依存しない）。
-    let g_lat = lat_deg(greatest);
-    let g_lon = lon_deg(greatest);
-    let mid = (0..center.points.len())
-        .min_by(|&a, &b| {
-            let da = (lat_deg(&center.points[a]) - g_lat).powi(2)
-                + (lon_deg(&center.points[a]) - g_lon).powi(2);
-            let db = (lat_deg(&center.points[b]) - g_lat).powi(2)
-                + (lon_deg(&center.points[b]) - g_lon).powi(2);
-            da.partial_cmp(&db).expect("有限距離")
-        })
-        .expect("中心線は非空");
-    let lo = mid.saturating_sub(10);
-    let hi = (mid + 11).min(center.points.len());
-    for i in lo..hi {
-        let c = &center.points[i];
-        assert!(
-            point_in_polygon(ring, c),
-            "実 2024: 最大食付近の中心線点[{i}] (lat={}, lon={}) が部分食域の外（partial ⊅ umbral 核）",
-            lat_deg(c),
-            lon_deg(c)
+    // (4) **headline acceptance（(3f) 昇格）**: 中心線の**全点**が部分食域に内包される
+    //     （外環の内側 かつ どの穴の内側でもない）。従来の「最大食まわり ±10 サンプル窓」から昇格。
+    //     窓限定は帯単独（(3c-iii)）の限界に合わせた妥協であり、3 領域ユニオン後は例外を許さない。
+    assert!(
+        center.points.len() >= 100,
+        "実 2024 の中心線は 194 点規模（サンプル列が痩せていると全点内包の意味が薄れる）, got {}",
+        center.points.len()
+    );
+    let outside: Vec<usize> = center
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !polygon_contains(poly, c))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "実 2024: 中心線 {} 点のうち {} 点が部分食域の外（partial ⊅ umbral path）。外れた index={:?} \
+         先頭の点 (lat={}, lon={})",
+        center.points.len(),
+        outside.len(),
+        outside,
+        lat_deg(&center.points[outside[0]]),
+        lon_deg(&center.points[outside[0]])
+    );
+
+    // (5) 外環は単純（自己交差なし）。実 2024 の帯は単独では自己交差する（§11.6(b)）ので、
+    //     ユニオンを経ていない出力はここで落ちる。
+    if let Some((i, j)) = ring_self_intersection(ring) {
+        panic!(
+            "実 2024: 外環が自己交差している（辺{i} × 辺{j}）＝ユニオン未実施/環再結合の誤り。ring={} 頂点",
+            ring.len()
         );
     }
+
+    // greatest_point は実データでは中心線上にあるので、同じ契約で内包される。
+    assert!(
+        polygon_contains(poly, greatest),
+        "実 2024: 最大食点 (lat={}, lon={}) が部分食域の外",
+        lat_deg(greatest),
+        lon_deg(greatest)
+    );
 }

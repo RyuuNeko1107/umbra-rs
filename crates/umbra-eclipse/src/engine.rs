@@ -25,11 +25,11 @@ use umbra_core::{
     TimeData, TimeInterval, TimeRange, TimeScales, TtInstant, UtcInstant,
 };
 use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
-use umbra_geo::{GeoLine, GeoPoint, GeoPolygon};
+use umbra_geo::{union_rings, GeoLine, GeoPoint, GeoPolygon};
 
 use crate::axis_intercept::{
-    cone_terminator_intersections, great_circle_distance_km, solve_limit_edge,
-    surface_point_for_fundamental,
+    cone_terminator_intersections, cone_terminator_intersections_detailed,
+    great_circle_distance_km, solve_limit_edge, surface_point_for_fundamental,
 };
 use crate::bessel_poly::{BesselFitError, BesselianPolynomial};
 use crate::besselian::InstantaneousBesselianElements;
@@ -793,36 +793,107 @@ fn lowest_latitude(pts: &[GeoPoint]) -> Option<GeoPoint> {
         .min_by(|a, b| a.lat.degrees().0.total_cmp(&b.lat.degrees().0))
 }
 
+/// terminator limb の **morning / evening lune**（日の出側・日没側の掃過領域）を `[start_tt, end_tt]`＝[P1,P4] で
+/// 追跡し、それぞれ閉リング（点列）として返す（M9 残(3) 3f・部分食域 §11.6(a)(b)）。
+///
+/// 各サンプル時刻で半影縁 ∩ terminator の交点を [`cone_terminator_intersections_detailed`] で求め、基本面 ξ の符号
+/// （`dζ/dt = −μ′·cos d·ξ` ゆえ `ξ<0`＝morning／`ξ≥0`＝evening）で厳密に分類する。limb ごとに、その時刻の交点を
+/// 緯度で分けて**高緯度側を hi 枝・低緯度側を lo 枝**へ積み（交点が 1 点だけの接点時刻では hi=lo の同一点）、
+/// 最後に `hi(P1→P4 時刻順) ++ lo(P4→P1 逆順)` の**リボン**で閉じる（帯と同じ位相保存の組み方）。
+/// その時刻に当該 limb の交点が無ければ、その limb の **hi/lo 両枝から同時に落とす**（lockstep）。
+///
+/// morning limb の 2 枝は P1 尖点と「半影が日の出 terminator から離れる接点」で閉じる**独立ループ**を成し、帯と
+/// 重なる（§11.6）。よって本関数の返す 2 リングは帯と**多角形ユニオン**で合成する（[`build_partial_limit`]）。
+/// ループ規約・前提は [`trace_penumbral_limits`] と同一（始点終点を必ず含む・`interval_seconds` 非正は始点のみ・
+/// `[start_tt,end_tt] ⊆ bessel.fit_interval`）。`Err` は伝播。
+fn trace_terminator_lunes(
+    bessel: &BesselianPolynomial,
+    start_tt: TtInstant,
+    end_tt: TtInstant,
+    interval_seconds: f64,
+) -> Result<(Vec<GeoPoint>, Vec<GeoPoint>), EclipseError> {
+    let ellipsoid = Ellipsoid::WGS84;
+    let span_seconds = end_tt.jd2().days_since(start_tt.jd2()) * SECONDS_PER_DAY;
+
+    // (morning, evening) それぞれの hi 枝 / lo 枝。
+    let mut branches: [(Vec<GeoPoint>, Vec<GeoPoint>); 2] =
+        [(Vec::new(), Vec::new()), (Vec::new(), Vec::new())];
+    let mut t_sec = 0.0_f64;
+    loop {
+        let t = TtInstant::from_jd2(start_tt.jd2().add_days(t_sec / SECONDS_PER_DAY));
+        let elements = bessel.at(t)?;
+        let hits = cone_terminator_intersections_detailed(&elements, elements.l1, &ellipsoid)?;
+        for (index, is_morning) in [(0usize, true), (1usize, false)] {
+            let limb: Vec<GeoPoint> = hits
+                .iter()
+                .filter(|(_, xi)| (*xi < 0.0) == is_morning)
+                .map(|(p, _)| *p)
+                .collect();
+            // その時刻に当該 limb の交点が無ければ hi/lo とも積まない（lockstep）。
+            let (Some(hi), Some(lo)) = (highest_latitude(&limb), lowest_latitude(&limb)) else {
+                continue;
+            };
+            branches[index].0.push(hi);
+            branches[index].1.push(lo);
+        }
+        if t_sec >= span_seconds || interval_seconds <= 0.0 {
+            break;
+        }
+        t_sec = (t_sec + interval_seconds).min(span_seconds);
+    }
+
+    let close_ribbon = |(hi, lo): (Vec<GeoPoint>, Vec<GeoPoint>)| -> Vec<GeoPoint> {
+        let mut ring = hi;
+        ring.extend(lo.into_iter().rev());
+        ring
+    };
+    let [morning, evening] = branches;
+    Ok((close_ribbon(morning), close_ribbon(evening)))
+}
+
 /// 部分食域の外周 `GeoPolygon`（単一外環）を構成する（M9 残(3) 3c-ii・部分食域 §11.4・[`EclipseEngine::path`]
 /// の `partial_limit` が消費）。`[start_tt, end_tt]`＝[P1,P4]。
 ///
-/// **リボン法（位相保存）**: 昼面の南北半影限界（[`trace_penumbral_limits`]・(3c-i)）を **lockstep**（北[i]/南[i] が
-/// 同一サンプル時刻の対）で得て、外環 = `北限界(P1→P4 時刻順)` ++ `南限界(P4→P1 逆順)` の帯状単純多角形とする。
-/// 北限界が南限界の北を保つ（lockstep の北南割当）ため自己交差せず、umbral path（中心線）は半影帯の内側に
-/// 確実に内包される。境界点が 3 未満（半影限界が昼面にほぼ無い＝極小部分食）なら `None`。
+/// **3 領域の多角形ユニオン（(3f)・§11.6）**: 部分食域は
+/// **帯 ∪ morning lune ∪ evening lune** の和である。terminator limb の 2 枝は帯と**重なる独立ループ**を成すため、
+/// 曲線の単純連結では外周が出ない（実 2024 で実測・§11.6 / 要確認 6）。よって
+/// - 帯 = [`trace_penumbral_limits`]（昼面包絡 ELSE terminator 連結・lockstep）を `北(P1→P4) ++ 南(P4→P1 逆順)`、
+/// - morning / evening lune = [`trace_terminator_lunes`]（基本面 ξ の符号で厳密分類した limb の掃過リボン）
 ///
-/// **方位ソートからの是正（重要）**: 当初は全境界点を最大食点まわりの方位ソートで外環化したが、実 2024 のような
-/// **巨大領域は star-shaped でなく**中心線端点が外に落ちた（方位ソートは位相を壊す）。リボン法は限界線の
-/// 時系列順を保つので位相が正しい。**limb（rise/set）bulge** の取り込み（(3b) `cone_terminator_intersections`）は
-/// 帯の端を terminator まで張り出す**後続の精緻化 (3c-iii)**＝v1 リボンは limb 方向に過小被覆（中心線内包・partial⊃umbral
-/// は満たす・accuracy/conventions §11 で近似明記）。**前提**: `[start_tt,end_tt] ⊆ bessel.fit_interval`。反子午線
-/// MultiPolygon 分割・環向き正規化は GeoJSON 化 (3d)。
+/// の 3 リングを [`union_rings`] で合成し、**外環の面積降順の先頭＝最大面積成分**を `partial_limit` とする。
+/// これで中心線全点が内包される（headline acceptance・§受け入れテスト戦略）。
+///
+/// **リボン位相の契約は (3f) で撤廃**（外環はユニオン後の断片列で「北 n ++ 南 n 逆順」ではない・§11.6(e)）。
+/// **穴を持ちうる**（`rings[1..]`）。多角形を成す領域が 1 つも無ければ `None`（頂点 3 未満＝`interval` 非正の
+/// 1 サンプル等の退化）。
+///
+/// **残る近似**: ユニオンが複数成分に割れた場合、2 番目以降を落とす（`Option<GeoPolygon>` は単一多角形＝
+/// MultiPolygon 未対応・(3d) と同じ v1 制約）。反子午線跨ぎ・極を含む領域は [`union_rings`] が未対応。
+/// **前提**: `[start_tt,end_tt] ⊆ bessel.fit_interval`。
 fn build_partial_limit(
     bessel: &BesselianPolynomial,
     start_tt: TtInstant,
     end_tt: TtInstant,
     interval_seconds: f64,
 ) -> Result<Option<GeoPolygon>, EclipseError> {
-    // 昼面の南北半影限界（lockstep＝北[i]/南[i] は同一時刻の対）。
+    // 帯: 昼面の南北半影限界（lockstep＝北[i]/南[i] は同一時刻の対）を 北(P1→P4) ++ 南(P4→P1 逆順) で閉じる。
     let (north, south) = trace_penumbral_limits(bessel, start_tt, end_tt, interval_seconds)?;
-    // 帯の外環 = 北(P1→P4) ++ 南(P4→P1 逆順)。lockstep ゆえ自己交差しない単純多角形。
-    let mut ring = north.points;
-    ring.extend(south.points.into_iter().rev());
+    let mut band = north.points;
+    band.extend(south.points.into_iter().rev());
+    // morning / evening lune: terminator limb の掃過領域（帯と重なる独立ループ・§11.6）。
+    let (morning, evening) = trace_terminator_lunes(bessel, start_tt, end_tt, interval_seconds)?;
 
-    if ring.len() < 3 {
+    // 3 領域の和を多角形ユニオンで取る。頂点 3 未満の領域は多角形を成さないので渡さない。
+    let regions: Vec<Vec<GeoPoint>> = [band, morning, evening]
+        .into_iter()
+        .filter(|r| r.len() >= 3)
+        .collect();
+    if regions.is_empty() {
         return Ok(None);
     }
-    Ok(Some(GeoPolygon::new(vec![ring])))
+    // `union_rings` は外環の面積降順なので、先頭が最大面積成分。2 番目以降は落とす
+    // （`partial_limit: Option<GeoPolygon>` は単一多角形＝MultiPolygon 未対応・(3d) と同じ v1 制約）。
+    Ok(union_rings(&regions).into_iter().next())
 }
 
 /// 1 サンプル時刻の中心線点（と任意で南北限界点＋[`PathSample`]）を求める。軸/縁が地表を外す
