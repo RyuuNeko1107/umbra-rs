@@ -419,10 +419,13 @@ fn noncentral_eclipse_has_no_center_line() {
 #[test]
 fn real_2017_eclipse_center_line_crosses_north_america() {
     let engine = standard_engine(bundled_time_data());
-    // 2017-08-21 を内包する控えめな探索窓（前後 0.5 日）。
+    // 2017-08-21 の暦日全体（最大食は同日 ~18:26 UTC）。
+    // ISSUE-050 以前はここが `[08-20 12:00, 08-21 12:00]`＝**最大食を含まない窓**だったが、
+    // `search` が候補窓（±1 日）で拾った範囲外の日食を返していたため偶然通っていた。
+    // `search` が最大食時刻で範囲を絞るようになり（ISSUE-050）、窓の誤りが表面化したので是正する。
     let range = umbra_core::TimeRange {
-        start: utc(2017, 8, 20, 12, 0, 0.0),
-        end: utc(2017, 8, 21, 12, 0, 0.0),
+        start: utc(2017, 8, 21, 0, 0, 0.0),
+        end: utc(2017, 8, 22, 0, 0, 0.0),
     };
     let eclipses = engine
         .search(range)

@@ -150,6 +150,12 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
     /// 残候補ごとに供給源（暦ジェネリック `InstantaneousEvaluator`）を構築し、最大食（S6a）・
     /// 全球接触（S6b-i/ii）・種別（S6b-iii）・ベッセル多項式 fit（ISSUE-022）を計算して
     /// `SolarEclipse`（event_key・GlobalCircumstances・bessel・metadata）を組み立てる。
+    ///
+    /// **範囲の意味（ISSUE-050）**: 返すのは**最大食時刻が `range` に入る日食だけ**。判定は
+    /// `umbra_core::TimeRange` の規約どおり**閉区間 `[start, end]`**。候補生成は偽陰性ゼロのため
+    /// 範囲を ±1 日広げて走査するが、その広げ分で拾った**範囲外の日食は返さない**。
+    /// 最大食が範囲外で**部分食の時間帯（P1〜P4）だけが範囲に掛かる**日食は**返らない**
+    /// （日食の同一性は最大食で与えられ、区間交差で判定すると隣接する 2 日が同じ日食を主張するため）。
     pub fn search(&self, range: UtcRange) -> Result<Vec<SolarEclipse>, EclipseError> {
         let root_config = RootConfig {
             x_tolerance_days: self.config.root_tolerance_seconds / SECONDS_PER_DAY,
@@ -231,6 +237,15 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
                 metadata,
             });
         }
+        // 候補窓（`new_moon_candidates` は偽陰性ゼロのため範囲を ±`WINDOW_HALF_WIDTH_DAYS` 広げる）で
+        // 拾った**範囲外の日食を落とす**（ISSUE-050）。判定は**最大食時刻**・**閉区間 `[start, end]`**。
+        // 比較は 2 要素表現のまま `days_since` で行う（`jd()` は合算で ~4.6e-5 s を失い、
+        // `julian.rs` が「精度クリティカルな差分には使わない」と定める＝±1 s 目標を削る）。
+        let (start_jd2, end_jd2) = (range.start.jd2(), range.end.jd2());
+        eclipses.retain(|eclipse| {
+            let greatest = eclipse.global.greatest.time_utc.jd2();
+            greatest.days_since(start_jd2) >= 0.0 && end_jd2.days_since(greatest) >= 0.0
+        });
         Ok(eclipses)
     }
 
