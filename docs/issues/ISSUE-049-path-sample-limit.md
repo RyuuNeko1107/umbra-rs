@@ -114,3 +114,11 @@ span = 5400 s の fixture（U1〜U4 = ±0.75 h）に変えて `5400 / 0.054 == 1
 `include_limits=false` でも中心線の走査は検査される。
 
 fmt / clippy `-D warnings` / 全テスト通過（Docker 内）。
+
+### mutation
+
+**12 変異・10 caught・2 timeout・missed 0**（`docs/reviews/mutation-path-sample-limit.md`）。
+timeout 2 件は「ガードを壊すと実際にハングする」ことの検出＝caught 扱い（既存方針と同じ）。
+壊れた 2 件が `span_of` の秒換算と部分食域の `include_limits` guard であることは、
+**検査対象 span の選び方（§確定仕様 2）が実際に効いている**ことの証明になっている。
+テスト対象は `--test path_limits` に限定した（全スイートは baseline が timeout に掛かるため）。
