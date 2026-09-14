@@ -99,3 +99,11 @@ ISSUE-016/017/018（候補生成）、ISSUE-043（Engine 結線）。CLI は ISS
 広範囲で複数件・昇順・全件が範囲内。オラクルは全て**エンジン自身の出力から導出**（外部数表なし）。
 
 workspace 全テスト・fmt・clippy `-D warnings` 通過。
+
+### mutation
+
+13 変異・8 caught・4 missed・1 unviable（`docs/reviews/mutation-search-range-filter.md`）。
+**本 issue が導入した判定行（`retain`）の変異は 3 件すべて caught**（`&&`→`||`、両端の `>=`→`<`）。
+missed 4 件は候補窓の算術・全球接触の組み立てという**変更範囲外の既存コード**で、killer を
+範囲フィルタ 5 本に絞った走ゆえ当然撃てない箇所（全スイート killer で回すには baseline の
+timeout 対策＝テストの FAST/SLOW 分離が要る・`mutation-cli-path.md` と同じ残作業）。
