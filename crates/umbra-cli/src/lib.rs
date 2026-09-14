@@ -3417,6 +3417,7 @@ mod tests {
             northern_limit: None,
             southern_limit: None,
             partial_limit: None,
+            partial_limit_pole: None,
             // lat と lon は絶対値・符号ともに異なる（取り違えが必ず出力差になる）。
             greatest_point: geo(17.5, -66.25),
             samples: vec![],
@@ -3460,6 +3461,7 @@ mod tests {
                 // 穴 4 頂点。
                 synth_ring(&[(15.0, 15.0), (16.0, 15.0), (16.0, 16.0), (15.0, 16.0)]),
             ])),
+            partial_limit_pole: None,
             greatest_point: geo(17.5, -66.25),
             samples: synth_samples(6),
         }

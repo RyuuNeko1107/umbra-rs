@@ -3008,3 +3008,646 @@ fn central_span_is_checked_even_when_limits_are_excluded() {
         other => panic!("PathIntervalTooSmall を期待したが {other:?}"),
     }
 }
+
+// ============================================================
+// ISSUE-051: partial_limit_pole ＝ 部分食域が囲む極（エンジン側の確定仕様）
+//
+// 確定仕様（ISSUE-051 §エンジン側の確定仕様）:
+//   `EclipsePath` に `partial_limit_pole: Option<umbra_geo::EnclosedPole>` を持つ。
+//   `partial_limit` が **Some のときは常に** 判定する（跨ぎ回数は見ない＝geo 側が無視する）。
+//   判定は **部分食域の定義を極点そのものに適用**する:
+//     サンプル時刻 t（経路生成と同じ `sample_interval_seconds`・区間 [P1,P4]）ごとに
+//     測地緯度 ±90 の点を基本面へ前方射影し
+//       m = hypot(ξ−x, η−y) ≤ |l1 − ζ·tan f1|（閉半影内） かつ ζ ≥ 0（昼面側）
+//     を満たす時刻が **ひとつでもあれば**その極は領域に属する。
+//   北だけ → Some(North)、南だけ → Some(South)、**両方／どちらも属さない → None**（捏造しない）。
+//   `partial_limit` が None なら `partial_limit_pole` も None。
+//   **`partial_limit` の値そのものは不変**（平面リングのまま・極頂点を焼き込まない）。
+//
+// オラクル戦略: 期待値は被テスト関数の戻りを使わず、`BesselianPolynomial::at`（公開・検証済）＋
+//   `project_observer_to_fundamental`（ISSUE-024・公開・検証済）で**独立に再構成**する。
+//   極の射影は経度に依存しない（自転軸上・cos φ' = 0）ことも独立に表明する。
+//
+// 期待される RED（実装前）: `partial_limit_pole` フィールドが無いため **コンパイルエラー（E0609）**。
+// ============================================================
+
+/// 極点（測地緯度 `pole_lat_deg` = ±90）が、ある t で「閉半影内かつ昼面側」かを**独立に**判定する。
+/// 経度は極では射影に効かないので 0 を使う（効かないこと自体は別テストで表明する）。
+/// 等号は仕様どおり閉区間（`m <= |L1'|`・`ζ >= 0`）で、許容を足さない（境界の扱いを緩めない）。
+fn pole_is_in_partial_domain(
+    pole_lat_deg: f64,
+    bessel: &BesselianPolynomial,
+    sample_times: &[TtInstant],
+) -> bool {
+    let pole = geo(pole_lat_deg, 0.0);
+    sample_times.iter().any(|t| match bessel.at(*t) {
+        Ok(e) => {
+            let of = forward_project(&pole, &e);
+            let m = (of.xi - e.x).hypot(of.eta - e.y);
+            let penumbral = (e.l1 - of.zeta * e.tan_f1).abs();
+            of.zeta >= 0.0 && m <= penumbral
+        }
+        Err(_) => false,
+    })
+}
+
+/// 仕様の「返し方」を独立に再構成する（北だけ→North・南だけ→South・両方／なし→None）。
+fn expected_pole(
+    bessel: &BesselianPolynomial,
+    sample_times: &[TtInstant],
+) -> Option<umbra_geo::EnclosedPole> {
+    let north = pole_is_in_partial_domain(90.0, bessel, sample_times);
+    let south = pole_is_in_partial_domain(-90.0, bessel, sample_times);
+    match (north, south) {
+        (true, false) => Some(umbra_geo::EnclosedPole::North),
+        (false, true) => Some(umbra_geo::EnclosedPole::South),
+        _ => None,
+    }
+}
+
+/// 日食の [P1,P4] サンプル時刻列（`path()` と同じ lockstep・既定 interval）。
+fn partial_sample_times(eclipse: &SolarEclipse) -> Vec<TtInstant> {
+    let p1 = eclipse
+        .global
+        .partial_begin
+        .as_ref()
+        .expect("部分食 phase あり")
+        .time_tt;
+    let p4 = eclipse
+        .global
+        .partial_end
+        .as_ref()
+        .expect("部分食 phase あり")
+        .time_tt;
+    lockstep_sample_times(p1, p4, PathOptions::default().sample_interval_seconds)
+}
+
+/// **北極だけ**が部分食域に入る合成 bessel（ISSUE-051 判定の手計算可能な fixture）。
+///
+/// `rigorous_bessel` と同形（μ'≠0・x は二次で t_hours 依存）だが、影軸の赤緯を **d = +1.2 rad**
+/// （≈68.8°N）・影軸を **y ≈ +0.36** に置く。極の基本面射影は経度に依存せず
+/// （ρ = b/a ≈ 0.996647）:
+///   北極: η = +ρ·cos d ≈ +0.3612、ζ = +ρ·sin d ≈ +0.9288（**昼面側**）
+///   南極: η = −0.3612、ζ = **−0.9288（夜面側＝定義上 必ず不可）**
+/// epoch（t=0）で影軸は (x,y) = (0.05, 0.36) なので北極までの面内距離は
+///   m = hypot(0.05−0, 0.36−0.3612) ≈ 0.0500 ≤ |l1 − ζ·tan f1| ≈ 0.5357 → **北極は属す**。
+/// 南極は ζ<0 が全時刻で成り立つ（d 一定）ので**決して属さない**（面内距離 ≈0.72 でも外）。
+/// ⇒ 期待は `Some(North)`。期待値は定数でなくテスト内で公開 API から再導出して前提を表明する。
+fn north_pole_bessel() -> BesselianPolynomial {
+    let epoch = synth_epoch();
+    let p = |coeffs: Vec<f64>| Polynomial {
+        coefficients: coeffs,
+    };
+    BesselianPolynomial {
+        epoch_tt: epoch,
+        x: p(vec![0.05, 0.45, 0.02]),
+        y: p(vec![0.36, 0.02]),
+        d: p(vec![1.2]),
+        mu: p(vec![1.2, 0.26]),
+        l1: p(vec![0.54]),
+        l2: p(vec![-0.009]),
+        tan_f1: 0.004_65,
+        tan_f2: 0.004_63,
+        fit_interval: TimeInterval {
+            start: tt_at_hours(epoch, -2.0),
+            end: tt_at_hours(epoch, 2.0),
+        },
+        fit_error: BesselFitError {
+            max_x: 1.0e-7,
+            max_y: 1.0e-7,
+            max_l1: 1.0e-7,
+            max_l2: 1.0e-7,
+        },
+    }
+}
+
+/// **南極だけ**が部分食域に入る合成 bessel（`north_pole_bessel` の南北鏡像）。
+///
+/// d = **−1.2 rad**・影軸 y ≈ **−0.36**。射影は
+///   南極: η = −ρ·cos d ≈ −0.3612、ζ = −ρ·sin d = **+0.9288（昼面側）**
+///   北極: η = +0.3612、ζ = **−0.9288（夜面側）**
+/// epoch で m_south = hypot(0.05, −0.36+0.3612) ≈ 0.0500 ≤ 0.5357 → **南極が属す**。
+/// ⇒ 期待は `Some(South)`。北 fixture と対にすることで**極を定数で返す実装は必ず落ちる**。
+fn south_pole_bessel() -> BesselianPolynomial {
+    let epoch = synth_epoch();
+    let p = |coeffs: Vec<f64>| Polynomial {
+        coefficients: coeffs,
+    };
+    BesselianPolynomial {
+        epoch_tt: epoch,
+        x: p(vec![0.05, 0.45, 0.02]),
+        y: p(vec![-0.36, -0.02]),
+        d: p(vec![-1.2]),
+        mu: p(vec![1.2, 0.26]),
+        l1: p(vec![0.54]),
+        l2: p(vec![-0.009]),
+        tan_f1: 0.004_65,
+        tan_f2: 0.004_63,
+        fit_interval: TimeInterval {
+            start: tt_at_hours(epoch, -2.0),
+            end: tt_at_hours(epoch, 2.0),
+        },
+        fit_error: BesselFitError {
+            max_x: 1.0e-7,
+            max_y: 1.0e-7,
+            max_l1: 1.0e-7,
+            max_l2: 1.0e-7,
+        },
+    }
+}
+
+/// 「両極とも属す」を狙える唯一の構成（d ≡ 0＝分点・影軸が赤道を南北に振れる）の fixture。
+///
+/// ζ_north = +ρ·sin d・ζ_south = −ρ·sin d なので **昼面側条件を両極が同時に満たせるのは d = 0 のときだけ**
+/// （そこでは両極とも ζ = 0 ＝ terminator 上）。d ≡ 0 で影軸 y を [P1,P4] の間に −0.48 → +0.48 と振らせると
+/// 端の時刻で m_north = |0.99665 − 0.48| ≈ 0.517 ≤ 0.54、逆端で m_south ≈ 0.517 ≤ 0.54 となり、
+/// **原理的には**両極が属する。ただし ζ は d=0 で厳密に 0 付近（極では cos φ' ≈ 6e-17 の残差が符号を決める）
+/// ため、実装が極に採る経度次第で ±1e-16 に振れる**縁の縁**であり、固定期待値を置けない。
+/// よって本 fixture は「両極 → None」を固定値で表明せず、
+/// `partial_limit_pole_matches_independent_derivation_for_all_fixtures` が
+/// 「実際の所属（テスト内で独立導出）と返り値が仕様どおり対応する」ことを表明する
+/// （両極が立った場合には None が要求される＝片方を優先する実装を撃つ）。
+fn equinox_both_poles_candidate_bessel() -> BesselianPolynomial {
+    let epoch = synth_epoch();
+    let p = |coeffs: Vec<f64>| Polynomial {
+        coefficients: coeffs,
+    };
+    BesselianPolynomial {
+        epoch_tt: epoch,
+        // x はほぼ 0（影軸が極の射影 ξ=0 の近くを通る）。
+        x: p(vec![0.0, 0.01]),
+        // y: t_hours=±1.5 で ±0.48（両極の面内距離を |0.99665∓0.48| ≈ 0.517 ≤ l1 にする）。
+        y: p(vec![0.0, 0.32]),
+        d: p(vec![0.0]),
+        mu: p(vec![1.2, 0.26]),
+        l1: p(vec![0.54]),
+        l2: p(vec![-0.009]),
+        tan_f1: 0.004_65,
+        tan_f2: 0.004_63,
+        fit_interval: TimeInterval {
+            start: tt_at_hours(epoch, -2.0),
+            end: tt_at_hours(epoch, 2.0),
+        },
+        fit_error: BesselFitError {
+            max_x: 1.0e-7,
+            max_y: 1.0e-7,
+            max_l1: 1.0e-7,
+            max_l2: 1.0e-7,
+        },
+    }
+}
+
+// ------------------------------------------------------------
+// FAST: 極の射影が経度に依らない（判定定義の前提）
+// ------------------------------------------------------------
+
+/// FAST / ISSUE-051 §判定の定義（「極は自転軸上なので射影は経度に依存しない」）:
+/// 測地緯度 ±90 の点を**別々の経度**で前方射影しても (ξ, η, ζ) が一致する。
+/// これは「極の経度をどう採っても判定が変わらない」という仕様の前提そのもの。
+///
+/// 殺す変異: 極の判定で経度依存の項（ρ cos φ'·sin H など）を有意に混ぜ込む実装・
+///   極を lat=±90 でなく ±89 などで代用する実装（緯度を変えれば経度依存が復活する）。
+#[test]
+fn pole_projection_is_independent_of_longitude() {
+    let bessel = north_pole_bessel();
+    let e = bessel.at(synth_epoch()).expect("epoch は fit 区間内");
+    for lat in [90.0_f64, -90.0_f64] {
+        let a = forward_project(&geo(lat, 0.0), &e);
+        let b = forward_project(&geo(lat, 123.4), &e);
+        let c = forward_project(&geo(lat, -77.7), &e);
+        for (name, other) in [("123.4", &b), ("-77.7", &c)] {
+            assert!(
+                (a.xi - other.xi).abs() < 1e-12
+                    && (a.eta - other.eta).abs() < 1e-12
+                    && (a.zeta - other.zeta).abs() < 1e-12,
+                "lat={lat} の射影が経度 {name} で変わる: (ξ {} η {} ζ {}) vs (ξ {} η {} ζ {})",
+                a.xi,
+                a.eta,
+                a.zeta,
+                other.xi,
+                other.eta,
+                other.zeta
+            );
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// FAST: 北極だけ / 南極だけ / どちらでもない
+// ------------------------------------------------------------
+
+/// FAST / ISSUE-051 §返し方（**北だけ属す → `Some(North)`**）:
+/// d=+1.2・y≈+0.36 の合成日食（北極が閉半影内かつ昼面側・南極は夜面側）で
+/// `partial_limit_pole == Some(North)`。
+/// 前提（所属そのもの）は公開 API（`bessel.at` ＋ `project_observer_to_fundamental`）から
+/// テスト内で独立導出して表明する＝fixture の手計算と実装の双方を縛る。
+///
+/// 殺す変異: 常に `None` を返す（極を判定しない）・南北を取り違える・
+///   半影半径に l2/tan_f2 を使う（|L2'|≈0.009 では北極も外れて None になる）・
+///   |L1'| を中心軸 ζ₀ で測る・面内距離の基準を影軸 (x,y) でなく原点にする。
+#[test]
+fn partial_limit_pole_is_north_when_only_north_pole_is_in_domain() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = north_pole_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
+    let times = partial_sample_times(&eclipse);
+
+    // 前提の独立導出: 北極は属し、南極は属さない。
+    assert!(
+        pole_is_in_partial_domain(90.0, &bessel, &times),
+        "fixture 前提: 北極は [P1,P4] のいずれかで閉半影内かつ昼面側"
+    );
+    assert!(
+        !pole_is_in_partial_domain(-90.0, &bessel, &times),
+        "fixture 前提: 南極はどの時刻でも属さない（d>0 ゆえ ζ<0）"
+    );
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    assert!(
+        path.partial_limit.is_some(),
+        "判定の前提: partial_limit=Some（Some のときだけ極を判定する）"
+    );
+    assert_eq!(
+        path.partial_limit_pole,
+        Some(umbra_geo::EnclosedPole::North),
+        "北極だけが領域に属す → Some(North)"
+    );
+}
+
+/// FAST / ISSUE-051 §返し方（**南だけ属す → `Some(South)`**）:
+/// `north_pole_bessel` の南北鏡像（d=−1.2・y≈−0.36）で `partial_limit_pole == Some(South)`。
+/// 北 fixture と対にすることで、**極を定数で返す実装（常に North／常に South）を必ず落とす**。
+///
+/// 殺す変異: 極を定数で返す・北南を取り違える（`sin d` の符号落ち）・
+///   ζ≥0（昼面側）を ζ≤0 と取り違える（この fixture では North が選ばれてしまう）。
+#[test]
+fn partial_limit_pole_is_south_when_only_south_pole_is_in_domain() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = south_pole_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
+    let times = partial_sample_times(&eclipse);
+
+    assert!(
+        pole_is_in_partial_domain(-90.0, &bessel, &times),
+        "fixture 前提: 南極は [P1,P4] のいずれかで閉半影内かつ昼面側"
+    );
+    assert!(
+        !pole_is_in_partial_domain(90.0, &bessel, &times),
+        "fixture 前提: 北極はどの時刻でも属さない（d<0 ゆえ ζ<0）"
+    );
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    assert!(
+        path.partial_limit.is_some(),
+        "判定の前提: partial_limit=Some"
+    );
+    assert_eq!(
+        path.partial_limit_pole,
+        Some(umbra_geo::EnclosedPole::South),
+        "南極だけが領域に属す → Some(South)"
+    );
+}
+
+/// FAST / ISSUE-051 §返し方（**どちらも属さない → `None`**）:
+/// `rigorous_bessel`（d=0.2・影軸が低緯度・極までの面内距離 ≈0.96 ≫ l1=0.54）では
+/// どちらの極も領域に属さないので `partial_limit_pole == None`（`partial_limit` は Some のまま）。
+///
+/// 殺す変異: `partial_limit` が Some なら常に極を返す（所属を見ずに捏造する）・
+///   閉半影半径を過大にする（l1 のスケール取り違え）・昼面側条件だけで決める。
+#[test]
+fn partial_limit_pole_is_none_when_neither_pole_is_in_domain() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = rigorous_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
+    let times = partial_sample_times(&eclipse);
+
+    assert!(
+        !pole_is_in_partial_domain(90.0, &bessel, &times)
+            && !pole_is_in_partial_domain(-90.0, &bessel, &times),
+        "fixture 前提: どちらの極も領域に属さない"
+    );
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    assert!(
+        path.partial_limit.is_some(),
+        "この fixture は partial_limit=Some（極のみ None であることを縛る）"
+    );
+    assert_eq!(
+        path.partial_limit_pole, None,
+        "どちらの極も属さない → None（捏造しない）"
+    );
+}
+
+/// FAST / ISSUE-051 §返し方（**独立導出との総当たり一致**）:
+/// 用意した全 fixture について、`partial_limit_pole` が
+/// 「[P1,P4] サンプル時刻での極の所属（テスト内で公開 API から独立導出）」と仕様どおり対応する
+/// （北のみ→North・南のみ→South・両方／なし→None）。`partial_limit=None` の fixture では極も None。
+///
+/// 分点 fixture（d≡0）は**両極が同時に属しうる唯一の構成**だが ζ=0 の縁で符号が定まらないため
+/// 固定期待値を置かず、ここで「実際の所属に対する仕様どおりの対応」を表明する。
+///
+/// 殺す変異: 極を定数で返す・所属判定の条件（`<=` を `<`、`ζ>=0` を `ζ>0`、and を or）を変える・
+///   「北だけ／南だけ」の場合分けを取り違える・両極とも属すときに片方を選ぶ。
+#[test]
+fn partial_limit_pole_matches_independent_derivation_for_all_fixtures() {
+    let engine = standard_engine(bundled_time_data());
+    let fixtures = [
+        ("north", north_pole_bessel()),
+        ("south", south_pole_bessel()),
+        ("neither", rigorous_bessel()),
+        ("equinox", equinox_both_poles_candidate_bessel()),
+    ];
+    for (name, bessel) in fixtures {
+        let eclipse = partial_eclipse_with_bessel(bessel.clone(), 1.0, 1.5);
+        let times = partial_sample_times(&eclipse);
+        let path = engine
+            .path(&eclipse, PathOptions::default())
+            .expect("部分食 phase の path() は成功する");
+        let expected = if path.partial_limit.is_some() {
+            expected_pole(&bessel, &times)
+        } else {
+            None
+        };
+        assert_eq!(
+            path.partial_limit_pole,
+            expected,
+            "fixture {name}: partial_limit_pole が独立導出（北 {} / 南 {}）と一致しない",
+            pole_is_in_partial_domain(90.0, &bessel, &times),
+            pole_is_in_partial_domain(-90.0, &bessel, &times)
+        );
+    }
+}
+
+// ------------------------------------------------------------
+// FAST: partial_limit=None なら極も None
+// ------------------------------------------------------------
+
+/// FAST / ISSUE-051 §返し方（**`partial_limit` が None のときは `None`**）:
+/// `include_limits=false`・部分食 phase 無し（P1/P4=None）のいずれでも
+/// `partial_limit=None` かつ `partial_limit_pole=None`。極が属しうる bessel を使っても None。
+///
+/// 殺す変異: `partial_limit` を見ずに極だけ計算して返す（None の領域に極を付ける）・
+///   include_limits を無視する・中心食だからと極を埋める。
+#[test]
+fn partial_limit_pole_is_none_when_partial_limit_is_none() {
+    let engine = standard_engine(bundled_time_data());
+
+    // (a) include_limits=false（部分食 phase はある）。
+    let eclipse = partial_eclipse_with_bessel(north_pole_bessel(), 1.0, 1.5);
+    let path = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                include_limits: false,
+                ..PathOptions::default()
+            },
+        )
+        .expect("path() は成功する");
+    assert!(
+        path.partial_limit.is_none(),
+        "include_limits=false では partial_limit=None"
+    );
+    assert_eq!(
+        path.partial_limit_pole, None,
+        "partial_limit=None なら partial_limit_pole も None（include_limits=false）"
+    );
+
+    // (b) 部分食 phase 無し（P1/P4=None）。
+    let central = central_eclipse_with_bessel(north_pole_bessel(), 1.0);
+    let path = engine
+        .path(&central, PathOptions::default())
+        .expect("中心食の path() は成功する");
+    assert!(
+        path.partial_limit.is_none(),
+        "P1/P4 無しでは partial_limit=None"
+    );
+    assert_eq!(
+        path.partial_limit_pole, None,
+        "partial_limit=None なら partial_limit_pole も None（部分 phase 無し）"
+    );
+}
+
+// ------------------------------------------------------------
+// FAST: partial_limit の値そのものは不変（極を焼き込まない）
+// ------------------------------------------------------------
+
+/// FAST / ISSUE-051 §保持と消費（**`partial_limit` の値そのものは変えない**）:
+/// 極が `Some(North)` になる fixture でも、`partial_limit` の**全リングの全頂点**は
+/// `|lat| < 90`＝極頂点が実体に焼き込まれていない（頂点は妥当な緯度経度域にも収まる）。
+///
+/// **極を渡しても出力が変わらないこと（バイト不変）はここでは縛らない**: この fixture は
+/// **北極が領域に属す**ように作ってあり、そのとき外環は定義上その極を囲む＝反子午線を奇数回跨ぐ
+/// （実測でも `geojson_geometry_with_pole(Some(North))` は `(180, …)→(180, 90)→(−180, 90)→(−180, …)` と
+/// 極で閉じ、極無しの出力と異なる）。跨がないリングでの不変性は
+/// `path_geojson.rs::to_geojson_pole_does_not_change_non_crossing_partial_limit`
+/// （非跨ぎの合成多角形）が縛る。
+///
+/// **頂点の正当性（閉半影内かつ昼面側・§11.6(d)）はここでは縛らない**: それは (3f) のユニオン出力の
+/// 既存契約で `partial_limit_vertices_are_inside_closed_penumbra_on_day_side` が
+/// `rigorous_bessel` で表明済みであり、本テストの主題（極を実体へ焼き込まない）とは無関係。
+/// 本 fixture（d=1.2・影軸が terminator を掠める高赤緯）ではその残差が `rigorous_bessel` より桁で
+/// 大きい（外環頂点の一部は terminator と半影縁が同時に接する角に載り、60 s のサンプル格子では
+/// `m − |L1'| ≈ 3.6e-3` Re ≈ 23 km、連続時刻の最小でも ≈ 7e-5 Re ≈ 0.45 km 外側。
+/// §11.6(d) の折れ線離散化残差そのもので、ISSUE-051 の変更とは無関係）。
+/// ここで再掲すると**通すためだけに許容を広げる**ことになる（conventions §11 禁止事項）ので置かない。
+///
+/// 殺す変異: 極頂点 (±180, ±90) を `partial_limit` のリングへ挿入して返す（焼き込み＝
+///   後段の跨ぎ計数が壊れる）・`partial_limit` を `geojson_geometry_with_pole` の結果で置き換える・
+///   極が Some のときリングを別物に差し替える。
+#[test]
+fn partial_limit_ring_is_unchanged_when_pole_is_some() {
+    let engine = standard_engine(bundled_time_data());
+    let bessel = north_pole_bessel();
+    let eclipse = partial_eclipse_with_bessel(bessel, 1.0, 1.5);
+
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    assert_eq!(
+        path.partial_limit_pole,
+        Some(umbra_geo::EnclosedPole::North),
+        "この fixture は極 Some（不変性を縛る前提）"
+    );
+    let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+
+    for (r, ring) in poly.rings.iter().enumerate() {
+        for (j, p) in ring.iter().enumerate() {
+            assert!(
+                lat_deg(p).abs() < 90.0,
+                "リング[{r}] 頂点[{j}] が極 (lat={}) ＝極頂点が焼き込まれている",
+                lat_deg(p)
+            );
+            assert!(
+                lat_lon_in_range(p),
+                "リング[{r}] 頂点[{j}] が妥当な緯度経度域にない: lat={} lon={}",
+                lat_deg(p),
+                lon_deg(p)
+            );
+        }
+    }
+}
+
+/// FAST / ISSUE-051 §目的（**合成 fixture での end-to-end**）: 北極が領域に属す合成日食
+/// （`north_pole_bessel`）の `to_geojson` で、`partial_limit` feature が
+///   (a) 経度差 > 180° の辺を「両端 lat=±90」以外に持たない（一周する偽の辺が無い）
+///   (b) lat=+90 の頂点を持つ（**北極**で閉じている）
+/// を満たす。極が領域に属す ⇒ 外環はその極を囲む（反子午線を奇数回跨ぐ）という含意により、
+/// この fixture は実データ（SLOW・2021-12-04）を待たずに極閉じの経路全体を FAST で通す。
+///
+/// 殺す変異: 極を判定せず None を渡す（(a)(b) 破れ＝一周する辺が残る）・北南を取り違える
+///   （(b) が lat=−90 になる）・`to_geojson` が `geojson_geometry()` を呼ぶ（極が無視される）。
+#[test]
+fn synthetic_north_pole_eclipse_geojson_is_closed_at_north_pole() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = partial_eclipse_with_bessel(north_pole_bessel(), 1.0, 1.5);
+    let path = engine
+        .path(&eclipse, PathOptions::default())
+        .expect("部分食 phase の path() は成功する");
+    assert_eq!(
+        path.partial_limit_pole,
+        Some(umbra_geo::EnclosedPole::North),
+        "この fixture は北極を囲む（前提）"
+    );
+    assert_partial_limit_geojson_closed_at_pole(&path, 90.0);
+}
+
+// ------------------------------------------------------------
+// SLOW: 実 2021-12-04（南極域・皆既）— 極を囲む部分食域の end-to-end
+// ------------------------------------------------------------
+
+/// SLOW / ISSUE-051 §背景（実測）・§目的（**地球を一周する不正な多角形を返さない**）:
+/// 実エンジンで 2021-12-04 の皆既（南極域）を search → path()。この日食の部分食域外環は
+/// 反子午線を**奇数回（実測 1 回）**跨ぐ＝極を囲む。
+///   (1) `partial_limit_pole == Some(South)`（南極が閉半影内かつ昼面側・北極は夜面側）。
+///   (2) `partial_limit` のリング自体には極頂点が無い（平面リングのまま・§保持と消費）。
+///   (3) `to_geojson` の `role="partial_limit"` feature の**全リングの全辺**について、
+///       経度差 > 180° の辺は「両端が lat=±90 の辺」以外に存在しない
+///       （＝経度を逆走して地球を一周する 358.5° の偽の辺が消えた）。
+///   (4) その feature に lat=−90 の頂点が現れる（南極で閉じた証拠）。
+/// (3) が ISSUE-051 の headline（偽の辺の除去）。
+///
+/// 殺す変異: 極を判定せず None のまま渡す（(3)(4) 破れ＝一周する辺が残る）・北南を取り違える
+///   （(1) 破れ・南極域の日食で North を返す）・`to_geojson` が `geojson_geometry_with_pole` でなく
+///   `geojson_geometry` を呼ぶ（極が無視され (3)(4) 破れ）・極を `partial_limit` へ焼き込む（(2) 破れ）。
+#[test]
+fn real_2021_antarctic_eclipse_encloses_south_pole_and_has_no_wraparound_edge() {
+    let engine = standard_engine(bundled_time_data());
+    let range = umbra_core::TimeRange {
+        start: utc(2021, 12, 4, 0, 0, 0.0),
+        end: utc(2021, 12, 5, 0, 0, 0.0),
+    };
+    let eclipses = engine
+        .search(range)
+        .expect("2021-12-04 範囲の search は成功する");
+    let eclipse = eclipses
+        .iter()
+        .find(|e| matches!(e.kind, SolarEclipseKind::Total))
+        .expect("2021-12-04 皆既が見つかる");
+
+    let path = engine
+        .path(eclipse, PathOptions::default())
+        .expect("実皆既の path() は成功する");
+
+    // (1) 南極が領域に属す。独立導出でも南だけが属すことを表明する。
+    let times = partial_sample_times(eclipse);
+    assert!(
+        pole_is_in_partial_domain(-90.0, &eclipse.bessel, &times),
+        "独立導出: 2021-12-04 では南極が閉半影内かつ昼面側"
+    );
+    assert!(
+        !pole_is_in_partial_domain(90.0, &eclipse.bessel, &times),
+        "独立導出: 北極は属さない（南半球の日食）"
+    );
+    assert_eq!(
+        path.partial_limit_pole,
+        Some(umbra_geo::EnclosedPole::South),
+        "2021-12-04 の部分食域は南極を囲む → Some(South)"
+    );
+
+    // (2) partial_limit のリング自体は平面のまま（極頂点を焼き込まない）。
+    let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+    for (r, ring) in poly.rings.iter().enumerate() {
+        for (j, p) in ring.iter().enumerate() {
+            assert!(
+                lat_deg(p).abs() < 90.0,
+                "リング[{r}] 頂点[{j}] が極 (lat={}) ＝極頂点の焼き込み",
+                lat_deg(p)
+            );
+        }
+    }
+
+    // (3)(4) GeoJSON 出力に一周する辺が無い・南極（lat=−90）の頂点を持つ。
+    assert_partial_limit_geojson_closed_at_pole(&path, -90.0);
+}
+
+/// `to_geojson` の `role="partial_limit"` feature が**極で閉じている**ことを表明する共有チェック
+/// （ISSUE-051 §目的・§確定仕様 3）:
+///   (a) 全リングの全辺について、経度差 > 180° の辺は**両端が lat=±90 の辺（極上の ±180 渡り）だけ**
+///       ＝経度を逆走して地球を一周する偽の辺が無い。
+///   (b) `expected_pole_lat`（±90）の頂点が 1 つ以上ある＝指定の極で閉じている。
+fn assert_partial_limit_geojson_closed_at_pole(
+    path: &umbra_eclipse::EclipsePath,
+    expected_pole_lat: f64,
+) {
+    let s = path.to_geojson().expect("GeoJSON 直列化は成功する");
+    let root: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+    let feature = root["features"]
+        .as_array()
+        .expect("features は配列")
+        .iter()
+        .find(|f| f["properties"]["role"] == serde_json::json!("partial_limit"))
+        .expect("partial_limit feature がある");
+    let geom = &feature["geometry"];
+    // Polygon は 1 個、MultiPolygon は複数の多角形として扱う。
+    let polygons: Vec<&serde_json::Value> = match geom["type"].as_str().expect("geometry type") {
+        "Polygon" => vec![&geom["coordinates"]],
+        "MultiPolygon" => geom["coordinates"]
+            .as_array()
+            .expect("MultiPolygon coordinates")
+            .iter()
+            .collect(),
+        other => panic!("partial_limit geometry は Polygon/MultiPolygon のはず, got {other}"),
+    };
+
+    let mut pole_vertices = 0usize;
+    for poly_coords in polygons {
+        for ring in poly_coords.as_array().expect("rings は配列") {
+            let pts: Vec<(f64, f64)> = ring
+                .as_array()
+                .expect("ring は配列")
+                .iter()
+                .map(|c| {
+                    let a = c.as_array().expect("ペアは配列");
+                    (a[0].as_f64().expect("lon"), a[1].as_f64().expect("lat"))
+                })
+                .collect();
+            for p in &pts {
+                if (p.1 - expected_pole_lat).abs() <= 1e-9 {
+                    pole_vertices += 1;
+                }
+            }
+            for w in pts.windows(2) {
+                let (lon_a, lat_a) = w[0];
+                let (lon_b, lat_b) = w[1];
+                let dlon = (lon_b - lon_a).abs();
+                if dlon > 180.0 {
+                    // 極上の ±180 渡り（両端が lat=±90）だけが許される。
+                    assert!(
+                        lat_a.abs() >= 90.0 - 1e-9 && lat_b.abs() >= 90.0 - 1e-9,
+                        "経度差 {dlon}° の辺 ({lon_a},{lat_a})→({lon_b},{lat_b}) が極上でない＝地球を逆走して一周する偽の辺が残っている"
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        pole_vertices >= 1,
+        "lat={expected_pole_lat} の頂点が無い＝その極で閉じていない"
+    );
+}

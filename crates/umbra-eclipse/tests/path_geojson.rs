@@ -16,6 +16,9 @@
 //!   いずれも `None` なら当該 feature を出さない。
 //! - **partial_limit（M9 3d）**: `partial_limit=Some` → Feature（geometry=GeoPolygon の GeoJSON・
 //!   `properties.role="partial_limit"`）を southern_limit の後（末尾）に出す。`None` なら出さない。
+//! - **極（ISSUE-051）**: partial_limit feature の geometry は
+//!   `partial_limit.geojson_geometry_with_pole(partial_limit_pole)`。`partial_limit_pole=None` は
+//!   `geojson_geometry()` と同一（従来出力が不変）。feature の有無は `partial_limit` だけで決まる。
 //! - feature 順序は **greatest → center_line → northern_limit → southern_limit → partial_limit**（決定的）。
 //! - samples は features に出さない（本スライス）。
 //! - GeoJSON 座標順は [経度, 緯度]（lon, lat）。
@@ -61,6 +64,7 @@ fn central_path() -> EclipsePath {
         // 南限界線: 負緯度・別経度（北限界線と区別可能）。
         southern_limit: Some(GeoLine::new(vec![pt(-11.0, 29.0), pt(-12.0, 59.0)])),
         partial_limit: None,
+        partial_limit_pole: None,
         greatest_point: pt(12.5, 77.5),
         samples: Vec::new(),
     }
@@ -101,6 +105,7 @@ fn noncentral_path() -> EclipsePath {
         northern_limit: None,
         southern_limit: None,
         partial_limit: None,
+        partial_limit_pole: None,
         greatest_point: pt(-33.0, 151.0),
         samples: Vec::new(),
     }
@@ -377,6 +382,7 @@ fn to_geojson_antimeridian_center_line_is_multilinestring() {
         northern_limit: None,
         southern_limit: None,
         partial_limit: None,
+        partial_limit_pole: None,
         greatest_point: pt(0.0, 175.0),
         samples: Vec::new(),
     };
@@ -450,6 +456,7 @@ fn central_path_with_partial() -> EclipsePath {
                 pt(40.0, 100.0),
             ],
         ])),
+        partial_limit_pole: None,
         greatest_point: pt(12.5, 77.5),
         samples: Vec::new(),
     }
@@ -577,4 +584,148 @@ fn to_geojson_partial_limit_none_emits_no_polygon_feature() {
     // 既存 4 件のまま（partial_limit を足さない）。
     let all = root["features"].as_array().expect("features は配列");
     assert_eq!(all.len(), 4, "partial_limit=None は既存 4 件のまま");
+}
+
+// ============================================================
+// ISSUE-051: partial_limit_pole を to_geojson が geojson_geometry_with_pole へ渡す
+//
+// 確定仕様（ISSUE-051 §保持と消費）:
+//   `EclipsePath::to_geojson` は `partial_limit` feature の geometry を
+//   `partial_limit.geojson_geometry_with_pole(self.partial_limit_pole)` で作る。
+//   `partial_limit_pole=None` のときは従来どおり `geojson_geometry()` と同じ（＝出力不変）。
+//   極を囲まないリングでは極を渡しても結果は変わらない（geo 側が無視する）ので、
+//   **極を囲むリング（反子午線の跨ぎが奇数）**で差が出ることを確認する。
+//
+// オラクル: 期待値は `GeoPolygon` のジオメトリメソッドの出力そのもの（座標のハードコードをしない）。
+// 期待される RED（実装前）: `EclipsePath` に `partial_limit_pole` が無いため構造体リテラルが
+//   **コンパイルエラー（E0560）**になる（本ファイル既存の 4 リテラルにもフィールドを足してある）。
+// ============================================================
+
+/// 極（北）を囲む部分食域を持つ `EclipsePath`（外環が ±180 を**1 回だけ**跨ぐ＝巻き数 ±1）。
+/// 外環は lat=70 の帯で経度 −150 → −50 → 50 → 150 と東進し、閉じる辺 150 → −150 で
+/// 反子午線を 1 回跨ぐ。`geojson_geometry_with_pole(Some(North))` はここを極で閉じるので、
+/// 極無しの `geojson_geometry()` とは**必ず異なる**（テスト内で前提として表明する）。
+fn pole_enclosing_path(pole: Option<umbra_geo::EnclosedPole>) -> EclipsePath {
+    EclipsePath {
+        center_line: None,
+        northern_limit: None,
+        southern_limit: None,
+        partial_limit: Some(GeoPolygon::new(vec![vec![
+            pt(70.0, -150.0),
+            pt(70.0, -50.0),
+            pt(70.0, 50.0),
+            pt(70.0, 150.0),
+        ]])),
+        partial_limit_pole: pole,
+        greatest_point: pt(85.0, 10.0),
+        samples: Vec::new(),
+    }
+}
+
+/// `partial_limit_pole=Some` のとき、partial_limit feature の geometry は
+/// `partial_limit.geojson_geometry_with_pole(その極)` と**完全一致**する（極を渡している証拠）。
+/// 前提として「極を渡すと出力が変わる」ことも表明し、テストが空振りしないようにする。
+///
+/// 殺す変異: `to_geojson` が `geojson_geometry()` を呼び続ける（極を無視）・
+///   極を渡すが `None` に固定する・North/South を取り違える・partial_limit feature を出さない。
+#[test]
+fn to_geojson_partial_limit_passes_stored_pole_to_geometry() {
+    for pole in [
+        umbra_geo::EnclosedPole::North,
+        umbra_geo::EnclosedPole::South,
+    ] {
+        let path = pole_enclosing_path(Some(pole));
+        let poly = path.partial_limit.as_ref().expect("partial_limit=Some");
+        let expected = poly.geojson_geometry_with_pole(Some(pole));
+        // 前提: 極を渡すと極無しと結果が変わる（巻き数 ±1 のリング）。
+        assert_ne!(
+            expected,
+            poly.geojson_geometry(),
+            "{pole:?}: 極を渡すと geometry が変わる fixture であること（空振り防止）"
+        );
+
+        let s = path.to_geojson().expect("直列化は成功する");
+        let root: Value = serde_json::from_str(&s).expect("valid JSON");
+        let pl = features_with_role(&root, "partial_limit");
+        assert_eq!(
+            pl.len(),
+            1,
+            "{pole:?}: partial_limit feature はちょうど 1 つ"
+        );
+        assert_eq!(
+            pl[0]["geometry"], expected,
+            "{pole:?}: geometry は geojson_geometry_with_pole(Some({pole:?})) と一致"
+        );
+    }
+}
+
+/// `partial_limit_pole=None` のとき、partial_limit feature の geometry は
+/// `partial_limit.geojson_geometry()`（極無し）と**完全一致**する＝従来出力が不変。
+/// 極を囲むリング（跨ぎ奇数）でも、極が無ければ分割も極閉じもしない（§11.8(d) の退避のまま）。
+///
+/// 殺す変異: 極が None のときに勝手に極を選んで閉じる（捏造）・
+///   `geojson_geometry_with_pole` に固定の極を渡す・feature を出さなくする。
+#[test]
+fn to_geojson_partial_limit_without_pole_matches_plain_geometry() {
+    let path = pole_enclosing_path(None);
+    let expected = path
+        .partial_limit
+        .as_ref()
+        .expect("partial_limit=Some")
+        .geojson_geometry();
+
+    let s = path.to_geojson().expect("直列化は成功する");
+    let root: Value = serde_json::from_str(&s).expect("valid JSON");
+    let pl = features_with_role(&root, "partial_limit");
+    assert_eq!(pl.len(), 1, "partial_limit feature はちょうど 1 つ");
+    assert_eq!(
+        pl[0]["geometry"], expected,
+        "極 None の geometry は geojson_geometry()（極無し）と一致＝従来出力が不変"
+    );
+}
+
+/// 極を囲まない従来の部分食域（`central_path_with_partial`）は、極を Some にしても
+/// geometry が `geojson_geometry()` と一致する（geo 側が極を無視する＝**跨がない出力はバイト不変**・
+/// ISSUE-051 §確定仕様 4）。
+///
+/// 殺す変異: 極が Some なら跨ぎの有無に関わらずリングへ極頂点を挿入する（非跨ぎ出力の破壊）。
+#[test]
+fn to_geojson_pole_does_not_change_non_crossing_partial_limit() {
+    let mut path = central_path_with_partial();
+    path.partial_limit_pole = Some(umbra_geo::EnclosedPole::North);
+    let expected = path
+        .partial_limit
+        .as_ref()
+        .expect("partial_limit=Some")
+        .geojson_geometry();
+
+    let s = path.to_geojson().expect("直列化は成功する");
+    let root: Value = serde_json::from_str(&s).expect("valid JSON");
+    let pl = features_with_role(&root, "partial_limit");
+    assert_eq!(pl.len(), 1, "partial_limit feature はちょうど 1 つ");
+    assert_eq!(
+        pl[0]["geometry"], expected,
+        "跨がないリングでは極は出力に影響しない（バイト不変）"
+    );
+}
+
+/// `partial_limit=None` なら `partial_limit_pole` が Some でも partial_limit feature を出さない
+/// （極は付帯情報にすぎず、feature の有無は `partial_limit` だけで決まる）。
+///
+/// 殺す変異: 極の Some/None で feature の有無を判断する・極が Some のとき空の Polygon を捏造する。
+#[test]
+fn to_geojson_pole_without_partial_limit_emits_no_feature() {
+    let mut path = central_path();
+    path.partial_limit_pole = Some(umbra_geo::EnclosedPole::South);
+    let s = path.to_geojson().expect("直列化は成功する");
+    let root: Value = serde_json::from_str(&s).expect("valid JSON");
+    assert!(
+        features_with_role(&root, "partial_limit").is_empty(),
+        "partial_limit=None なら極が Some でも feature を出さない"
+    );
+    assert_eq!(
+        root["features"].as_array().expect("features は配列").len(),
+        4,
+        "既存 4 件のまま"
+    );
 }

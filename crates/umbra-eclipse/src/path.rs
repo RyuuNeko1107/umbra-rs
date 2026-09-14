@@ -14,7 +14,7 @@
 //! と GeoJSON 出力のみ（M9 で経路生成本体を実装する際もこの配置を維持＝循環回避）。
 
 use umbra_core::{Degrees, Kilometers, UtcInstant};
-use umbra_geo::{GeoLine, GeoPoint, GeoPolygon};
+use umbra_geo::{EnclosedPole, GeoLine, GeoPoint, GeoPolygon};
 
 use crate::global::SolarEclipseKind;
 
@@ -32,6 +32,12 @@ pub struct EclipsePath {
     pub southern_limit: Option<GeoLine>,
     /// 部分食域（外周＋穴）。
     pub partial_limit: Option<GeoPolygon>,
+    /// 部分食域が囲んでいる極（ISSUE-051）。極を囲む外環は経度が一周するため、GeoJSON 化のときに
+    /// **どちらの極で閉じるか**を知る必要があるが、それは幾何だけでは決まらない。本フィールドは
+    /// 部分食域の定義（[P1,P4] のいずれかで閉半影内かつ昼面側）を**極点そのものに適用**して求める。
+    /// 北だけ属せば `North`・南だけなら `South`・**両方属す／どちらも属さないなら `None`**（捏造しない）。
+    /// `partial_limit` のリング自体には極の頂点を焼き込まない（付帯情報として持つ）。
+    pub partial_limit_pole: Option<EnclosedPole>,
     /// 最大食地点（常に存在）。
     pub greatest_point: GeoPoint,
     /// 経路サンプル点列。
@@ -71,7 +77,7 @@ impl EclipsePath {
         if let Some(polygon) = &self.partial_limit {
             features.push(serde_json::json!({
                 "type": "Feature",
-                "geometry": polygon.geojson_geometry(),
+                "geometry": polygon.geojson_geometry_with_pole(self.partial_limit_pole),
                 "properties": { "role": "partial_limit" },
             }));
         }
@@ -179,6 +185,7 @@ mod tests {
             northern_limit: Some(north.clone()),
             southern_limit: Some(south.clone()),
             partial_limit: Some(partial.clone()),
+            partial_limit_pole: None,
             greatest_point: greatest,
             samples: vec![s0, s1],
         };
@@ -205,6 +212,7 @@ mod tests {
             northern_limit: None,
             southern_limit: None,
             partial_limit: None,
+            partial_limit_pole: None,
             greatest_point: pt(10.0, 20.0),
             samples: Vec::new(),
         };
@@ -232,6 +240,7 @@ mod tests {
             northern_limit: None,
             southern_limit: Some(GeoLine::new(vec![pt(3.0, 3.0)])),
             partial_limit: Some(partial.clone()),
+            partial_limit_pole: None,
             greatest_point: pt(6.0, 6.0),
             samples: vec![s],
         };

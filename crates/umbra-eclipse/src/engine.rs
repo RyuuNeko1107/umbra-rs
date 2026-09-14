@@ -25,7 +25,7 @@ use umbra_core::{
     TimeData, TimeInterval, TimeRange, TimeScales, TtInstant, UtcInstant,
 };
 use umbra_ephemeris::{AnalyticalEphemeris, AstrometryOptions, Ephemeris};
-use umbra_geo::{union_rings, GeoLine, GeoPoint, GeoPolygon};
+use umbra_geo::{union_rings, EnclosedPole, GeoLine, GeoPoint, GeoPolygon};
 
 use crate::axis_intercept::{
     cone_terminator_intersections, cone_terminator_intersections_detailed,
@@ -600,11 +600,28 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
             )?,
             _ => None,
         };
+        // 極を囲む外環は GeoJSON 化で「どちらの極で閉じるか」を要するが、幾何だけでは決まらない
+        // （ISSUE-051）。部分食域の定義を極点そのものに適用して決める。`partial_limit` が Some なら
+        // 常に評価する（跨ぎが偶数なら geo 側が無視するので無害）。
+        let partial_limit_pole = match (
+            &partial_limit,
+            &eclipse.global.partial_begin,
+            &eclipse.global.partial_end,
+        ) {
+            (Some(_), Some(p1), Some(p4)) => enclosed_pole_of_partial_domain(
+                &eclipse.bessel,
+                p1.time_tt,
+                p4.time_tt,
+                options.sample_interval_seconds,
+            )?,
+            _ => None,
+        };
         Ok(EclipsePath {
             center_line,
             northern_limit,
             southern_limit,
             partial_limit,
+            partial_limit_pole,
             greatest_point,
             samples,
         })
@@ -640,6 +657,72 @@ fn next_visible_is_observable(visibility: Visibility) -> bool {
 /// `RootNotBracketed` 以外の `Err`（`bessel.at`/`tt_to_utc` 等）は伝播。始点・終点を必ず含む（端は span に
 /// クランプ）。`interval_seconds` 非正は始点のみ（無限ループ回避）。前提 `start_tt ≤ end_tt`（U1≤U4・逆順は
 /// 始点のみの無害な縮退）。
+/// 部分食域が囲んでいる極を決める（ISSUE-051・エンジン側確定仕様）。
+///
+/// 部分食域の定義（`[P1,P4]` のいずれかの時刻で**閉半影内かつ昼面側**）を、そのまま**極点**に適用する。
+/// 極は自転軸上なので基本面への射影は経度に依存しない（経度 0 で評価する）。各サンプル時刻で
+///
+/// ```text
+/// m   = hypot(ξ − x, η − y)     影軸からの面内距離
+/// L1' = l1 − ζ·tan f1           ζ 補正した半影半径
+/// 内部 ⇔ m ≤ |L1'| かつ ζ ≥ 0
+/// ```
+///
+/// を満たせばその極は領域に属する。北だけ属せば [`EnclosedPole::North`]・南だけなら
+/// [`EnclosedPole::South`]・**両方属す／どちらも属さないなら `None`**（片方を選ぶ根拠が無いので
+/// 捏造しない）。`Err` は伝播。
+fn enclosed_pole_of_partial_domain(
+    bessel: &BesselianPolynomial,
+    start_tt: TtInstant,
+    end_tt: TtInstant,
+    interval_seconds: f64,
+) -> Result<Option<EnclosedPole>, EclipseError> {
+    let ellipsoid = Ellipsoid::WGS84;
+    // 極点（測地緯度 ±90・経度は任意＝射影は経度に依存しない）。
+    // 測地緯度 ±90 rad 値（極）。高さ 0。
+    let north = observer_geocentric(&ellipsoid, std::f64::consts::FRAC_PI_2, 0.0);
+    let south = observer_geocentric(&ellipsoid, -std::f64::consts::FRAC_PI_2, 0.0);
+    let east_longitude = Radians::new(0.0);
+
+    let span_seconds = end_tt.jd2().days_since(start_tt.jd2()) * SECONDS_PER_DAY;
+    let (mut north_in, mut south_in) = (false, false);
+    let mut t_sec = 0.0_f64;
+    loop {
+        let t = TtInstant::from_jd2(start_tt.jd2().add_days(t_sec / SECONDS_PER_DAY));
+        let elements = bessel.at(t)?;
+        for (observer, inside) in [(&north, &mut north_in), (&south, &mut south_in)] {
+            if *inside {
+                continue;
+            }
+            let of = project_observer_to_fundamental(observer, east_longitude, &elements);
+            // 昼面側（ζ ≥ 0）かつ閉半影内（面内距離 ≤ |L1'|）。
+            if of.zeta < 0.0 {
+                continue;
+            }
+            let m = (of.xi - elements.x).hypot(of.eta - elements.y);
+            let l1p = elements.l1 - of.zeta * elements.tan_f1;
+            if m <= l1p.abs() {
+                *inside = true;
+            }
+        }
+        if (north_in && south_in) || t_sec >= span_seconds || interval_seconds <= 0.0 {
+            break;
+        }
+        t_sec = (t_sec + interval_seconds).min(span_seconds);
+    }
+    Ok(pole_from_membership(north_in, south_in))
+}
+
+/// 北極・南極の所属から、閉じるべき極を決める（ISSUE-051）。
+/// **両方属す／どちらも属さない場合は `None`**＝片方を選ぶ根拠が無いので捏造しない。
+fn pole_from_membership(north_in: bool, south_in: bool) -> Option<EnclosedPole> {
+    match (north_in, south_in) {
+        (true, false) => Some(EnclosedPole::North),
+        (false, true) => Some(EnclosedPole::South),
+        _ => None,
+    }
+}
+
 /// `path()` が走査する区間のサンプル数が [`MAX_PATH_SAMPLES`] を超えないか検査する（ISSUE-049）。
 ///
 /// **走査を始める前**に呼ぶ。`sample_interval_seconds` が正の有限値でも極端に小さいと、走査回数が
