@@ -19,7 +19,8 @@
 
 ## 0. 実在 Issue と宙吊り参照
 
-`docs/issues/` に実在するファイル: **001–047（連番完備・欠番なし）**（計 47 Issue）＋ 本 INDEX。
+`docs/issues/` に実在するファイル: **001–048（連番完備・欠番なし）**（計 48 Issue）＋ 本 INDEX。
+※ **048（`umbra path` CLI）は M9 完了後に追加**（ISSUE-031 が「別 issue」として先送りした経路サブコマンド・architecture §1 の `umbra-cli: search/local/path/...` を満たす）。
 
 **宙吊り参照（供給元ファイル不在）: なし。** 依存行で参照される全番号（001–047）にファイルが実在する。
 

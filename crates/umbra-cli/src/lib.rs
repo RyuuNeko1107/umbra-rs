@@ -1,4 +1,4 @@
-//! `umbra` CLI ライブラリ（ISSUE-031 `umbra search` / ISSUE-032 `umbra local`）。
+//! `umbra` CLI ライブラリ（ISSUE-031 `umbra search` / ISSUE-032 `umbra local` / ISSUE-048 `umbra path`）。
 //!
 //! 薄い CLI ラッパ: 引数解釈（clap）・日付パース・`EclipseEngine` 呼び出し・整形出力。
 //! 計算は umbra-eclipse が担保。本クレートは境界（引数・パース・出力・エラー/終了コード）が責務。
@@ -7,6 +7,8 @@
 //!   `SolarEclipse` 推移閉包に Serialize を通し `serde_json` で整形）。
 //! - `umbra local`（S32a・text）: 指定日・指定地点の局地条件（`EclipseEngine::local_circumstances`）。
 //!   西経入力吸収（`Observer::from_degrees`）・UTC オフセット表示・可視性 6 値。`--format json` は S32b。
+//! - `umbra path`（`--format <text|geojson>`・ISSUE-048）: 指定日の日食の経路（`EclipseEngine::path`）。
+//!   text は中心線・南北限界線・部分食域の要約、geojson は `EclipsePath::to_geojson` の生出力。
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use umbra_core::{
@@ -14,8 +16,9 @@ use umbra_core::{
     UtcInstant,
 };
 use umbra_eclipse::{
-    standard_engine, EclipseEngine, EclipseError, EngineConfig, LocalCircumstances, LocalContact,
-    RefractionModel, SolarEclipse, SolarEclipseKind, UtcRange, VisibleSolarEclipse,
+    standard_engine, EclipseEngine, EclipseError, EclipsePath, EngineConfig, LocalCircumstances,
+    LocalContact, PathOptions, RefractionModel, SolarEclipse, SolarEclipseKind, UtcRange,
+    VisibleSolarEclipse,
 };
 use umbra_ephemeris::{bundled_time_data, AnalyticalEphemeris};
 
@@ -28,13 +31,16 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// サブコマンド（`search`／`local`。path 等は後続 issue）。
+/// サブコマンド（`search` = ISSUE-031 ／ `local` = ISSUE-032 ／ `path` = ISSUE-048。
+/// `bessel`/`inspect`/`validate`/`bench` は後続 issue）。
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// 期間内の太陽食を列挙する（`EclipseEngine::search`）。
     Search(SearchArgs),
     /// 指定日・指定地点の局地条件を表示する（`EclipseEngine::local_circumstances`）。
     Local(LocalArgs),
+    /// 指定日の日食の経路（中心線・限界線・部分食域）を表示する（`EclipseEngine::path`）。
+    Path(PathArgs),
 }
 
 /// `umbra search` の引数。
@@ -55,6 +61,36 @@ pub struct SearchArgs {
     /// 出力形式（既定 text）。
     #[arg(long, value_enum, default_value_t = FormatArg::Text)]
     pub format: FormatArg,
+}
+
+/// `umbra path` の引数（ISSUE-048）。
+#[derive(Debug, Args)]
+pub struct PathArgs {
+    /// 対象日（`YYYY-MM-DD`, UTC）。当日に起こる日食の経路を求める。
+    #[arg(long)]
+    pub date: String,
+    /// 精度プロファイル（既定 standard・`search`/`local` と同一）。
+    #[arg(long, value_enum, default_value_t = AccuracyArg::Standard)]
+    pub accuracy: AccuracyArg,
+    /// 出力形式（既定 text）。
+    #[arg(long, value_enum, default_value_t = PathFormatArg::Text)]
+    pub format: PathFormatArg,
+    /// サンプル間隔 \[s\]（既定は `PathOptions::default()`）。正の有限値のみ。
+    #[arg(long, default_value_t = PathOptions::default().sample_interval_seconds)]
+    pub interval: f64,
+    /// 指定時は限界線・部分食域を計算しない（`include_limits=false`）。
+    #[arg(long)]
+    pub no_limits: bool,
+}
+
+/// `umbra path` の出力形式（ISSUE-048）。`search`/`local` の [`FormatArg`] とは別型
+/// （経路の機械可読形は汎用 JSON ではなく **GeoJSON** ＝ `EclipsePath::to_geojson` だから）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PathFormatArg {
+    /// 人間可読テキスト（既定）。
+    Text,
+    /// GeoJSON（`EclipsePath::to_geojson` の生出力）。
+    Geojson,
 }
 
 /// 出力形式引数（S31b）。
@@ -163,6 +199,48 @@ pub enum CliError {
     /// 入力の定義域違反（緯度/経度範囲外など, 透過）。
     #[error(transparent)]
     Domain(#[from] DomainError),
+    /// `--interval` が正の有限値でない（`umbra path`・ISSUE-048 §4）。
+    #[error("invalid --interval {0} (expected a positive, finite number of seconds)")]
+    InvalidInterval(f64),
+    /// `--interval` が小さすぎて経路のサンプル数が上限を超える（`umbra path`・ISSUE-048 §4）。
+    #[error(
+        "--interval {interval} is too small: it would need about {estimated_samples:.0} path          samples (limit {MAX_PATH_SAMPLES})"
+    )]
+    IntervalTooSmall {
+        /// 指定された間隔 \[s\]。
+        interval: f64,
+        /// 推定サンプル数（P1〜P4 の秒数 ÷ 間隔）。
+        estimated_samples: f64,
+    },
+}
+
+/// `umbra path` が許す経路サンプル数の上限（ISSUE-048 §4・実装レビュー指摘の防御）。
+///
+/// 既定 60 s では実日食で数百点なので、通常利用を制限しない。極端に小さい `--interval`
+/// （例 `1e-300`）は `EclipseEngine::path` の走査回数を事実上無限にし CLI をハングさせるため、
+/// `path` を呼ぶ**前に**弾く。
+pub const MAX_PATH_SAMPLES: f64 = 100_000.0;
+
+/// `--interval` が経路サンプル数の上限に収まるかを検査する（ISSUE-048 §4）。
+///
+/// `span_seconds` は P1〜P4 の秒数。`None`（P1/P4 が欠ける・起こり得ない想定）のときは
+/// **検査しない**（捏造した span で判定しない）。`interval` は呼び出し前に正の有限値であることが
+/// 保証されている前提。
+pub(crate) fn check_path_sample_count(
+    span_seconds: Option<f64>,
+    interval: f64,
+) -> Result<(), CliError> {
+    let Some(span) = span_seconds else {
+        return Ok(());
+    };
+    let estimated_samples = span / interval;
+    if estimated_samples > MAX_PATH_SAMPLES {
+        return Err(CliError::IntervalTooSmall {
+            interval,
+            estimated_samples,
+        });
+    }
+    Ok(())
 }
 
 /// `YYYY-MM-DD`（UTC 0:00:00）を [`UtcInstant`] にパースする。
@@ -296,6 +374,167 @@ pub fn run_search(args: &SearchArgs) -> Result<String, CliError> {
     match args.format {
         FormatArg::Text => Ok(format_search_text(&filtered)),
         FormatArg::Json => format_search_json(&filtered),
+    }
+}
+
+/// `umbra path` を実行し、整形済み出力を返す（ISSUE-048）。日付パース→`--interval` 検証→
+/// エンジン構築→当日の `search`→`path`→整形。出力は呼び出し側（main）が印字する。
+///
+/// 不正日付・正の有限でない `--interval` は **エンジンを呼ぶ前に** fast-fail
+/// （[`CliError::InvalidDate`] / [`CliError::InvalidInterval`]）。当日に日食が無いのは**成功**で、
+/// text は 1 行の告知・geojson は**空 `FeatureCollection`**（`null` は GeoJSON として妥当でない）。
+pub fn run_path(args: &PathArgs) -> Result<String, CliError> {
+    let date = parse_date(&args.date)?;
+    // 正の有限値のみ受理する。`is_finite()` が NaN・±∞ を弾き、`> 0.0` が 0・負を弾く
+    // （NaN は `is_finite()` 側で落ちるので、順序比較を否定する必要はない）。
+    if !args.interval.is_finite() || args.interval <= 0.0 {
+        return Err(CliError::InvalidInterval(args.interval));
+    }
+
+    let time = bundled_time_data();
+    let config = match args.accuracy {
+        AccuracyArg::Standard => EngineConfig::standard(),
+        AccuracyArg::Reference => EngineConfig::reference(),
+    };
+    let earth_orientation = time.eop().clone();
+    let engine = EclipseEngine::new(
+        AnalyticalEphemeris::new(),
+        EspenakMeeusDeltaT,
+        earth_orientation,
+        time,
+        config,
+    );
+
+    // 指定日（UTC 暦日 [date, date+1 日)）に起こる日食を探索する（`run_local` と同型）。
+    let day_end = UtcInstant::from_jd2(JulianDate2::from_jd(date.jd2().jd() + 1.0));
+    let range = UtcRange {
+        start: date,
+        end: day_end,
+    };
+    let Some(eclipse) = engine.search(range)?.into_iter().next() else {
+        // 該当日食なし（エラーにしない・架空の経路を作らない）。
+        return Ok(match args.format {
+            PathFormatArg::Text => format!(
+                "No solar eclipse on {}.
+",
+                args.date
+            ),
+            PathFormatArg::Geojson => {
+                let mut out = serde_json::to_string_pretty(&serde_json::json!({
+                    "type": "FeatureCollection",
+                    "features": [],
+                }))?;
+                out.push('\n');
+                out
+            }
+        });
+    };
+
+    // P1〜P4 の秒数でサンプル数を見積もり、上限超えなら `path` を呼ぶ前に弾く（ISSUE-048 §4）。
+    let span_seconds = match (&eclipse.global.partial_begin, &eclipse.global.partial_end) {
+        (Some(p1), Some(p4)) => Some((p4.time_tt.jd2().jd() - p1.time_tt.jd2().jd()) * 86_400.0),
+        _ => None,
+    };
+    check_path_sample_count(span_seconds, args.interval)?;
+
+    let options = PathOptions {
+        sample_interval_seconds: args.interval,
+        include_limits: !args.no_limits,
+        ..PathOptions::default()
+    };
+    let path = engine.path(&eclipse, options)?;
+
+    match args.format {
+        PathFormatArg::Text => Ok(format_path_text(&eclipse, &path)),
+        PathFormatArg::Geojson => {
+            let mut out = path.to_geojson()?;
+            out.push('\n');
+            Ok(out)
+        }
+    }
+}
+
+/// 経路を人間可読テキストへ整形する（ISSUE-048 §5・ラベルは仕様の表で固定）。
+///
+/// **`None` の要素は行を省略せず「なし」と明示**する（conventions §11「未提供を隠さない」）。
+/// 時刻は 0.1 秒丸めの共通ヘルパ（暦往復 ±eps による不正表記の回避）。
+pub fn format_path_text(eclipse: &SolarEclipse, path: &EclipsePath) -> String {
+    let g = &eclipse.global.greatest;
+    let (y, mo, d, h, mi, sec) = jd2_to_gregorian_deciseconds(g.time_utc.jd2());
+    let mut out = format!(
+        "{key}
+",
+        key = eclipse.event_key
+    );
+    out.push_str(&format!(
+        "  種別: {kind:?}
+",
+        kind = eclipse.kind
+    ));
+    out.push_str(&format!(
+        "  最大食: {y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{sec:04.1} UTC           lat {lat:.4}° lon {lon:.4}°
+",
+        lat = path.greatest_point.lat.degrees().0,
+        lon = path.greatest_point.lon.degrees().0,
+    ));
+
+    out.push_str(&match &path.center_line {
+        Some(line) if !line.points.is_empty() => {
+            let first = line.points[0];
+            let last = line.points[line.points.len() - 1];
+            format!(
+                "  中心線: {n} 点  始 lat {flat:.4}° lon {flon:.4}°  終 lat {llat:.4}° lon {llon:.4}°
+",
+                n = line.points.len(),
+                flat = first.lat.degrees().0,
+                flon = first.lon.degrees().0,
+                llat = last.lat.degrees().0,
+                llon = last.lon.degrees().0,
+            )
+        }
+        // 点列が空なら「0 点」ではなく「なし」（空の成功出力を作らない）。
+        _ => "  中心線: なし
+".to_string(),
+    });
+    out.push_str(&format_limit_line(
+        "北限",
+        path.northern_limit.as_ref().map(|l| l.points.len()),
+    ));
+    out.push_str(&format_limit_line(
+        "南限",
+        path.southern_limit.as_ref().map(|l| l.points.len()),
+    ));
+    out.push_str(&match &path.partial_limit {
+        Some(poly) if !poly.rings.is_empty() => format!(
+            "  部分食域: {rings} 環  外環 {outer} 頂点
+",
+            rings = poly.rings.len(),
+            outer = poly.rings[0].len(),
+        ),
+        _ => "  部分食域: なし
+"
+        .to_string(),
+    });
+    out.push_str(&format!(
+        "  samples: {n}
+",
+        n = path.samples.len()
+    ));
+    out
+}
+
+/// 限界線 1 本を整形する（ISSUE-048 §5）。`None`・空点列はいずれも「なし」
+/// （行を省略しない＝未提供を隠さない・conventions §11）。
+fn format_limit_line(label: &str, points: Option<usize>) -> String {
+    match points {
+        Some(n) if n > 0 => format!(
+            "  {label}: {n} 点
+"
+        ),
+        _ => format!(
+            "  {label}: なし
+"
+        ),
     }
 }
 
@@ -2344,5 +2583,716 @@ mod tests {
             !out.contains("15:59:60"),
             "15:59:60 を出力に含まない（ドリフト丸め回帰）: {out}"
         );
+    }
+
+    // ==================================================================
+    // === ISSUE-048: umbra path（text / geojson） ===
+    // ==================================================================
+    // ISSUE-048 受け入れテスト（`umbra path`・`run_path`）。
+    //
+    // ## オラクル戦略（外部表のハードコード禁止, conventions §11）
+    // - 数値オラクルは **同じ公開 API から導出**する: 参照 `EclipsePath` を
+    //   `standard_engine(...).search(1 日範囲) → path(options)` で独立に組み立て、run_path の
+    //   出力（text の件数・geojson の role 集合）と突き合わせる。NASA 等の外部表は一切使わない。
+    // - geojson は文字列一致でなく `serde_json::Value` へパースして構造を assert する
+    //   （S31b/S32b と同じ方針）。
+    // - 「日食の無い日」は 2024-06-15 を使う。選定理由: 2024 年の日食は 4 月と 10 月のみで 6 月中旬
+    //   には起こらない、かつ **エンジン自身**（`engine_path("2024-06-15", ..) == None`）で検証する
+    //   （テスト内で判定を実行するので外部表に依存しない）。既存 S32a
+    //   `run_local_no_eclipse_date_reports_no_eclipse` と同一日付。
+    // - text のラベル語彙は確定仕様 §5/§7（「中心線: なし」）を最小契約とし、
+    //   `中心線`/`北限`/`南限`/`部分食域`/`samples` を含む **行が存在すること**を縛る
+    //   （行ごと落とす実装を撃破するため、行の存在と内容を分けて assert する）。
+    //
+    // ## red 設計（本体未実装）
+    // `PathArgs`/`PathFormatArg`/`run_path`/`CliError::InvalidInterval` は未導入のため、
+    // 本節はコンパイル時点で未解決シンボル＝red。
+
+    use umbra_eclipse::{EclipsePath, PathOptions};
+
+    /// `PathArgs` を既定値（standard・limits あり・既定サンプル間隔）で組むヘルパ。
+    /// 間隔の既定値は外部から持ち込まず `PathOptions::default()` から取る（確定仕様 §公開 IF）。
+    fn path_args(date: &str, format: PathFormatArg) -> PathArgs {
+        PathArgs {
+            date: date.to_string(),
+            accuracy: AccuracyArg::Standard,
+            format,
+            interval: PathOptions::default().sample_interval_seconds,
+            no_limits: false,
+        }
+    }
+
+    /// 参照 `EclipsePath` を公開 API だけで独立に組む（run_path の実装を写経しない独立オラクル）。
+    /// 当日に日食が無ければ `None`。
+    fn engine_path(date: &str, options: PathOptions) -> Option<EclipsePath> {
+        let start = parse_date(date).expect("妥当日付");
+        let end = UtcInstant::from_jd2(JulianDate2::from_jd(start.jd2().jd() + 1.0));
+        let engine = standard_engine(bundled_time_data());
+        let eclipse = engine
+            .search(UtcRange { start, end })
+            .expect("1 日範囲の探索は成功する")
+            .into_iter()
+            .next()?;
+        Some(engine.path(&eclipse, options).expect("経路計算は成功する"))
+    }
+
+    /// `key` を含む **行** を返す（無ければ panic）。行ごと欠落する実装を明示的に落とすための補助。
+    fn line_containing<'a>(out: &'a str, key: &str) -> &'a str {
+        out.lines()
+            .find(|l| l.contains(key))
+            .unwrap_or_else(|| panic!("出力に '{key}' を含む行が無い: {out}"))
+    }
+
+    /// geojson 文字列をパースして `Value` を返す（パース成功＝妥当な JSON）。
+    fn parse_geojson(s: &str) -> Value {
+        serde_json::from_str(s).expect("geojson 出力は妥当な JSON（パース成功必須）")
+    }
+
+    // ------------------------------------------------------------------
+    // 1. fast-fail（エンジン非実走＝FAST）
+    // ------------------------------------------------------------------
+
+    /// 【ISSUE-048 §確定仕様 7】不正日付は `search` を呼ぶ前に `Err(CliError::InvalidDate(入力))`。
+    /// 殺す変異: 不正日付を黙って既定日に落として search へ進む、InvalidDate に入力文字列を載せない。
+    #[test]
+    fn run_path_invalid_date_is_invalid_date_error() {
+        let args = path_args("not-a-date", PathFormatArg::Text);
+        let r = run_path(&args);
+        assert!(
+            matches!(r, Err(CliError::InvalidDate(ref s)) if s == "not-a-date"),
+            "expected Err(InvalidDate(\"not-a-date\")), got {r:?}"
+        );
+    }
+
+    /// 【ISSUE-048 §確定仕様 4】`--interval 0` は `path` を呼ぶ前に
+    /// `Err(CliError::InvalidInterval(0.0))`（**違反入力そのもの**を載せる）。
+    /// 殺す変異: 0 を既定値 60 s に黙って差し替える、InvalidInterval に 0 でない値を載せる、
+    ///   検査を engine 実走の後に置く。
+    #[test]
+    fn run_path_zero_interval_is_invalid_interval() {
+        let mut args = path_args("2024-04-08", PathFormatArg::Text);
+        args.interval = 0.0;
+        let r = run_path(&args);
+        match r {
+            Err(CliError::InvalidInterval(v)) => {
+                assert_eq!(v, 0.0, "InvalidInterval は違反入力 0.0 を保持");
+            }
+            other => panic!("expected Err(InvalidInterval(0.0)), got {other:?}"),
+        }
+    }
+
+    /// 【ISSUE-048 §確定仕様 4】負の `--interval` も `InvalidInterval`（違反入力を保持）。
+    /// **`--format geojson` でも同じ**（fast-fail は出力形式に依存しない）。
+    /// 殺す変異: 負値を絶対値に補正する、geojson 経路だけ検査を飛ばす、別 variant を返す。
+    #[test]
+    fn run_path_negative_interval_is_invalid_interval_even_for_geojson() {
+        let mut args = path_args("2024-04-08", PathFormatArg::Geojson);
+        args.interval = -60.0;
+        let r = run_path(&args);
+        match r {
+            Err(CliError::InvalidInterval(v)) => {
+                assert_eq!(v, -60.0, "InvalidInterval は違反入力 -60.0 を保持");
+            }
+            other => panic!("expected Err(InvalidInterval(-60.0)), got {other:?}"),
+        }
+    }
+
+    /// 【ISSUE-048 §確定仕様 4】`NaN` の `--interval` は非有限として `InvalidInterval`
+    /// （載る値も NaN）。`v > 0.0` だけの素朴な検査は NaN を弾くが、`!(v <= 0.0)` 型の実装は
+    /// 通してしまうため、NaN を独立に縛る。
+    /// 殺す変異: `!(interval <= 0.0)` で判定して NaN を受理する、NaN を既定値に差し替える。
+    #[test]
+    fn run_path_nan_interval_is_invalid_interval() {
+        let mut args = path_args("2024-04-08", PathFormatArg::Text);
+        args.interval = f64::NAN;
+        let r = run_path(&args);
+        match r {
+            Err(CliError::InvalidInterval(v)) => {
+                assert!(
+                    v.is_nan(),
+                    "InvalidInterval は違反入力 NaN を保持（got {v}）"
+                );
+            }
+            other => panic!("expected Err(InvalidInterval(NaN)), got {other:?}"),
+        }
+    }
+
+    /// 【ISSUE-048 §確定仕様 4】`+∞` / `-∞` の `--interval` は非有限として `InvalidInterval`。
+    /// 正の無限大は「非正」検査だけでは通ってしまうため、有限性検査の存在を独立に縛る。
+    /// 殺す変異: `interval <= 0.0` のみ検査して +∞ を受理する（エンジンが無限ループ/発散する）。
+    #[test]
+    fn run_path_infinite_interval_is_invalid_interval() {
+        for bad in [f64::INFINITY, f64::NEG_INFINITY] {
+            let mut args = path_args("2024-04-08", PathFormatArg::Text);
+            args.interval = bad;
+            let r = run_path(&args);
+            match r {
+                Err(CliError::InvalidInterval(v)) => {
+                    assert_eq!(v, bad, "InvalidInterval は違反入力 {bad} を保持");
+                }
+                other => panic!("expected Err(InvalidInterval({bad})), got {other:?}"),
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 2. 日食の無い日（成功・SLOW＝1 日範囲の実 search）
+    // ------------------------------------------------------------------
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 2】日食の無い日（2024-06-15）の text は **成功**し、
+    /// `No solar eclipse on 2024-06-15.` の告知 1 行。架空の安定キー（'#'）を捏造しない。
+    /// 日付の選定はテスト内でエンジン自身に確認させる（外部表を使わない）。
+    /// 殺す変異: 日食なしで Err を返す（撤回された NoEclipse を含む）、空文字を返す、
+    ///   架空イベントを 1 件でっち上げる、日付を告知文に載せない。
+    // SLOW
+    #[test]
+    fn run_path_no_eclipse_date_text_announces_success() {
+        // エンジン自身による検証: この日に日食は無い。
+        assert!(
+            engine_path("2024-06-15", PathOptions::default()).is_none(),
+            "2024-06-15 はエンジン判定で日食なし（オラクルの自己検証）"
+        );
+
+        let out = run_path(&path_args("2024-06-15", PathFormatArg::Text))
+            .expect("日食なし日も Ok（エラーにしない）");
+        assert!(
+            out.contains("No solar eclipse on 2024-06-15."),
+            "告知 1 行（日付入り）が出力に含まれる: {out}"
+        );
+        assert!(
+            !out.contains('#'),
+            "架空 event_key（'#'）を捏造しない: {out}"
+        );
+    }
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 2】日食の無い日の geojson は **空 `FeatureCollection`**
+    /// （`null` でも空文字でもない）。パース可能・`type == "FeatureCollection"`・`features == []`。
+    /// 殺す変異: `null` を返す、空文字/空 JSON `{}` を返す、Err にする、
+    ///   feature を 0 件でなく最大食点 1 件だけ捏造する。
+    // SLOW
+    #[test]
+    fn run_path_no_eclipse_date_geojson_is_empty_feature_collection() {
+        let out = run_path(&path_args("2024-06-15", PathFormatArg::Geojson))
+            .expect("日食なし日も Ok（エラーにしない）");
+        let v = parse_geojson(&out);
+        assert_eq!(
+            v["type"],
+            Value::from("FeatureCollection"),
+            "type は FeatureCollection: {out}"
+        );
+        let features = v["features"]
+            .as_array()
+            .unwrap_or_else(|| panic!("features は配列: {out}"));
+        assert!(
+            features.is_empty(),
+            "日食なし日の features は空（0 件）: {out}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 3. geojson 出力（role 集合 == EclipsePath の Some 要素）
+    // ------------------------------------------------------------------
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 6・§受け入れテスト戦略】`--format geojson` の出力は妥当な JSON
+    /// かつ `FeatureCollection` で、`properties.role` の集合が **同一 options で独立に計算した
+    /// `EclipsePath` の `Some` 要素と厳密一致**する（`greatest` は常に存在、`center_line` /
+    /// `northern_limit` / `southern_limit` / `partial_limit` は Some のときだけ）。
+    /// オラクルは外部表でなく同じ公開 API（`engine.path`）から導出する。
+    /// 殺す変異: `to_geojson` を呼ばず自前で再整形する、None の要素にも feature を出す（座標捏造）、
+    ///   Some の要素の feature を落とす、role 名を綴り違いにする、FeatureCollection でなく生配列を出す。
+    // SLOW
+    #[test]
+    fn run_path_geojson_roles_match_some_elements_of_path() {
+        let args = path_args("2024-04-08", PathFormatArg::Geojson);
+        let options = PathOptions {
+            sample_interval_seconds: args.interval,
+            include_limits: true,
+            ..PathOptions::default()
+        };
+        let reference = engine_path("2024-04-08", options).expect("2024-04-08 には日食がある");
+
+        // 期待 role 集合（独立オラクル）。
+        let mut expected: Vec<&str> = vec!["greatest"];
+        if reference.center_line.is_some() {
+            expected.push("center_line");
+        }
+        if reference.northern_limit.is_some() {
+            expected.push("northern_limit");
+        }
+        if reference.southern_limit.is_some() {
+            expected.push("southern_limit");
+        }
+        if reference.partial_limit.is_some() {
+            expected.push("partial_limit");
+        }
+        expected.sort_unstable();
+
+        let out = run_path(&args).expect("2024-04-08 の経路計算は成功する");
+        let v = parse_geojson(&out);
+        assert_eq!(
+            v["type"],
+            Value::from("FeatureCollection"),
+            "type は FeatureCollection: {out}"
+        );
+        let features = v["features"]
+            .as_array()
+            .unwrap_or_else(|| panic!("features は配列: {out}"));
+        let mut actual: Vec<String> = features
+            .iter()
+            .map(|f| {
+                f["properties"]["role"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("各 feature は properties.role（文字列）を持つ: {f}"))
+                    .to_string()
+            })
+            .collect();
+        actual.sort();
+        assert_eq!(
+            actual,
+            expected
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>(),
+            "role 集合は EclipsePath の Some 要素と一致する: {out}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 4. text 出力（None を「なし」と明示・--no-limits の lockstep）
+    // ------------------------------------------------------------------
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 4/5・M9.7 lockstep】`--no-limits`（`include_limits=false`）では
+    /// 北限・南限・部分食域が **行ごと残ったまま「なし」** になり、`samples` 件数が 0 になる。
+    /// 中心線は残る（`no_limits` が中心線まで消さないことを同時に縛る）。
+    /// 独立オラクル: 同じ options の `engine.path` が実際に limits=None・samples 空であることを
+    /// テスト内で確認してから text を縛る。
+    /// 殺す変異: `no_limits` を `PathOptions` に配線しない（限界線が出てしまう）、
+    ///   「なし」の行を丸ごと省略する、samples 件数を limits 無効時も非 0 で出す、
+    ///   `no_limits` で中心線まで落とす。
+    // SLOW
+    #[test]
+    fn run_path_no_limits_reports_none_and_empty_samples() {
+        let mut args = path_args("2024-04-08", PathFormatArg::Text);
+        args.no_limits = true;
+        let options = PathOptions {
+            sample_interval_seconds: args.interval,
+            include_limits: false,
+            ..PathOptions::default()
+        };
+        let reference = engine_path("2024-04-08", options).expect("2024-04-08 には日食がある");
+        assert!(
+            reference.northern_limit.is_none() && reference.southern_limit.is_none(),
+            "オラクル自己検証: include_limits=false で限界線は None"
+        );
+        assert!(
+            reference.partial_limit.is_none(),
+            "オラクル自己検証: include_limits=false で部分食域は None"
+        );
+        assert!(
+            reference.samples.is_empty(),
+            "オラクル自己検証: include_limits=false で samples は空（M9.7 lockstep）"
+        );
+        assert!(
+            reference.center_line.is_some(),
+            "オラクル自己検証: 中心食なので中心線は残る"
+        );
+
+        let out = run_path(&args).expect("--no-limits でも経路計算は成功する");
+        for key in ["北限", "南限", "部分食域"] {
+            let line = line_containing(&out, key);
+            assert!(
+                line.contains("なし"),
+                "--no-limits では '{key}' の行が「なし」と明示される（空欄にしない）: {line}"
+            );
+        }
+        let samples_line = line_containing(&out, "samples");
+        assert!(
+            samples_line.contains('0'),
+            "samples 件数は 0 と明示される: {samples_line}"
+        );
+        let center_line = line_containing(&out, "中心線");
+        assert!(
+            !center_line.contains("なし"),
+            "--no-limits でも中心線は残る（「なし」にならない）: {center_line}"
+        );
+    }
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 5/7・conventions §11】部分食（中心線を持たない日食）の text は
+    /// `None` の要素を **行ごと残して「なし」と明示**する（行を落とす／空欄にするのを禁止）。
+    /// 対象日 2025-03-29 は「中心線・北限・南限が None」の日として **エンジン自身で検証**してから
+    /// 縛る（外部表は使わない）。万一この日が中心食だった場合はオラクル自己検証で落ちる。
+    /// 殺す変異: None の要素の行を出力から省く（サイレントドロップ）、`Option` を空文字で描く、
+    ///   None を 0 件の偽データ（空の LineString 等）として描く。
+    // SLOW
+    #[test]
+    fn run_path_partial_eclipse_text_names_absent_elements_as_nashi() {
+        let args = path_args("2025-03-29", PathFormatArg::Text);
+        let options = PathOptions {
+            sample_interval_seconds: args.interval,
+            include_limits: true,
+            ..PathOptions::default()
+        };
+        let reference = engine_path("2025-03-29", options).expect("2025-03-29 には日食がある");
+        assert!(
+            reference.center_line.is_none(),
+            "オラクル自己検証: 2025-03-29 は部分食で中心線 None"
+        );
+
+        let out = run_path(&args).expect("部分食でも成功する（中心線なしはエラーでない）");
+        // None の要素はすべて「なし」と明示される（行の存在と内容を分けて確認）。
+        for (key, absent) in [
+            ("中心線", reference.center_line.is_none()),
+            ("北限", reference.northern_limit.is_none()),
+            ("南限", reference.southern_limit.is_none()),
+            ("部分食域", reference.partial_limit.is_none()),
+        ] {
+            let line = line_containing(&out, key);
+            if absent {
+                assert!(
+                    line.contains("なし"),
+                    "None の要素 '{key}' は「なし」と明示される: {line}"
+                );
+            } else {
+                assert!(
+                    !line.contains("なし"),
+                    "Some の要素 '{key}' を「なし」と書かない: {line}"
+                );
+            }
+        }
+        // 空の成功出力を作らない（最低限 最大食時刻の日付は出る）。
+        assert!(
+            out.contains("2025-03-29"),
+            "部分食でも最大食時刻（日付）が出る＝空の成功出力にしない: {out}"
+        );
+    }
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 5・§受け入れテスト戦略 SLOW】実日食 2024-04-08（皆既）の text は
+    /// 種別（`Total`）・最大食時刻（当日日付）・**中心線の点数 > 0** を出す。点数は外部表でなく
+    /// 同一 options の `engine.path` から導出した値と一致することで縛る（オラクルのハードコード禁止）。
+    /// 殺す変異: 種別を出さない、最大食時刻を出さない、中心線点数を常に 0 と書く、
+    ///   `--interval` を `PathOptions` に配線せず既定値で計算する（点数が参照と食い違う）。
+    // SLOW
+    #[test]
+    fn run_path_2024_total_text_shows_kind_greatest_and_center_points() {
+        let args = path_args("2024-04-08", PathFormatArg::Text);
+        let options = PathOptions {
+            sample_interval_seconds: args.interval,
+            include_limits: true,
+            ..PathOptions::default()
+        };
+        let reference = engine_path("2024-04-08", options).expect("2024-04-08 には日食がある");
+        let n = reference
+            .center_line
+            .as_ref()
+            .expect("2024-04-08 は中心食＝中心線あり")
+            .points
+            .len();
+        assert!(n > 0, "オラクル自己検証: 中心線の点数 > 0（got {n}）");
+
+        let out = run_path(&args).expect("2024-04-08 の経路計算は成功する");
+        assert!(out.contains("Total"), "種別 Total が出力に含まれる: {out}");
+        assert!(
+            out.contains("2024-04-08"),
+            "最大食時刻（当日日付）が出力に含まれる: {out}"
+        );
+        let center_line = line_containing(&out, "中心線");
+        assert!(
+            center_line.contains(&n.to_string()),
+            "中心線の点数（参照計算 {n} 点・>0）が行に出る: {center_line}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 5. サンプル数上限（ISSUE-048 §確定仕様 4 追補・ハング防止）
+    // ------------------------------------------------------------------
+    // 正の有限値でも極端に小さい `--interval` は `path` の走査回数を事実上無限にし、CLI が無反応
+    // のままハングする。日食特定後・`path` 呼び出し前に推定サンプル数 `span(P1..P4)/interval` が
+    // `MAX_PATH_SAMPLES = 100_000` を超えたら `CliError::IntervalTooSmall` を返す契約を縛る。
+    //
+    // ## オラクル戦略
+    // 閾値近傍の interval は **テスト内で P1〜P4 の span を公開 API（`eclipse.global`）から計算**して
+    // 導出する（100_000 という定数以外の数値をハードコードしない）。
+
+    /// 本テスト節が縛る上限定数（確定仕様 §4 追補）。
+    const MAX_PATH_SAMPLES_ORACLE: f64 = 100_000.0;
+
+    /// 当日最初の日食を公開 API で取得する（上限検査の span オラクル用）。
+    fn day_first_eclipse(date: &str) -> Option<SolarEclipse> {
+        let start = parse_date(date).expect("妥当日付");
+        let end = UtcInstant::from_jd2(JulianDate2::from_jd(start.jd2().jd() + 1.0));
+        standard_engine(bundled_time_data())
+            .search(UtcRange { start, end })
+            .expect("1 日範囲の探索は成功する")
+            .into_iter()
+            .next()
+    }
+
+    /// P1〜P4（`partial_begin`/`partial_end`）の秒数（実装と同じ公開フィールドから導出）。
+    fn partial_span_seconds(eclipse: &SolarEclipse) -> f64 {
+        let p1 = eclipse
+            .global
+            .partial_begin
+            .as_ref()
+            .expect("実日食は P1 を持つ");
+        let p4 = eclipse
+            .global
+            .partial_end
+            .as_ref()
+            .expect("実日食は P4 を持つ");
+        (p4.time_utc.jd2().jd() - p1.time_utc.jd2().jd()) * 86_400.0
+    }
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 4 追補】極端に小さい `--interval`（`1e-6` s）は、日食特定後・
+    /// `path` 呼び出し**前**に `Err(CliError::IntervalTooSmall { interval, estimated_samples })`。
+    /// `interval` には違反入力がそのまま載り、`estimated_samples` は有限かつ上限 100_000 を超える。
+    /// 本テストが（分オーダーでなく）通常の探索時間で終わること自体が「`path` に入っていない」証拠
+    /// （1e-6 s 間隔で `path` を実走すれば数十億点＝事実上ハングし、テストは終わらない）。
+    /// 殺す変異: 上限検査を入れない（ハング）、検査を `path` の後に置く（ハング）、
+    ///   `InvalidInterval` など別 variant を返す、`interval`/`estimated_samples` に別値を載せる。
+    // SLOW
+    #[test]
+    fn run_path_tiny_interval_is_interval_too_small() {
+        let mut args = path_args("2024-04-08", PathFormatArg::Text);
+        args.interval = 1e-6;
+        let r = run_path(&args);
+        match r {
+            Err(CliError::IntervalTooSmall {
+                interval,
+                estimated_samples,
+            }) => {
+                assert_eq!(interval, 1e-6, "IntervalTooSmall は違反入力 1e-6 を保持");
+                assert!(
+                    estimated_samples.is_finite(),
+                    "estimated_samples は有限（got {estimated_samples}）"
+                );
+                assert!(
+                    estimated_samples > MAX_PATH_SAMPLES_ORACLE,
+                    "estimated_samples は上限 100_000 を超える（got {estimated_samples}）"
+                );
+            }
+            other => panic!("expected Err(IntervalTooSmall {{..}}), got {other:?}"),
+        }
+    }
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 4 追補】上限は**通常利用を制限しない**: 閾値
+    /// `span(P1..P4) / 100_000` から導出した合法な interval（閾値の 100 倍・既定 60 s より細かい）で
+    /// `Ok` を返す。閾値そのものはテスト内で公開 API（`eclipse.global` の P1/P4）から計算し、
+    /// 数値をハードコードしない。
+    /// **なぜ閾値ぎりぎり（×1.01）でないか**: 閾値直上は約 100_000 点の経路追跡を実走することになり、
+    /// テスト時間が実用外になる。ここでは「閾値より十分小さい interval でも弾かれない」ことを、
+    /// 実行可能な点数（約 1,000 点）で縛る。
+    /// 殺す変異: 上限検査を過剰に厳しくする（不等号の向き/等号ずれ、閾値を 1/100 等に取り違える）、
+    ///   span を P1..P4 でなく別区間（中心食区間・1 日）で取って推定を過大にする。
+    // SLOW
+    #[test]
+    fn run_path_interval_above_guard_threshold_succeeds() {
+        let eclipse = day_first_eclipse("2024-04-08").expect("2024-04-08 には日食がある");
+        let span = partial_span_seconds(&eclipse);
+        assert!(
+            span > 0.0,
+            "オラクル自己検証: P1..P4 の span > 0（got {span}）"
+        );
+        let threshold = span / MAX_PATH_SAMPLES_ORACLE;
+
+        let mut args = path_args("2024-04-08", PathFormatArg::Text);
+        // 閾値の 100 倍＝推定 1,000 点（合法・実行可能）。
+        args.interval = threshold * 100.0;
+        assert!(
+            args.interval < PathOptions::default().sample_interval_seconds,
+            "オラクル自己検証: 既定 60 s より細かい interval を試している（got {})",
+            args.interval
+        );
+        let out = run_path(&args).expect("閾値より粗い interval は上限に弾かれず成功する");
+        assert!(
+            !out.is_empty(),
+            "成功出力は空でない（空の成功出力を作らない, conventions §11）"
+        );
+    }
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 4 追補】**既定 interval では上限が発火しない**
+    /// （`PathOptions::default().sample_interval_seconds` で `Ok`）。実日食の推定点数が
+    /// 上限を大きく下回ることをテスト内で確認してから縛る。
+    /// 殺す変異: 上限を既定利用にかかる値（例 100）に取り違える、比較の向きを反転して常に弾く。
+    // SLOW
+    #[test]
+    fn run_path_default_interval_is_not_rejected_by_guard() {
+        let default_interval = PathOptions::default().sample_interval_seconds;
+        let eclipse = day_first_eclipse("2024-04-08").expect("2024-04-08 には日食がある");
+        let estimated = partial_span_seconds(&eclipse) / default_interval;
+        assert!(
+            estimated < MAX_PATH_SAMPLES_ORACLE,
+            "オラクル自己検証: 既定 interval の推定点数は上限を下回る（got {estimated}）"
+        );
+
+        let args = path_args("2024-04-08", PathFormatArg::Text);
+        assert_eq!(
+            args.interval, default_interval,
+            "ヘルパは既定 interval を使っている"
+        );
+        run_path(&args).expect("既定 interval は上限に弾かれない");
+    }
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 2 と 4 追補の順序契約】上限検査は **日食を特定した後**に行う
+    /// ため、日食の無い日（2024-06-15）＋極小 interval は `IntervalTooSmall` ではなく
+    /// **日食なしの成功**を返す（非正・非有限 interval が `search` 前に弾かれるのとは対照的）。
+    /// 殺す変異: 上限検査を `search` より前に置いて span を捏造する（日食が無いのに区間を仮定する）、
+    ///   日食なし日で Err を返す、P1/P4 が無い場合に 0 や 1 日を span として使う。
+    // SLOW
+    #[test]
+    fn run_path_no_eclipse_date_with_tiny_interval_still_reports_no_eclipse() {
+        let mut args = path_args("2024-06-15", PathFormatArg::Text);
+        args.interval = 1e-6;
+        let out =
+            run_path(&args).expect("日食なし日は極小 interval でも成功（上限検査は日食特定後）");
+        assert!(
+            out.contains("No solar eclipse on 2024-06-15."),
+            "日食なしの告知 1 行が返る: {out}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 6. check_path_sample_count 単体（FAST・境界と分岐を厳密に縛る）
+    // ------------------------------------------------------------------
+    // 上限検査が独立関数になったので、CLI 表面からは到達できない境界・分岐を直接縛る。
+    // 数値は `MAX_PATH_SAMPLES` から導出し、除算が**二進で厳密**になる組（interval は 2 の冪）を
+    // 選ぶ。これにより「丸め次第でどちらにも転ぶ」曖昧さ無しに `>` と `>=` を判別できる。
+
+    /// 【ISSUE-048 §確定仕様 4 追補】**境界は strict `>`**: 推定サンプル数がちょうど
+    /// `MAX_PATH_SAMPLES` に等しいときは **受理**（`Ok`）。`interval = 1.0`（2 の冪）・
+    /// `span = MAX_PATH_SAMPLES * 1.0` なので `span / interval` は二進で厳密に
+    /// `MAX_PATH_SAMPLES` と一致し、丸めに依存しない。
+    /// 殺す変異: 比較を `>=` にする（境界ちょうどを弾く）、上限に ±1 のオフセットを入れる。
+    #[test]
+    fn check_path_sample_count_accepts_exact_boundary() {
+        let interval = 1.0;
+        let span = MAX_PATH_SAMPLES * interval;
+        assert_eq!(
+            span / interval,
+            MAX_PATH_SAMPLES,
+            "オラクル自己検証: 除算が二進で厳密（境界ちょうど）"
+        );
+        let r = check_path_sample_count(Some(span), interval);
+        assert!(
+            r.is_ok(),
+            "推定サンプル数が上限ちょうど（{MAX_PATH_SAMPLES}）なら受理する（strict >）: {r:?}"
+        );
+    }
+
+    /// 【ISSUE-048 §確定仕様 4 追補】境界の**直上**は拒否: (a) 1 サンプル分だけ長い span、
+    /// (b) 境界 span の次の表現可能値（1 ULP 上）。いずれも `IntervalTooSmall`。
+    /// (b) により「上限に緩衝を足して実質 `>=` にする」実装も落ちる。
+    /// 殺す変異: 比較を `>=`/`>` 以外（`>= MAX + 1` 等）に緩める、判定を span/interval でなく
+    ///   別式にする、境界直上を受理する。
+    #[test]
+    fn check_path_sample_count_rejects_just_above_boundary() {
+        let interval = 1.0;
+        let boundary_span = MAX_PATH_SAMPLES * interval;
+
+        // (a) ちょうど 1 サンプル分だけ超過。
+        let span_a = boundary_span + interval;
+        assert!(
+            matches!(
+                check_path_sample_count(Some(span_a), interval),
+                Err(CliError::IntervalTooSmall { .. })
+            ),
+            "上限 +1 サンプルは IntervalTooSmall"
+        );
+
+        // (b) 境界 span の 1 ULP 上（最小の超過）。
+        let span_b = f64::from_bits(boundary_span.to_bits() + 1);
+        assert!(
+            span_b / interval > MAX_PATH_SAMPLES,
+            "オラクル自己検証: 1 ULP 上は上限を厳密に超える"
+        );
+        assert!(
+            matches!(
+                check_path_sample_count(Some(span_b), interval),
+                Err(CliError::IntervalTooSmall { .. })
+            ),
+            "上限の 1 ULP 上も IntervalTooSmall（緩衝付き実装を撃破）"
+        );
+    }
+
+    /// 【ISSUE-048 §確定仕様 4 追補】`span_seconds = None`（P1/P4 が無い）のときは **検査しない**＝
+    /// `Ok(())`。極小 interval（`1e-300`）でも span を捏造してエラーにしない。
+    /// CLI 表面（`run_path`）からは到達できない分岐をここで直接縛る。
+    /// 殺す変異: `None` を 0 や 1 日（86_400 s）などの既定 span に差し替えて判定する、
+    ///   `None` で無条件に Err にする、`unwrap()` で panic する。
+    #[test]
+    fn check_path_sample_count_none_span_is_ok() {
+        let r = check_path_sample_count(None, 1e-300);
+        assert!(
+            r.is_ok(),
+            "span 不明（None）なら捏造せず検査もしない（Ok）: {r:?}"
+        );
+    }
+
+    /// 【ISSUE-048 §確定仕様 4 追補】拒否時のペイロード 2 フィールドを同時に縛る:
+    /// `interval` は**渡した値そのもの**、`estimated_samples` は **`span / interval`**
+    /// （上限値でも span でもない）。除算が二進で厳密になる組
+    /// （`span = 1024.0`, `interval = 2^-10`）を使い、期待値をテスト内で独立計算する。
+    /// 殺す変異: `estimated_samples` に `MAX_PATH_SAMPLES` や span をそのまま載せる、
+    ///   2 フィールドを入れ替える、interval を正規化した値に差し替える。
+    #[test]
+    fn check_path_sample_count_error_payload_is_interval_and_estimate() {
+        let span = 1024.0_f64;
+        let interval = 1.0 / 1024.0; // 2^-10（二進で厳密）。
+        let expected = span / interval; // 1_048_576（> MAX_PATH_SAMPLES）。
+        assert!(
+            expected > MAX_PATH_SAMPLES,
+            "オラクル自己検証: この組は上限を超える（got {expected}）"
+        );
+
+        match check_path_sample_count(Some(span), interval) {
+            Err(CliError::IntervalTooSmall {
+                interval: got_interval,
+                estimated_samples,
+            }) => {
+                assert_eq!(got_interval, interval, "interval は渡した値そのもの");
+                assert_eq!(
+                    estimated_samples, expected,
+                    "estimated_samples は span / interval（上限値でも span でもない）"
+                );
+                assert_ne!(
+                    estimated_samples, MAX_PATH_SAMPLES,
+                    "estimated_samples に上限値を載せない"
+                );
+                assert_ne!(
+                    estimated_samples, span,
+                    "estimated_samples に span を載せない"
+                );
+            }
+            other => panic!("expected Err(IntervalTooSmall {{..}}), got {other:?}"),
+        }
+    }
+
+    /// 【SLOW】【ISSUE-048 §確定仕様 4 追補】`run_path` が上限検査へ渡す span が **P1〜P4**
+    /// （`partial_begin`〜`partial_end`）であることを、返ってきた `estimated_samples` が
+    /// テスト側で独立計算した `span(P1..P4) / interval` と**厳密一致**することで縛る。
+    /// `estimated_samples > MAX` だけでは、U1〜U4・P1〜最大食・丸一日など「誤っているが十分大きい」
+    /// span が素通りするため、span の出所そのものを固定する。
+    /// 殺す変異: span を U1〜U4（central_begin/central_end）にする、P1〜最大食の片側だけにする、
+    ///   1 日（86_400 s）や探索範囲を span に使う、秒換算係数（86_400）を取り違える。
+    // SLOW
+    #[test]
+    fn run_path_guard_span_is_p1_to_p4() {
+        let eclipse = day_first_eclipse("2024-04-08").expect("2024-04-08 には日食がある");
+        let span = partial_span_seconds(&eclipse);
+
+        let mut args = path_args("2024-04-08", PathFormatArg::Text);
+        args.interval = 1e-6;
+        let expected = span / args.interval;
+
+        match run_path(&args) {
+            Err(CliError::IntervalTooSmall {
+                estimated_samples, ..
+            }) => {
+                assert_eq!(
+                    estimated_samples, expected,
+                    "estimated_samples は P1〜P4 span（{span} s）/ interval と厳密一致する"
+                );
+            }
+            other => panic!("expected Err(IntervalTooSmall {{..}}), got {other:?}"),
+        }
     }
 }
