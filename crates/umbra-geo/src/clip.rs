@@ -281,6 +281,13 @@ fn probe_sides(a: P, b: P, edges: &[(P, P)]) -> Option<(P, P)> {
 /// - 返る各 [`GeoPolygon`] は `rings[0]` = 外環（**CCW**・shoelace > 0）・`rings[1..]` = その多角形に属する
 ///   穴（**CW**）。いずれも**非閉表現**（先頭 != 末尾）で、共線の中間頂点は落としてある。
 ///   並びは**外環の面積降順**（決定的）。
+/// - **経度フレーム（ISSUE-052）**: 反子午線を跨ぐ入力は、継ぎ目が空き経度区間に来るよう内部で経度を
+///   回してから解き、結果を逆回転で戻す（跨がない入力は回さない＝出力はバイト不変）。
+///   **回しても跨ぎが消えない入力（領域が全経度を覆う＝極を囲む）だけは従来どおり平面で解く**ので、
+///   その場合に限り返る外環は**呼び出し側のフレームで反子午線を跨ぎうる**。跨ぐ外環の
+///   **平面 shoelace は領域の面積ではない**（実測で真値の約 17 倍になる）ので、面積として使わないこと。
+///   `CCW`・面積降順の保証は**内部の回転後フレームで**成立したものを保持している。
+///   跨ぐ可能性の判定と GeoJSON 化は [`crate::GeoPolygon::geojson_geometry_with_pole`] が行う。
 /// - 入力が空／全て退化なら**空 `Vec`**（多角形を捏造しない）。出力頂点は必ず入力リングの頂点か
 ///   入力辺同士の交点であり、入力境界の外に点を作らない。
 ///
@@ -289,9 +296,24 @@ fn probe_sides(a: P, b: P, edges: &[(P, P)]) -> Option<(P, P)> {
 pub fn union_rings(rings: &[Vec<GeoPoint>]) -> Vec<GeoPolygon> {
     // 面積ゼロ（一直線）のリングはここでは落とさない: **自己交差リングは shoelace が相殺して 0 になりうる**
     // （対称な八の字など）。退化リングは even-odd 内部を持たないので、境界判定（手順 4）で自然に消える。
-    let regions: Vec<Vec<P>> = rings.iter().filter_map(|r| normalize(r)).collect();
+    let mut regions: Vec<Vec<P>> = rings.iter().filter_map(|r| normalize(r)).collect();
     if regions.is_empty() {
         return Vec::new();
+    }
+
+    // 0. **経度フレームの正規化**（ISSUE-052）。`lon` を単なる平面座標として扱うため、反子午線を跨ぐ
+    //    入力は「地球を逆走する辺」を持ち、**別の図形**になる（実測: 同一領域が面積 3490 対 正 200）。
+    //    跨ぐ辺があれば、全頂点の経度の**最大の空き区間**の中央へ ±180 の継ぎ目が来るよう回してから解き、
+    //    最後に逆回転で戻す。跨ぐ辺が無ければ回さない（従来の出力はバイト不変）。
+    //    回しても跨ぐ辺が残る（＝領域が全経度を覆う＝極を囲む）場合は**回さずに従来どおり**解く
+    //    （結果は従来と同じく未保証だが、勝手に別の答えを作らない）。
+    let offset = longitude_frame_offset(&regions);
+    if offset != 0.0 {
+        for region in &mut regions {
+            for p in region.iter_mut() {
+                p[0] = wrap_longitude(p[0] + offset);
+            }
+        }
     }
 
     // 1. 全リングの全辺。
@@ -482,6 +504,22 @@ pub fn union_rings(rings: &[Vec<GeoPoint>]) -> Vec<GeoPolygon> {
         }
         if let Some(i) = best {
             assigned[i].push(h);
+        }
+    }
+
+    // 8'. 経度フレームを戻す（手順 0 で回した場合のみ）。緯度には触れない（ISSUE-052 §確定仕様 5）。
+    if offset != 0.0 {
+        for ring in outers.iter_mut() {
+            for p in ring.iter_mut() {
+                p[0] = wrap_longitude(p[0] - offset);
+            }
+        }
+        for holes in assigned.iter_mut() {
+            for ring in holes.iter_mut() {
+                for p in ring.iter_mut() {
+                    p[0] = wrap_longitude(p[0] - offset);
+                }
+            }
         }
     }
 
@@ -848,4 +886,65 @@ fn antimeridian_crossings(ring: &[P]) -> usize {
 /// **バイト不変**に保つために使う。
 pub(crate) fn crosses_antimeridian(rings: &[Vec<P>]) -> bool {
     rings.iter().any(|ring| antimeridian_crossings(ring) > 0)
+}
+
+/// 経度を `[-180, 180)` へ折り返す（フレーム回転用・ISSUE-052）。
+fn wrap_longitude(lon: f64) -> f64 {
+    let mut v = (lon + 180.0) % 360.0;
+    if v < 0.0 {
+        v += 360.0;
+    }
+    v - 180.0
+}
+
+/// 入力が反子午線を跨ぐとき、継ぎ目を**空き経度区間**の中央へ移す回転量を返す（ISSUE-052）。
+///
+/// 跨ぐ辺（`|Δlon| > 180`）が 1 本も無ければ `0.0`＝回さない（出力はバイト不変）。
+///
+/// **候補は幅の広い空き区間から順に試し、回した結果に跨ぐ辺が 1 本も残らない最初のものを採る。**
+/// 空き区間は**頂点**の並びから求めるので、「頂点は無いが**辺が横切っている**」区間が最大になりうる
+/// （実装レビュー指摘）。そこへ継ぎ目を置くとその辺が跨ぎに変わって検証に失敗するので、1 候補で
+/// 諦めると**本当に直すべき領域まで未修正のまま**になる。よって候補を順に試す。
+/// どの候補でも跨ぎが残る場合（領域が全経度を覆う＝極を囲む）は `0.0`＝**従来どおり**解かせる
+/// （別の答えを作らない）。同幅の区間は経度の小さい側から試す（決定的）。
+fn longitude_frame_offset(regions: &[Vec<P>]) -> f64 {
+    if !crosses_antimeridian(regions) {
+        return 0.0;
+    }
+    let mut lons: Vec<f64> = regions.iter().flatten().map(|p| p[0]).collect();
+    lons.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    lons.dedup();
+    if lons.len() < 2 {
+        return 0.0;
+    }
+    // 円周上の隣接する空き区間（末尾→先頭の巻き戻りも 1 区間）を、**幅の降順**に候補化する。
+    let mut candidates: Vec<(f64, f64)> = (0..lons.len())
+        .map(|i| {
+            let (a, b) = (lons[i], lons[(i + 1) % lons.len()]);
+            let gap = if i + 1 == lons.len() {
+                b + 360.0 - a
+            } else {
+                b - a
+            };
+            // 区間の中央が継ぎ目（±180）に来る回転量。
+            (gap, wrap_longitude(180.0 - wrap_longitude(a + gap / 2.0)))
+        })
+        .collect();
+    candidates.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 候補を順に試し、回した結果に跨ぐ辺が 1 本も残らない最初のものを採る。
+    for (_, offset) in candidates {
+        let rotated: Vec<Vec<P>> = regions
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|p| [wrap_longitude(p[0] + offset), p[1]])
+                    .collect()
+            })
+            .collect();
+        if !crosses_antimeridian(&rotated) {
+            return offset;
+        }
+    }
+    0.0
 }

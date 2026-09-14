@@ -3441,12 +3441,16 @@ fn partial_limit_pole_is_none_when_partial_limit_is_none() {
 /// 極が `Some(North)` になる fixture でも、`partial_limit` の**全リングの全頂点**は
 /// `|lat| < 90`＝極頂点が実体に焼き込まれていない（頂点は妥当な緯度経度域にも収まる）。
 ///
-/// **極を渡しても出力が変わらないこと（バイト不変）はここでは縛らない**: この fixture は
-/// **北極が領域に属す**ように作ってあり、そのとき外環は定義上その極を囲む＝反子午線を奇数回跨ぐ
-/// （実測でも `geojson_geometry_with_pole(Some(North))` は `(180, …)→(180, 90)→(−180, 90)→(−180, …)` と
-/// 極で閉じ、極無しの出力と異なる）。跨がないリングでの不変性は
+/// **極を渡しても出力が変わらないこと（バイト不変）はここでは縛らない**: この fixture の外環が
+/// 反子午線を跨ぐか否かは (3f) のユニオン実装に依存し（ISSUE-052 の経度フレーム修正で実際に変わった）、
+/// 本テストの主題ではない。跨がないリングでの不変性は
 /// `path_geojson.rs::to_geojson_pole_does_not_change_non_crossing_partial_limit`
-/// （非跨ぎの合成多角形）が縛る。
+/// （実装に依存しない非跨ぎの合成多角形）が縛る。
+///
+/// なお本 fixture は**北極が領域に属す**（`partial_limit_pole=Some(North)`）が、
+/// ISSUE-052 以後は外環がその極を囲まない。極被覆 regime で帯 (band) が全経度の境界を表現できない
+/// ためで（上記の削除テストのコメント参照）、conventions §12 の登録済み近似の帰結。
+/// 極が Some でもリングが囲まなければ geo 側が極を無視するので、出力は正しいまま。
 ///
 /// **頂点の正当性（閉半影内かつ昼面側・§11.6(d)）はここでは縛らない**: それは (3f) のユニオン出力の
 /// 既存契約で `partial_limit_vertices_are_inside_closed_penumbra_on_day_side` が
@@ -3493,29 +3497,31 @@ fn partial_limit_ring_is_unchanged_when_pole_is_some() {
     }
 }
 
-/// FAST / ISSUE-051 §目的（**合成 fixture での end-to-end**）: 北極が領域に属す合成日食
-/// （`north_pole_bessel`）の `to_geojson` で、`partial_limit` feature が
-///   (a) 経度差 > 180° の辺を「両端 lat=±90」以外に持たない（一周する偽の辺が無い）
-///   (b) lat=+90 の頂点を持つ（**北極**で閉じている）
-/// を満たす。極が領域に属す ⇒ 外環はその極を囲む（反子午線を奇数回跨ぐ）という含意により、
-/// この fixture は実データ（SLOW・2021-12-04）を待たずに極閉じの経路全体を FAST で通す。
-///
-/// 殺す変異: 極を判定せず None を渡す（(a)(b) 破れ＝一周する辺が残る）・北南を取り違える
-///   （(b) が lat=−90 になる）・`to_geojson` が `geojson_geometry()` を呼ぶ（極が無視される）。
-#[test]
-fn synthetic_north_pole_eclipse_geojson_is_closed_at_north_pole() {
-    let engine = standard_engine(bundled_time_data());
-    let eclipse = partial_eclipse_with_bessel(north_pole_bessel(), 1.0, 1.5);
-    let path = engine
-        .path(&eclipse, PathOptions::default())
-        .expect("部分食 phase の path() は成功する");
-    assert_eq!(
-        path.partial_limit_pole,
-        Some(umbra_geo::EnclosedPole::North),
-        "この fixture は北極を囲む（前提）"
-    );
-    assert_partial_limit_geojson_closed_at_pole(&path, 90.0);
-}
+// **FAST の end-to-end 被覆は失われている（ISSUE-052 以後・意図的に再建していない）**
+//
+// かつてここに `synthetic_north_pole_eclipse_geojson_is_closed_at_north_pole`（合成 fixture で
+// 極閉じの経路全体を FAST で通すテスト）を置いていたが、ISSUE-052（`union_rings` の経度フレーム修正）
+// で**期待が成り立たなくなった**ので削除した。理由（実測）:
+//
+//   `north_pole_bessel` は北極を領域に入れるため影軸を極の近くに置いており、[P1,P4] の 181 サンプル中
+//   **145 サンプルで北極が半影内**・軸と北極の面内距離は最小 **0.0041 Re**（＝影軸がほぼ北極を通る）。
+//   この regime では各時刻の半影縁は**北極を囲む閉ループ**になるが、帯 (band) が保持するのは
+//   `trace_penumbral_limits` の**南北 2 点だけ**なので、全経度を回る境界を表現できない。
+//   ISSUE-052 以前は壊れた平面フレームのユニオンが偶然それを一周するリングに縫い合わせていた
+//   （＝旧テストの期待値は壊れたユニオンに対して較正されていた）。フレーム修正後は一周しない。
+//
+// これは **conventions §12 に登録済みの近似（`partial_limit` は平面ユニオン・極 未対応）**が
+// 極被覆 regime で表面化したもので、ISSUE-051 の極判定にも ISSUE-052 の修正にも欠陥は無い
+// （極の所属判定は領域の定義どおりで正しく、リングが極を囲まないときは geo 側が極を無視する）。
+//
+// 一周する合成 fixture を新たに作るには 2021-12-04 と同じ **grazing regime**（軸は極から遠く、極は
+// 半影の縁近く）を合成する必要があるが、帯が実際に一周するかは合成係数から解析的に決められず、
+// エンジンを実走させた試行錯誤でしか確かめられない。未検証の fixture を置くより被覆の欠落を明示する。
+//
+// **残っている被覆**: 極閉じ出力そのものは `path_geojson.rs` の
+// `to_geojson_partial_limit_passes_stored_pole_to_geometry`（一周するリングを直接与える FAST）が、
+// エンジン込みの end-to-end は SLOW の `real_2021_antarctic_eclipse_...` が縛る。
+// **失われた被覆**: 「エンジンが一周するリングと極を同時に生む」ことの FAST 検証。
 
 // ------------------------------------------------------------
 // SLOW: 実 2021-12-04（南極域・皆既）— 極を囲む部分食域の end-to-end

@@ -1976,3 +1976,510 @@ fn union_regression_collinear_overlap_with_triangle_touching_straight_through_ve
         assert_ring_matches(&out[1].rings[0], c_expected);
     }
 }
+
+// ============================================================
+// ISSUE-052: 経度フレーム非依存（反子午線跨ぎ）
+// ============================================================
+//
+// ISSUE-052 §確定仕様:
+//   1. 正規化は `union_rings` の内部（公開シグネチャは不変）。
+//   2. `|Δlon| > 180` の辺が 1 本も無ければ回転量 0（従来出力を変えない）。
+//   3. 回転量は「全入力頂点の経度の**最大の空き区間**の中央に ±180 の継ぎ目が来る」ように決める。
+//   4. 回転後も `|Δlon| > 180` の辺が残れば（＝全経度を覆う）**回転せず**従来どおり解く。
+//   5. 結果は逆回転で戻す。緯度は不変、経度は `wrap` の丸めで最下位桁が動きうる。
+//
+// ここでのテストは「球面上で同一の領域を、複数の経度フレームで与えても同じ結果が返る」ことを
+// 縛る。比較は**参照フレーム**（その領域が継ぎ目を跨がない経度表現）へ出力を回してから行う。
+// 跨ぐフレームでの出力は経度が ±180 を挟むので、平面 shoelace（`signed_area`）を直接当てても
+// 意味を持たない（それ自体は実装の誤りではない）ため、必ず参照フレームで測る。
+//
+// 許容について: 回転は `wrap(lon + offset)` の加減算なので、|lon| < 180 の範囲で最下位桁
+// （~3e-14 度）が動きうる。座標比較は既存の `TOL`（1e-9）、面積比較は `AREA_TOL`（1e-7・
+// 面積 200〜3400 に対して相対 1e-9 以下）で、いずれも丸めの伝播より数桁厳しい。
+
+/// 経度を [-180, 180) へ畳む（`EastLongitude::from_degrees` と同じ約束）。
+fn wrap180(deg: f64) -> f64 {
+    let mut v = (deg + 180.0) % 360.0;
+    if v < 0.0 {
+        v += 360.0;
+    }
+    v - 180.0
+}
+
+/// 「真の経度」で書いた点列を、`offset` だけ回した経度表現のリングにする。
+/// `offset = 0` が ISSUE-052 の実測配置（反子午線跨ぎ）に当たる。
+fn framed(pts: &[(f64, f64)], offset: f64) -> Vec<GeoPoint> {
+    pts.iter()
+        .map(|&(lon, lat)| p(wrap180(lon + offset), lat))
+        .collect()
+}
+
+/// 真の経度で書いた軸平行長方形を、`offset` だけ回した表現のリングにする。
+fn framed_rect(lon0: f64, lat0: f64, lon1: f64, lat1: f64, offset: f64) -> Vec<GeoPoint> {
+    framed(
+        &[(lon0, lat0), (lon1, lat0), (lon1, lat1), (lon0, lat1)],
+        offset,
+    )
+}
+
+/// 出力リングを `delta` だけ回して比較用フレームへ移す。
+fn rotate_ring(r: &[GeoPoint], delta: f64) -> Vec<GeoPoint> {
+    r.iter()
+        .map(|pt| {
+            let (lon, lat) = lonlat(pt);
+            p(wrap180(lon + delta), lat)
+        })
+        .collect()
+}
+
+/// `delta` だけ回したフレームで測った正味面積（外環 − 穴）。
+fn rotated_net_area(poly: &GeoPolygon, delta: f64) -> f64 {
+    let outer = signed_area(&rotate_ring(&poly.rings[0], delta)).abs();
+    let holes: f64 = poly.rings[1..]
+        .iter()
+        .map(|h| signed_area(&rotate_ring(h, delta)).abs())
+        .sum();
+    outer - holes
+}
+
+/// リングの外接ボックス `(lon_min, lon_max, lat_min, lat_max)`。
+fn bbox(r: &[GeoPoint]) -> (f64, f64, f64, f64) {
+    let mut b = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for pt in r {
+        let (lon, lat) = lonlat(pt);
+        b.0 = b.0.min(lon);
+        b.1 = b.1.max(lon);
+        b.2 = b.2.min(lat);
+        b.3 = b.3.max(lat);
+    }
+    b
+}
+
+/// **ISSUE-052 §確定仕様 1・3・5（headline）**: 球面上で同一の領域は、どの経度表現で与えても
+/// 同じ成分数・同じ面積・同じ輪郭を返す。
+///
+/// 領域は ISSUE-052「背景（実測）」の配置そのもの: 真の経度 `170..190`・緯度 `0..10` を
+/// `170..179` と `179..190` の **2 枚**に割って与える（ユニオンが継ぎ目を跨いで融合せねばならない）。
+/// 正しい面積は**幾何から独立に**求まる: 経度幅 20 × 緯度幅 10 = **200**（ticket の (b) と一致）。
+///
+/// フレームは `offset = 0`（= 跨ぐ表現。`179 → -170` の辺が平面上 −349°）・`-180`（ticket の (b)・
+/// 参照フレーム）・`+90`・`-90`・`+45`（いずれも跨がない）。比較は参照フレーム `-180` で行い、
+/// 領域は `-10..10` に写る。
+///
+/// 期待 RED（修正前）: `offset = 0` のフレームだけが、面積 **3490**・外環の経度幅 349° を返す
+/// （成分数は 1 のままなので、赤くなるのは面積と輪郭の assert）。他のフレームは緑。
+///
+/// 殺す変異: 経度を単なる平面座標として扱う（＝現状）・回転を掛けて戻し忘れる（輪郭が別フレームに
+/// 出る）・回転量の符号を逆にする（別の辺が跨ぐ）・最大の空き区間でなく最小の空き区間に継ぎ目を置く。
+#[test]
+fn union_frame_invariant_area_for_seam_crossing_region() {
+    const REF: f64 = -180.0;
+    let west = [(170.0, 0.0), (179.0, 0.0), (179.0, 10.0), (170.0, 10.0)];
+    let east = [(179.0, 0.0), (190.0, 0.0), (190.0, 10.0), (179.0, 10.0)];
+
+    for &offset in &[0.0_f64, -180.0, 90.0, -90.0, 45.0] {
+        let inputs = vec![framed(&west, offset), framed(&east, offset)];
+        let out = union_rings(&inputs);
+
+        assert_eq!(
+            out.len(),
+            1,
+            "offset={offset}: 2 枚は辺を共有して繋がるので単一成分（実際 {} 件）",
+            out.len()
+        );
+        assert_eq!(out[0].rings.len(), 1, "offset={offset}: 穴は無い");
+
+        // 参照フレーム（-180）へ戻して測る。
+        let delta = REF - offset;
+        let outer = rotate_ring(&out[0].rings[0], delta);
+        assert!(
+            signed_area(&outer) > 0.0,
+            "offset={offset}: 参照フレームの外環は CCW（符号付き面積 {}）",
+            signed_area(&outer)
+        );
+        let area = rotated_net_area(&out[0], delta);
+        assert!(
+            close(area, 200.0, AREA_TOL),
+            "offset={offset}: 面積 {area} が正しい 200 と一致しない（跨ぎ表現で 3490 になる欠陥）"
+        );
+        let (lon_min, lon_max, lat_min, lat_max) = bbox(&outer);
+        assert!(
+            close(lon_min, -10.0, TOL)
+                && close(lon_max, 10.0, TOL)
+                && close(lat_min, 0.0, TOL)
+                && close(lat_max, 10.0, TOL),
+            "offset={offset}: 参照フレームの外接ボックスが (-10..10, 0..10) でない \
+             （{lon_min}..{lon_max}, {lat_min}..{lat_max}）"
+        );
+        assert_ring_matches(
+            &outer,
+            &[(-10.0, 0.0), (10.0, 0.0), (10.0, 10.0), (-10.0, 10.0)],
+        );
+    }
+}
+
+/// **ISSUE-052 §確定仕様 1・5**: 球面上でだけ重なる 2 枚が、継ぎ目を跨いで**融合**する。
+///
+/// 真の経度で `A = 160..185`・`B = 180..200`（緯度 0..10）。重なりは `180..185` で、
+/// `offset = 0` の表現では A が `160 → -175`（跨ぐ）、B が `-180 → -160` になる。
+/// 平面として読むと両者は重ならない（A が地球を逆走する）ので、欠陥実装は融合できない。
+/// 正しい和は経度幅 40 × 緯度幅 10 = **400**、参照フレーム `-180` では `-20..20`。
+///
+/// さらに **確定仕様 5「結果は逆回転で戻す」** を直接縛る: `offset = 0` の生の出力は
+/// 与えたフレームの値、すなわち真の経度 160 と 200 に対応する `160` と `-160` を頂点に持つ
+/// （回転したフレームのまま返してはならない）。
+///
+/// 期待 RED（修正前）: `offset = 0` で成分数・面積・輪郭のいずれも一致しない。
+///
+/// 殺す変異: 跨ぎ検出を辺単位で行わない・回転後の結果を戻さない・
+/// 重なり判定を回転前の座標で行う。
+#[test]
+fn union_seam_crossing_overlapping_rects_merge_into_one_component() {
+    const REF: f64 = -180.0;
+
+    for &offset in &[0.0_f64, -180.0, 90.0, -90.0, 45.0] {
+        let a = framed_rect(160.0, 0.0, 185.0, 10.0, offset);
+        let b = framed_rect(180.0, 0.0, 200.0, 10.0, offset);
+        let out = union_rings(&[a, b]);
+
+        assert_eq!(
+            out.len(),
+            1,
+            "offset={offset}: 球面上では 180..185 で重なるので単一成分（実際 {} 件）",
+            out.len()
+        );
+        assert_eq!(out[0].rings.len(), 1, "offset={offset}: 穴は無い");
+
+        let delta = REF - offset;
+        let outer = rotate_ring(&out[0].rings[0], delta);
+        let area = rotated_net_area(&out[0], delta);
+        assert!(
+            close(area, 400.0, AREA_TOL),
+            "offset={offset}: 面積 {area} が正しい 400 と一致しない"
+        );
+        assert_ring_matches(
+            &outer,
+            &[(-20.0, 0.0), (20.0, 0.0), (20.0, 10.0), (-20.0, 10.0)],
+        );
+    }
+
+    // 確定仕様 5: 跨ぐフレームで与えたら、跨ぐフレームのまま返る（内部回転を戻す）。
+    let a = framed_rect(160.0, 0.0, 185.0, 10.0, 0.0);
+    let b = framed_rect(180.0, 0.0, 200.0, 10.0, 0.0);
+    let out = union_rings(&[a, b]);
+    assert_eq!(out.len(), 1);
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[(160.0, 0.0), (-160.0, 0.0), (-160.0, 10.0), (160.0, 10.0)],
+    );
+}
+
+/// **ISSUE-052 §確定仕様 5「回転は経度の平行移動のみで緯度に触れない」**:
+/// 回転が発生するフレームでも、出力頂点の緯度は入力の緯度と**ビット単位で**一致する。
+///
+/// 入力の緯度は 0 と 10 の 2 種類しかないので、出力の全頂点の緯度はそのいずれかに厳密一致
+/// せねばならない（比較対象は同じ構築経路 `p()` を通した値なので、丸めの差は生じない）。
+/// 経度側は `wrap` の丸めで最下位桁が動きうるため、ここでは縛らない（確定仕様 5 の明記どおり）。
+///
+/// 期待: 修正の前後どちらでも緑になりうる（現状は回転そのものが無いので自明に緑）。
+/// 緯度にも `wrap`/正規化を掛けてしまう変異・経度と緯度を取り違えて回す変異を殺す。
+#[test]
+fn union_rotation_leaves_vertex_latitudes_bit_exact() {
+    let west = [(170.0, 0.0), (179.0, 0.0), (179.0, 10.0), (170.0, 10.0)];
+    let east = [(179.0, 0.0), (190.0, 0.0), (190.0, 10.0), (179.0, 10.0)];
+    let allowed = [lonlat(&p(0.0, 0.0)).1, lonlat(&p(0.0, 10.0)).1];
+
+    for &offset in &[0.0_f64, 45.0] {
+        let inputs = vec![framed(&west, offset), framed(&east, offset)];
+        let out = union_rings(&inputs);
+        assert!(!out.is_empty(), "offset={offset}: 出力が空");
+        for poly in &out {
+            for r in &poly.rings {
+                for pt in r {
+                    let lat = lonlat(pt).1;
+                    assert!(
+                        allowed.contains(&lat),
+                        "offset={offset}: 出力頂点の緯度 {lat} が入力の緯度 {allowed:?} と厳密一致しない（回転が緯度に触れている）"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// **ISSUE-052 §確定仕様 2「跨ぐ辺が 1 本も無ければ何もしない」**: 跨ぎ判定の閾値が
+/// `|Δlon| > 180`（**厳密な超過**）であることを、閾値ぎりぎりの 2 配置で縛る。
+///
+/// - `|Δlon| = 179`: `A = 0..179`・`B = 100..179`（B は A に内包）→ 和は A そのもの・面積 1790。
+/// - `|Δlon| = 180`（ちょうど・跨がない）: `A = -90..90`・`B = 0..90` → 和は A・面積 1800。
+///
+/// どちらも回転してはならない配置で、既存の 40 本（すべて経度幅 30 度以下の非跨ぎ入力）が
+/// 担保していない**閾値近傍**を埋める。バイト不変そのもの（出力の最下位桁が動かないこと）は
+/// 公開 API からは観測できないため、ここでは「形が変わらない」ことまでを縛る。
+///
+/// 期待: 修正の前後どちらでも緑（回帰テスト）。
+///
+/// 殺す変異: 跨ぎ判定の閾値を 180 以外（90・170 等）にする・
+/// 経度差に `abs()` を付け忘れて片側だけ検出する。
+#[test]
+fn union_non_crossing_input_near_180_threshold_is_unchanged() {
+    // |Δlon| = 179
+    let a = rect(0.0, 0.0, 179.0, 10.0);
+    let b = rect(100.0, 0.0, 179.0, 10.0);
+    let inputs = vec![a, b];
+    let out = union_rings(&inputs);
+    assert_eq!(out.len(), 1, "B は A に内包されるので単一成分");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(out[0].rings.len(), 1, "穴は無い");
+    assert!(
+        close(net_area(&out[0]), 1790.0, AREA_TOL),
+        "{}",
+        net_area(&out[0])
+    );
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[(0.0, 0.0), (179.0, 0.0), (179.0, 10.0), (0.0, 10.0)],
+    );
+
+    // |Δlon| = 180 ちょうど（「> 180」ではないので回転しない）
+    let a = rect(-90.0, 0.0, 90.0, 10.0);
+    let b = rect(0.0, 0.0, 90.0, 10.0);
+    let inputs = vec![a, b];
+    let out = union_rings(&inputs);
+    assert_eq!(out.len(), 1, "B は A に内包されるので単一成分");
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+    assert_eq!(out[0].rings.len(), 1, "穴は無い");
+    assert!(
+        close(net_area(&out[0]), 1800.0, AREA_TOL),
+        "{}",
+        net_area(&out[0])
+    );
+    assert_ring_matches(
+        &out[0].rings[0],
+        &[(-90.0, 0.0), (90.0, 0.0), (90.0, 10.0), (-90.0, 10.0)],
+    );
+}
+
+/// **ISSUE-052 §確定仕様 4「検証して退避する」**: 全経度を覆う（＝極を囲む）入力では、
+/// どこに継ぎ目を置いても `|Δlon| > 180` の辺が残るので、回転は**失敗**し、従来どおり解く。
+///
+/// 入力は経度 −180..150 を 30 度刻みで単調に一周するリング（緯度は 80/85 を交互に振って
+/// 平面面積を持たせる）。末尾 `150` から先頭 `-180` へ戻る辺が平面上 −330° で、頂点の
+/// 空き区間（どれも 30°）の中央に継ぎ目を置いても、その区間を跨ぐ辺が必ず残る。
+///
+/// **幾何的な正しさは意図的に検証しない**: ISSUE-052 §非目的が「極を囲む領域は本 issue の
+/// 対象外・退避する（結果は従来と同じく未保証）」と明記しているため。ここで縛るのは
+/// 「パニックせず・結果を返し・同じ入力に対して決定的である」ことだけで、退避の結果に
+/// 期待値を置くと据え置きの仕様を勝手に確定させてしまう。
+///
+/// 殺す変異: 回転後の再検証を省いて壊れた回転結果を返す（＝別の答えを捏造する）・
+/// 回転失敗時に panic / unwrap する・退避経路を非決定にする。
+#[test]
+fn union_all_longitude_coverage_falls_back_without_panicking() {
+    let pts: Vec<(f64, f64)> = (0..12)
+        .map(|k| {
+            let lon = -180.0 + f64::from(k) * 30.0;
+            let lat = if k % 2 == 0 { 80.0 } else { 85.0 };
+            (lon, lat)
+        })
+        .collect();
+    let ring_all_lons = framed(&pts, 0.0);
+
+    // 退避しても panic しない。
+    let first = union_rings(std::slice::from_ref(&ring_all_lons));
+    // 決定的（同じ入力から同じ出力）。
+    let second = union_rings(&[ring_all_lons]);
+    assert_eq!(
+        canonical(&first),
+        canonical(&second),
+        "全経度を覆う入力での退避結果が決定的でない"
+    );
+}
+
+/// **ISSUE-052 §確定仕様 3「最大の空き区間の中央に継ぎ目を置く」**: 空き区間が**狭い**
+/// （＝領域がほぼ全経度に広がる）配置でも、回転が自分で新しい継ぎ目を作らずフレーム不変を保つ。
+///
+/// 領域は真の経度 `0..340`・緯度 `0..10`。頂点は 10 度刻みに密に置く（`0,10,…,340` の 35 本）ので、
+/// 頂点間の空き区間は領域内部ではどれも 10°、領域外の `340..360` だけが **20°** で唯一の最大となる。
+/// 継ぎ目はその中央 350° に置かれ、回転量は −170° になる。`0..340` は参照フレーム `-170` で
+/// `-170..170` に写り、どの辺も `|Δlon| = 10` で跨がない。
+/// 入力は緯度で重なる 2 本の帯（`lat 0..6` と `lat 4..10`）にして、ユニオンが実際に融合を要求する。
+/// 正しい面積は経度幅 340 × 緯度幅 10 = **3400**。
+///
+/// フレームは `0`・`90`・`-90`（いずれも跨ぐ）と `-165`・`-170`・`-175`（継ぎ目が真の空き区間
+/// `340..360` に入るので跨がない）。
+///
+/// 期待 RED（修正前）: 跨ぐ 3 フレームで面積・外接ボックスが一致しない。
+///
+/// 殺す変異: 空き区間を「最大」でなく「最初」や「最小」で選ぶ（継ぎ目が領域内部に落ち、
+/// 回転後も跨ぐ辺が残って退避 → 跨ぎフレームの結果が壊れたまま）・空き区間の中央でなく端に
+/// 継ぎ目を置く（境界の頂点がちょうど ±180 に乗って跨ぎ判定が揺れる）・
+/// 円周上の並べ替えで `340 → 0` の折り返し区間を数え落とす。
+#[test]
+fn union_frame_invariant_when_largest_longitude_gap_is_narrow() {
+    const REF: f64 = -170.0;
+    /// 経度 0..=340（10 度刻み・35 頂点）を往復する帯リング（真の経度）。
+    fn band(lat0: f64, lat1: f64) -> Vec<(f64, f64)> {
+        let mut pts: Vec<(f64, f64)> = (0..=34).map(|k| (f64::from(k) * 10.0, lat0)).collect();
+        pts.extend((0..=34).rev().map(|k| (f64::from(k) * 10.0, lat1)));
+        pts
+    }
+
+    for &offset in &[0.0_f64, 90.0, -90.0, -165.0, -170.0, -175.0] {
+        let lower = framed(&band(0.0, 6.0), offset);
+        let upper = framed(&band(4.0, 10.0), offset);
+        let out = union_rings(&[lower, upper]);
+
+        assert_eq!(
+            out.len(),
+            1,
+            "offset={offset}: 緯度で重なる 2 帯は単一成分（実際 {} 件）",
+            out.len()
+        );
+        assert_eq!(out[0].rings.len(), 1, "offset={offset}: 穴は無い");
+
+        let delta = REF - offset;
+        let outer = rotate_ring(&out[0].rings[0], delta);
+        assert!(
+            signed_area(&outer) > 0.0,
+            "offset={offset}: 参照フレームの外環は CCW（符号付き面積 {}）",
+            signed_area(&outer)
+        );
+        let area = rotated_net_area(&out[0], delta);
+        assert!(
+            close(area, 3400.0, AREA_TOL),
+            "offset={offset}: 面積 {area} が正しい 3400 と一致しない"
+        );
+        // 共線頂点が残るか否かは仕様外なので頂点列は縛らず、外接ボックスで縛る。
+        let (lon_min, lon_max, lat_min, lat_max) = bbox(&outer);
+        assert!(
+            close(lon_min, -170.0, TOL)
+                && close(lon_max, 170.0, TOL)
+                && close(lat_min, 0.0, TOL)
+                && close(lat_max, 10.0, TOL),
+            "offset={offset}: 参照フレームの外接ボックスが (-170..170, 0..10) でない （{lon_min}..{lon_max}, {lat_min}..{lat_max}）"
+        );
+    }
+}
+
+/// **ISSUE-052 §確定仕様 3・4（候補の再試行）**: 最大の空き区間は**頂点**から求めるので、
+/// その区間を**無関係な領域の辺**が頂点なしで跨いでいることがある。そこに継ぎ目を置くと
+/// その領域が跨ぐようになり検証（確定仕様 4）が失敗する。候補を 1 つしか試さない実装は
+/// そこで回転を諦めて offset 0 に落ち、**本来直すべき跨ぎ領域を壊れたまま返す**
+/// （＝本 issue が直したはずのバグの再現）。空き区間を広い順に試し、跨ぐ辺が残らない
+/// 最初の候補を採る実装だけが通る。
+///
+/// 配置（レビュー指摘の入力）:
+/// - `A`: 真の経度 `170..190`・緯度 `0..5`（＝ `(170,0),(-170,0),(-170,5),(170,5)`）。**跨ぐ**。
+///   面積は幾何から独立に 20 × 5 = **100**。
+/// - `B`: 経度 `-80..90`・緯度 `20..30`。跨がないが**幅 170°**。面積 170 × 10 = **1700**。
+/// - 両者は緯度で離れているので **2 成分**（面積降順に B → A）。
+///
+/// 頂点経度は `-170, -80, 90, 170`。空き区間は順に `-80→90`（**170°**・最大）・`-170→-80`（90°）・
+/// `90→170`（80°）・`170→-170`（20°）。最大の 170° の区間は **B 自身の辺**が走っているので、
+/// 継ぎ目を中央（真の経度 5°）に置くと B が跨ぎ、検証が失敗する。次点の 90° の区間
+/// （真の経度 190..280・中央 235°・回転量 −55°）なら A も B も跨がず、回転が成立する。
+///
+/// フレームは `0`（A が跨ぐ）・`90`・`-140`・`180`（いずれも B が跨ぐ）・`-70`（参照フレーム・
+/// どの辺も跨がない）。比較は参照フレーム `-70` へ戻して行い、A は `100..120`、B は `-150..20` に写る。
+///
+/// 期待 RED: 候補を 1 つしか試さない実装では、`-70` 以外の全フレームで退避が起き、
+/// 跨ぐ側の成分が平面上の巨大な環（A なら経度幅 340°）になって面積 100 の assert が落ちる。
+///
+/// 殺す変異: 候補の再試行を止めて最初の 1 つで諦める・候補を幅の降順でなく昇順/入力順で試す・
+/// 検証（跨ぐ辺が残っていないか）を回転**前**の座標で行う・最初に成立した候補でなく最後の候補を採る。
+#[test]
+fn union_retries_gap_candidates_when_widest_gap_is_occupied_by_another_edge() {
+    const REF: f64 = -70.0;
+    let a = [(170.0, 0.0), (190.0, 0.0), (190.0, 5.0), (170.0, 5.0)];
+    let b = [(-80.0, 20.0), (90.0, 20.0), (90.0, 30.0), (-80.0, 30.0)];
+
+    for &offset in &[0.0_f64, 90.0, -140.0, 180.0, -70.0] {
+        let inputs = vec![framed(&a, offset), framed(&b, offset)];
+        let out = union_rings(&inputs);
+
+        assert_eq!(
+            out.len(),
+            2,
+            "offset={offset}: A と B は緯度で離れているので 2 成分（実際 {} 件）",
+            out.len()
+        );
+        for poly in &out {
+            assert_eq!(poly.rings.len(), 1, "offset={offset}: 穴は無い");
+        }
+
+        let delta = REF - offset;
+        // 先頭 = B（面積 1700）。
+        let b_outer = rotate_ring(&out[0].rings[0], delta);
+        assert!(
+            signed_area(&b_outer) > 0.0,
+            "offset={offset}: 参照フレームで B の外環は CCW（符号付き面積 {}）",
+            signed_area(&b_outer)
+        );
+        let b_area = rotated_net_area(&out[0], delta);
+        assert!(
+            close(b_area, 1700.0, AREA_TOL),
+            "offset={offset}: B の面積 {b_area} が正しい 1700 と一致しない"
+        );
+        assert_ring_matches(
+            &b_outer,
+            &[(-150.0, 20.0), (20.0, 20.0), (20.0, 30.0), (-150.0, 30.0)],
+        );
+
+        // 2 番目 = A（面積 100）。跨ぎが直っていないと平面上の経度幅 340° の環になる。
+        let a_outer = rotate_ring(&out[1].rings[0], delta);
+        assert!(
+            signed_area(&a_outer) > 0.0,
+            "offset={offset}: 参照フレームで A の外環は CCW（符号付き面積 {}）",
+            signed_area(&a_outer)
+        );
+        let a_area = rotated_net_area(&out[1], delta);
+        assert!(
+            close(a_area, 100.0, AREA_TOL),
+            "offset={offset}: A の面積 {a_area} が正しい 100 と一致しない\
+             （最大の空き区間が B の辺に塞がれ、候補 1 つで諦めて跨ぎを直し損ねた疑い）"
+        );
+        assert_ring_matches(
+            &a_outer,
+            &[(100.0, 0.0), (120.0, 0.0), (120.0, 5.0), (100.0, 5.0)],
+        );
+    }
+}
+
+/// **ISSUE-052 §確定仕様 4「検証して退避する」**: **すべての**空き区間候補が他の領域の辺に
+/// 塞がれている（＝入力が全経度を覆う）場合は、再試行しても回転は成立せず、従来どおり解く。
+/// 単一リングで一周する `union_all_longitude_coverage_falls_back_without_panicking` に対し、
+/// こちらは**複数の跨がない/跨ぐ帯の重ね合わせ**で全経度が覆われる場合を縛る
+/// （再試行ループが候補を使い切った先で無限ループ・panic しないこと）。
+///
+/// 配置: 緯度で離れた 3 本の帯。`R1` 真の経度 `-170..-10`・`R2` `-50..110`・`R3` `90..250`（跨ぐ）。
+/// 合わせて経度 `-170..250`（420°）＝全経度を覆う。頂点経度は `-170,-110,-50,-10,90,110` で、
+/// 6 つの空き区間はいずれかの帯の辺が走っているので、どの候補に継ぎ目を置いても跨ぐ辺が残る。
+///
+/// **幾何的な正しさは検証しない**: ISSUE-052 §非目的が全経度被覆を対象外（結果は未保証）と
+/// 明記しているため。縛るのは「パニックせず・結果を返し・決定的である」ことだけ。
+///
+/// 殺す変異: 候補の再試行を終端しない（無限ループ・候補リストの添字外参照で panic）・
+/// 候補を使い切ったときに退避せず最後の壊れた回転結果を返す・退避経路を非決定にする。
+#[test]
+fn union_all_gap_candidates_occupied_falls_back_without_panicking() {
+    let r1 = framed_rect(-170.0, 0.0, -10.0, 10.0, 0.0);
+    let r2 = framed_rect(-50.0, 20.0, 110.0, 30.0, 0.0);
+    let r3 = framed_rect(90.0, 40.0, 250.0, 50.0, 0.0);
+    let inputs = vec![r1, r2, r3];
+
+    let first = union_rings(&inputs);
+    let second = union_rings(&inputs);
+    assert_eq!(
+        canonical(&first),
+        canonical(&second),
+        "全候補が塞がれた入力での退避結果が決定的でない"
+    );
+}
