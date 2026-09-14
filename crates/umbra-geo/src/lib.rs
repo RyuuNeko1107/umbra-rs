@@ -7,4 +7,4 @@ pub mod clip;
 pub mod geometry;
 
 pub use clip::union_rings;
-pub use geometry::{GeoLine, GeoPoint, GeoPolygon};
+pub use geometry::{EnclosedPole, GeoLine, GeoPoint, GeoPolygon};

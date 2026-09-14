@@ -31,7 +31,7 @@
 //! （E0599）でコンパイルできない。これが想定どおりの赤。
 
 use serde_json::Value;
-use umbra_geo::{GeoLine, GeoPoint, GeoPolygon};
+use umbra_geo::{EnclosedPole, GeoLine, GeoPoint, GeoPolygon};
 
 /// 数値比較の許容（度の桁落ち程度）。
 const EPS: f64 = 1e-9;
@@ -2299,4 +2299,771 @@ fn geojson_is_invariant_to_closed_or_open_input_rings() {
             signed_area(&west[1])
         );
     }
+}
+
+// ============================================================
+// 11. ISSUE-051 極で閉じる（`geojson_geometry_with_pole`・§確定仕様 1〜4）
+//
+// ## 縛る仕様（ISSUE-051 §確定仕様）
+// - (1) 外環の反子午線跨ぎ回数が**奇数**なら極を囲む。
+// - (2) どちらの極かは **umbra-geo の外**（umbra-eclipse）が決める。geo 層は引数で受け取る。
+//       `None` は「決められなかった」であり、**(3g) の素通し（現状維持）**にフォールバックする。
+// - (3) 閉じ方: 弧の端点から子午線 `+180` / `−180` を極（`lat = ±90`）まで辿り、極上で渡り、戻る。
+//       **挿入する頂点は既存の補間交点 `(±180, lat_c)` と極頂点 `(±180, ±90)` のみ**。
+// - (4) 跨がない／偶数跨ぎの出力は極引数に**一切影響されない**（バイト不変）。
+// - `geojson_geometry()` ≡ `geojson_geometry_with_pole(None)`。
+//
+// ## 期待される RED（実装前）
+// `EnclosedPole` が未定義（E0432）・`geojson_geometry_with_pole` 未定義（E0599）でコンパイル不能。
+//
+// ## 仕様が定めていない自由度（テストでは固定しない）
+// - 断片リングの開始頂点（`assert_ring_coords_eq` の巡回正規化で吸収）。
+// - 極頂点が既存頂点と**完全一致**する退化入力での重複頂点の除去有無（テスト 7 参照）。
+// ============================================================
+
+/// 「地球を逆走する辺」の検出オラクル。連続 2 頂点の |Δlon| の最大値を返すが、
+/// **両端がともに極（|lat| = 90）の辺は除外**する（極上の辺は球面上で長さ 0 の退化辺であり、
+/// 経度差 360 を持つのが正しい＝§確定仕様 3 が明示的に導入する辺）。
+/// 極で閉じられた正しいリングではこの値が 180 以下になり、
+/// 今日の不正な出力（弧の末尾から先頭へ逆走する辺）では 180 を超える。
+fn max_non_polar_lon_span(coords: &[(f64, f64)]) -> f64 {
+    let mut worst = 0.0_f64;
+    for w in coords.windows(2) {
+        let (lon1, lat1) = w[0];
+        let (lon2, lat2) = w[1];
+        if close(lat1.abs(), 90.0) && close(lat2.abs(), 90.0) {
+            continue; // 極上の渡り辺（球面では 1 点）。
+        }
+        worst = worst.max((lon2 - lon1).abs());
+    }
+    worst
+}
+
+/// リングの全頂点が `allowed` のいずれかと一致することを縛る（**点を捏造しない**・§確定仕様 3）。
+fn assert_all_vertices_allowed(coords: &[(f64, f64)], allowed: &[(f64, f64)], what: &str) {
+    for (i, &(lon, lat)) in coords.iter().enumerate() {
+        assert!(
+            allowed.iter().any(|&(l, a)| close(lon, l) && close(lat, a)),
+            "{what}: 頂点{i} = [{lon}, {lat}] は許された点集合に無い（捏造）。allowed={allowed:?}"
+        );
+    }
+}
+
+/// ISSUE-051 テストの共通 fixture（跨ぎ **1 回**・極を囲む）。(lat, lon) で返す。
+///
+/// (lon,lat) = `(−150,−75) → (−60,−78) → (30,−75) → (120,−78) → (170,−72)`。
+/// 辺の Δlon は `+90, +90, +90, +50`、**閉じ辺** (170,−72)→(−150,−75) が `Δlon = −320 < −180`
+/// ＝東進跨ぎ **1 回（奇数）**。経度は単調に東進して一周するので巻き数 +1 ＝極を囲む。
+/// 交点緯度は `lat_c_east(170,−72,−150,−75)`: t = (180−170)/(360−320) = 10/40 = **0.25**（2 進で厳密）、
+/// `lat_c = −72 + 0.25·(−3) = −72.75`（両端 −72・−75 のどちらとも異なる真の内分点）。
+fn pole_ring_one_crossing() -> Vec<GeoPoint> {
+    ring(&[
+        (-75.0, -150.0),
+        (-78.0, -60.0),
+        (-75.0, 30.0),
+        (-78.0, 120.0),
+        (-72.0, 170.0),
+    ])
+}
+
+/// 閉リングの跨ぎ回数と（±360 補正後の）経度総変位を**独立に**数える（前提の明示）。
+fn crossings_and_winding(lons: &[f64]) -> (usize, f64) {
+    let mut crossings = 0usize;
+    let mut winding = 0.0_f64;
+    for (i, &l1) in lons.iter().enumerate() {
+        let d = lons[(i + 1) % lons.len()] - l1;
+        if d < -180.0 {
+            crossings += 1;
+            winding += d + 360.0;
+        } else if d > 180.0 {
+            crossings += 1;
+            winding += d - 360.0;
+        } else {
+            winding += d;
+        }
+    }
+    (crossings, winding)
+}
+
+/// **ISSUE-051 §確定仕様 1・3（南極で閉じる）**: 跨ぎ **1 回（奇数）**のリングを `Some(South)` で
+/// 閉じると、弧は `+180` 子午線を `lat = −90` まで下り、極上で `−180` へ渡り、戻って閉じる。
+///
+/// fixture は `pole_ring_one_crossing`（交点緯度 −72.75）。弧は `(−180,−72.75)` から始まり
+/// 入力 5 点を経て `(+180,−72.75)` で終わる（断片は 1 枚）。§確定仕様 3 の閉じ方で
+/// `(180,−90)`・`(−180,−90)` の 2 頂点**だけ**が加わる。
+///
+/// 期待（開表現・CCW）:
+/// `[(−180,−90),(180,−90),(180,−72.75),(170,−72),(120,−78),(30,−75),(−60,−78),(−150,−75),(−180,−72.75)]`
+/// 内部は**南極冠**（帯より南）なので、(lon,lat) 平面ではこの向きが CCW（shoelace **+5055**・手計算）。
+/// 逆向き（東進のまま辿る順）は −5055 ＝ CW であり RFC 7946 の外環規約に反する。
+/// 断片は 1 枚なので §11.8(c) どおり `type="Polygon"`。
+///
+/// 殺す実装: 極引数を無視して (3g) の素通しを返す（**経度幅 320 の逆走辺が残る**＝今日の欠陥）・
+///   極頂点を入れずに弧の両端を直結する・極頂点を `(0,−90)` 等の捏造経度で入れる・
+///   `(±180, lat_c)` の補間点を落として弧を極へ直結する・±180 の符号を取り違えて
+///   東側の弧末尾に `−180` を付ける・リングを閉じない・CW のまま出す・北極（+90）で閉じる。
+#[test]
+fn geojson_with_pole_south_closes_odd_crossing_ring_through_south_pole() {
+    // 前提（独立オラクル）: 跨ぎ 1 回（奇数）・巻き数 +1。
+    let lons = [-150.0_f64, -60.0, 30.0, 120.0, 170.0];
+    let (crossings, winding) = crossings_and_winding(&lons);
+    assert_eq!(crossings, 1, "前提: 跨ぎは 1 回（奇数）＝極を囲む");
+    assert!(close(winding, 360.0), "前提: 巻き数 +1, got {winding}");
+    // 前提（独立オラクル）: 交点緯度 −72.75。
+    let lat_c = lat_c_east(170.0, -72.0, -150.0, -75.0);
+    assert!(close(lat_c, -72.75), "前提: lat_c = −72.75, got {lat_c}");
+
+    let g = GeoPolygon::new(vec![pole_ring_one_crossing()])
+        .geojson_geometry_with_pole(Some(EnclosedPole::South));
+
+    assert_eq!(
+        g["type"],
+        Value::String("Polygon".to_string()),
+        "極で閉じた結果は断片 1 枚 → Polygon（§11.8(c)）"
+    );
+    let rings = g["coordinates"].as_array().expect("リング配列");
+    assert_eq!(
+        rings.len(),
+        1,
+        "外環 1 本のみ（穴なし）, got {}",
+        rings.len()
+    );
+    let r0 = ring_coords(&rings[0]);
+
+    // (1) 閉リング・頂点数（入力 5 + 交点 2 + 極 2 = 9、+ 先頭複製 = 10）。
+    assert_eq!(r0.first(), r0.last(), "閉リング（先頭==末尾）");
+    assert_eq!(
+        r0.len(),
+        10,
+        "入力 5 + ±180 交点 2 + 極頂点 2 = 9 点 + 先頭複製, got {}: {r0:?}",
+        r0.len()
+    );
+
+    // (2) 座標列・周回方向を厳密比較（開始頂点の自由度のみ吸収）。
+    let expected = [
+        (-180.0, -90.0),
+        (180.0, -90.0),
+        (180.0, lat_c),
+        (170.0, -72.0),
+        (120.0, -78.0),
+        (30.0, -75.0),
+        (-60.0, -78.0),
+        (-150.0, -75.0),
+        (-180.0, lat_c),
+    ];
+    assert_ring_coords_eq(&r0, &expected, "南極で閉じた外環");
+
+    // (3) 環向き: CCW（面積 +5055・独立 shoelace オラクル）。逆向きなら −5055。
+    assert!(
+        close(signed_area(&r0), 5055.0),
+        "外環は CCW・面積 +5055（内部＝南極冠）, got {}",
+        signed_area(&r0)
+    );
+
+    // (4) 極頂点が両子午線に 1 つずつある。北極頂点は現れない（極の取り違え検出）。
+    assert!(
+        r0.iter()
+            .any(|&(lon, lat)| close(lon, 180.0) && close(lat, -90.0)),
+        "(+180, −90) の極頂点が無い, got {r0:?}"
+    );
+    assert!(
+        r0.iter()
+            .any(|&(lon, lat)| close(lon, -180.0) && close(lat, -90.0)),
+        "(−180, −90) の極頂点が無い, got {r0:?}"
+    );
+    assert!(
+        !r0.iter().any(|&(_, lat)| close(lat, 90.0)),
+        "南極で閉じたのに lat=+90 の頂点がある, got {r0:?}"
+    );
+
+    // (5) **今日の欠陥の直撃**: 極上の渡り辺を除き、経度幅 180 を超える辺が無い。
+    //     素通し出力では閉じ辺 (170,−72)→(−150,−75) が 320 になる。
+    let span = max_non_polar_lon_span(&r0);
+    assert!(
+        span <= 180.0 + EPS,
+        "極以外に経度幅 >180 の辺がある（地球を逆走する偽の辺）: max={span}, ring={r0:?}"
+    );
+
+    // (6) 捏造なし: 全頂点は「入力頂点」「(±180, lat_c)」「(±180, −90)」のいずれか。
+    let allowed = [
+        (-150.0, -75.0),
+        (-60.0, -78.0),
+        (30.0, -75.0),
+        (120.0, -78.0),
+        (170.0, -72.0),
+        (180.0, lat_c),
+        (-180.0, lat_c),
+        (180.0, -90.0),
+        (-180.0, -90.0),
+    ];
+    assert_all_vertices_allowed(&r0, &allowed, "南極で閉じた外環");
+}
+
+/// **ISSUE-051 §確定仕様 2・3（北極で閉じる＝極引数が効いている）**: 同一 fixture を
+/// `Some(North)` で閉じると、弧は子午線を `lat = +90` まで**上り**、別の（同じく妥当な）多角形になる。
+///
+/// 期待（開表現・CCW）:
+/// `[(−180,−72.75),(−150,−75),(−60,−78),(30,−75),(120,−78),(170,−72),(180,−72.75),(180,90),(−180,90)]`
+/// 内部は**北側**（帯より北＝北極を含む側）なので、東進のまま辿る順が CCW（shoelace **+59745**・手計算）。
+/// 南極版（+5055・lat −90）と**頂点も面積も異なる**ので、極引数を無視する実装は両方を通せない。
+///
+/// 殺す実装: 極引数を無視して常に南（または常に北）で閉じる・`EnclosedPole` の分岐を取り違える・
+///   `lat = ±90` を `∓90` にする・南北で同じ Value を返す。
+#[test]
+fn geojson_with_pole_north_differs_from_south_for_same_ring() {
+    let lat_c = lat_c_east(170.0, -72.0, -150.0, -75.0);
+    let poly = GeoPolygon::new(vec![pole_ring_one_crossing()]);
+    let g_north = poly.geojson_geometry_with_pole(Some(EnclosedPole::North));
+    let g_south = poly.geojson_geometry_with_pole(Some(EnclosedPole::South));
+
+    // 極引数が出力を変える（無視する実装は必ず落ちる）。
+    assert_ne!(
+        g_north, g_south,
+        "North と South で出力が同一＝極引数が無視されている"
+    );
+
+    assert_eq!(
+        g_north["type"],
+        Value::String("Polygon".to_string()),
+        "断片 1 枚 → Polygon"
+    );
+    let rings = g_north["coordinates"].as_array().expect("リング配列");
+    assert_eq!(rings.len(), 1, "外環 1 本のみ, got {}", rings.len());
+    let r0 = ring_coords(&rings[0]);
+
+    assert_eq!(r0.first(), r0.last(), "閉リング");
+    assert_eq!(
+        r0.len(),
+        10,
+        "入力 5 + 交点 2 + 極 2 = 9 点 + 先頭複製, got {}: {r0:?}",
+        r0.len()
+    );
+    let expected = [
+        (-180.0, lat_c),
+        (-150.0, -75.0),
+        (-60.0, -78.0),
+        (30.0, -75.0),
+        (120.0, -78.0),
+        (170.0, -72.0),
+        (180.0, lat_c),
+        (180.0, 90.0),
+        (-180.0, 90.0),
+    ];
+    assert_ring_coords_eq(&r0, &expected, "北極で閉じた外環");
+    assert!(
+        close(signed_area(&r0), 59745.0),
+        "外環は CCW・面積 +59745（内部＝北側）, got {}",
+        signed_area(&r0)
+    );
+    assert!(
+        r0.iter()
+            .any(|&(lon, lat)| close(lon, 180.0) && close(lat, 90.0)),
+        "(+180, +90) の極頂点が無い, got {r0:?}"
+    );
+    assert!(
+        r0.iter()
+            .any(|&(lon, lat)| close(lon, -180.0) && close(lat, 90.0)),
+        "(−180, +90) の極頂点が無い, got {r0:?}"
+    );
+    assert!(
+        !r0.iter().any(|&(_, lat)| close(lat, -90.0)),
+        "北極で閉じたのに lat=−90 の頂点がある, got {r0:?}"
+    );
+    let span = max_non_polar_lon_span(&r0);
+    assert!(
+        span <= 180.0 + EPS,
+        "極以外に経度幅 >180 の辺がある: max={span}, ring={r0:?}"
+    );
+    let allowed = [
+        (-150.0, -75.0),
+        (-60.0, -78.0),
+        (30.0, -75.0),
+        (120.0, -78.0),
+        (170.0, -72.0),
+        (180.0, lat_c),
+        (-180.0, lat_c),
+        (180.0, 90.0),
+        (-180.0, 90.0),
+    ];
+    assert_all_vertices_allowed(&r0, &allowed, "北極で閉じた外環");
+}
+
+/// **ISSUE-051 §確定仕様 1・3（跨ぎ 3 回でも極で閉じる）**: 「奇数」一般で発火し、
+/// **極で閉じるのは対を成さなかった 1 本の弧だけ**（対を成す弧は §11.8(b) どおり子午線で閉じる）。
+///
+/// 入力（(lon,lat)・8 頂点）:
+/// `(−150,−70),(−60,−76),(30,−72),(120,−78),(176,−60),(−176,−64),(172,−64),(150,−70)`
+/// Δlon は順に `+90,+90,+90,+56,−352(東進①),+348(西進②),−22,−300(東進③・閉じ辺)`
+/// ＝**跨ぎ 3 回（奇数）**、±360 補正後の総変位 `+360`（巻き数 +1 ＝極を囲む）。
+/// 交点緯度: ① t=(180−176)/(360−352)=4/8=**0.5** → `−60+0.5·(−4) = −62`（真の内分点）、
+/// ②（水平辺）**−64**、③（水平辺）**−70**。
+///
+/// 弧は 3 本: α `(−180,−70)…(180,−62)`（両端が**逆**の子午線）、
+/// β `(−180,−62)→(−176,−64)→(−180,−64)`（両端 −180）、
+/// γ `(180,−64)→(172,−64)→(150,−70)→(180,−70)`（両端 +180）。
+///
+/// **結線規則（第一原理・本テストが縛る核心）**: 子午線上の結線は、その子午線が**領域の内部**を
+/// 通る区間でなければならない。「弧の両端が同じ子午線にあるなら自己閉環する」は**誤り**で、
+/// 内部区間はパリティで決まる。極を囲むので `lat = −90` は内部、境界は子午線 `±180` を
+/// **−70・−64・−62** の 3 点で横切る ⇒ 極から北へ辿ると内部/外部が交互に入れ替わり、
+/// 内部区間は **[−90,−70] と [−64,−62]**（[−70,−64] は**外部**）。したがって
+/// - `+180`: 区間 [−64,−62] が α の終点(−62) と γ の始点(−64) を結ぶ。区間 [−90,−70] が
+///   γ の終点(−70) を極へ落とす。
+/// - `−180`: 区間 [−64,−62] が β を自己閉環させる。区間 [−90,−70] が α の始点(−70) を極へ落とす。
+///
+/// ⇒ **α+γ が 1 本の鎖に繋がり、その両端（±180 の −70）が極で閉じる。断片は 2 枚**。
+/// 統一形で言えば「各子午線上の端点を緯度順に並べ、極を囲む場合は**極側の端に極頂点を挿入**してから
+/// 先頭から 2 つずつ対にする」＝偶数跨ぎの既存規則（§11.8(b)・`..._four_crossings_pairs_by_latitude`
+/// の 3↔12・25↔38）のそのままの拡張である。
+///
+/// γ を「両端が +180 だから」単独で閉じる実装は、**外部区間 [−70,−64] を内部として取り込み**
+/// （偽の面積 114）、**内部区間 [−64,−62] の取り込みを落とす**ため、下の面積保存オラクル
+/// （総面積 **6102**）に対して 6330 を返して落ちる。
+///
+/// 期待（開表現・CCW）:
+/// - 大断片（面積 **+6098**）:
+///   `[(−180,−90),(180,−90),(180,−70),(150,−70),(172,−64),(180,−64),(180,−62),(176,−60),(120,−78),(30,−72),(−60,−76),(−150,−70),(−180,−70)]`
+/// - 小断片（面積 **+4**・幅 4 × 高 2 の直角三角形の 2 倍…幅 4・高 2 の三角形は面積 4）:
+///   `[(−180,−64),(−176,−64),(−180,−62)]`
+///
+/// 殺す実装: `crossings == 1` だけを特別扱いして 3 回では素通しする（逆走辺が残る）・
+///   奇数回で**全部の弧**を極で閉じる（β・γ に偽の極頂点が生え面積が爆発する）・
+///   極で閉じる弧の選択を誤る（β を極で閉じて α+γ を落とす＝面積の消失）・
+///   余った弧を捨てる（大断片が消える）・panic する。
+#[test]
+fn geojson_with_pole_three_crossings_closes_only_the_unpaired_arc() {
+    // (lat, lon) で与える。
+    let outer = ring(&[
+        (-70.0, -150.0),
+        (-76.0, -60.0),
+        (-72.0, 30.0),
+        (-78.0, 120.0),
+        (-60.0, 176.0),
+        (-64.0, -176.0),
+        (-64.0, 172.0),
+        (-70.0, 150.0),
+    ]);
+
+    // 前提（独立オラクル）: 跨ぎ 3 回（奇数）・巻き数 +1。
+    let lons = [-150.0_f64, -60.0, 30.0, 120.0, 176.0, -176.0, 172.0, 150.0];
+    let (crossings, winding) = crossings_and_winding(&lons);
+    assert_eq!(crossings, 3, "前提: 跨ぎは 3 回（奇数）, got {crossings}");
+    assert!(close(winding, 360.0), "前提: 巻き数 +1, got {winding}");
+    // 前提: ① の交点緯度は −62（端点 −60・−64 のどちらとも異なる真の内分点）。
+    let lat_c1 = lat_c_east(176.0, -60.0, -176.0, -64.0);
+    assert!(close(lat_c1, -62.0), "前提: ① lat_c = −62, got {lat_c1}");
+
+    // 前提（**面積保存オラクル・座標決定と独立**）: 経度を ±360 で連続化した境界と `lat = −90` の
+    // 間の符号付き面積（台形則・厳密）。極冠の真の面積であり、正しい分解では
+    // **全断片の符号付き面積の和**がこれに一致しなければならない（内部の取りこぼしも外部の
+    // 取り込みも、この 1 つの数値で露見する）。
+    // 連続化した経度列: −150 → −60 → 30 → 120 → 176 → 184(=−176) → 172 → 150 → 210(=−150+360)。
+    let unwrapped = [
+        (-150.0_f64, -70.0_f64),
+        (-60.0, -76.0),
+        (30.0, -72.0),
+        (120.0, -78.0),
+        (176.0, -60.0),
+        (184.0, -64.0),
+        (172.0, -64.0),
+        (150.0, -70.0),
+        (210.0, -70.0),
+    ];
+    let cap_area: f64 = unwrapped
+        .windows(2)
+        .map(|w| ((w[0].1 + w[1].1) / 2.0 + 90.0) * (w[1].0 - w[0].0))
+        .sum();
+    assert!(
+        close(cap_area, 6102.0),
+        "前提: 極冠の真の面積は 6102（台形則・手計算 1530+1440+1350+1176+224−312−506+1200）, got {cap_area}"
+    );
+
+    let g = GeoPolygon::new(vec![outer]).geojson_geometry_with_pole(Some(EnclosedPole::South));
+    assert_eq!(
+        g["type"],
+        Value::String("MultiPolygon".to_string()),
+        "断片 2 枚 → MultiPolygon"
+    );
+    let ps = sorted_polys(&g);
+    assert_eq!(
+        ps.len(),
+        2,
+        "断片は 2 枚（極で閉じた大断片 + 西の小三角）, got {}",
+        ps.len()
+    );
+    // ソートキー =(min lon, min lat): 大(−180,−90) < 小(−180,−64)。
+    let big = &ps[0];
+    let small = &ps[1];
+    assert_eq!(big.len(), 1, "大断片は外環のみ, got {}", big.len());
+    assert_eq!(small.len(), 1, "小断片は外環のみ, got {}", small.len());
+
+    let expected_big = [
+        (-180.0, -90.0),
+        (180.0, -90.0),
+        (180.0, -70.0),
+        (150.0, -70.0),
+        (172.0, -64.0),
+        (180.0, -64.0),
+        (180.0, lat_c1),
+        (176.0, -60.0),
+        (120.0, -78.0),
+        (30.0, -72.0),
+        (-60.0, -76.0),
+        (-150.0, -70.0),
+        (-180.0, -70.0),
+    ];
+    assert_ring_coords_eq(&big[0], &expected_big, "極で閉じた大断片の外環");
+    assert!(
+        close(signed_area(&big[0]), 6098.0),
+        "大断片は CCW・面積 +6098, got {}",
+        signed_area(&big[0])
+    );
+    assert_ring_coords_eq(
+        &small[0],
+        &[(-180.0, -64.0), (-176.0, -64.0), (-180.0, lat_c1)],
+        "西の小三角（子午線 −180 で自己閉環・極頂点を持たない）",
+    );
+    assert!(
+        close(signed_area(&small[0]), 4.0),
+        "小断片は CCW・面積 +4, got {}",
+        signed_area(&small[0])
+    );
+
+    // 極頂点は大断片にのみ・各子午線に 1 つずつ（閉じ重複を除いて数える）。
+    let big_open = &big[0][..big[0].len() - 1];
+    let polar_big = big_open
+        .iter()
+        .filter(|&&(_, lat)| close(lat, -90.0))
+        .count();
+    assert_eq!(
+        polar_big, 2,
+        "大断片の極頂点は (±180,−90) の 2 つ, got {polar_big}: {:?}",
+        big[0]
+    );
+    assert!(
+        !small[0].iter().any(|&(_, lat)| close(lat.abs(), 90.0)),
+        "対を成した弧の断片に極頂点を生やさない, got {:?}",
+        small[0]
+    );
+
+    // 経度を逆走する辺が無い（両断片とも）。極上の渡り辺（(180,−90)→(−180,−90)・経度幅 360）は
+    // 球面では 1 点なので `max_non_polar_lon_span` が除外する。断片が何枚になっても、
+    // この除外は「両端が |lat|=90」という判定だけに依るので安全（対を成した断片は極頂点を持たない）。
+    for (i, p) in ps.iter().enumerate() {
+        let span = max_non_polar_lon_span(&p[0]);
+        assert!(
+            span <= 180.0 + EPS,
+            "断片{i} に経度幅 >180 の辺がある: max={span}, ring={:?}",
+            p[0]
+        );
+    }
+
+    // **面積保存**: 全断片（全リング）の符号付き面積の和 = 極冠の真の面積 6102。
+    // γ を単独で閉じる誤った分解は 6212 + 114 + 4 = 6330 になり、ここで落ちる。
+    let total: f64 = ps
+        .iter()
+        .flat_map(|p| p.iter())
+        .map(|r| signed_area(r))
+        .sum();
+    assert!(
+        close(total, cap_area),
+        "断片の総面積が極冠の真の面積と一致しない（外部の取り込み／内部の取りこぼし）: got {total}, expected {cap_area}"
+    );
+
+    // 捏造なし: 全頂点は「入力頂点」「(±180, lat_c)」「(±180, −90)」のいずれか。
+    let allowed = [
+        (-150.0, -70.0),
+        (-60.0, -76.0),
+        (30.0, -72.0),
+        (120.0, -78.0),
+        (176.0, -60.0),
+        (-176.0, -64.0),
+        (172.0, -64.0),
+        (150.0, -70.0),
+        (180.0, lat_c1),
+        (-180.0, lat_c1),
+        (180.0, -64.0),
+        (-180.0, -64.0),
+        (180.0, -70.0),
+        (-180.0, -70.0),
+        (180.0, -90.0),
+        (-180.0, -90.0),
+    ];
+    for (i, p) in ps.iter().enumerate() {
+        for r in p {
+            assert_all_vertices_allowed(r, &allowed, &format!("断片{i}"));
+        }
+    }
+}
+
+/// **ISSUE-051 §確定仕様 2（`None` は現状維持）**: 極を決められない呼び出し側のために、
+/// `None` は (3g) §11.8(d) の素通し（分割せず原座標の単一 Polygon）を**そのまま**返す。
+/// 併せて `geojson_geometry()` ≡ `geojson_geometry_with_pole(None)` を Value の厳密比較で縛る。
+///
+/// 期待は既存テスト `geo_polygon_antimeridian_pole_enclosing_odd_crossing_is_not_split` と同一
+/// （入力 5 点 + 先頭複製 = 6 点・原座標・shoelace +885・±180 頂点なし）。
+///
+/// 殺す実装: `None` でも勝手にどちらかの極で閉じる（極頂点が生える・面積が変わる）・
+///   `None` で panic / 空を返す・`geojson_geometry()` を別経路にして両者を食い違わせる。
+#[test]
+fn geojson_with_pole_none_reproduces_todays_unsplit_output() {
+    let poly = GeoPolygon::new(vec![pole_ring_one_crossing()]);
+    let g_none = poly.geojson_geometry_with_pole(None);
+    let g_legacy = poly.geojson_geometry();
+    assert_eq!(
+        g_none, g_legacy,
+        "geojson_geometry() は geojson_geometry_with_pole(None) と同一でなければならない"
+    );
+
+    assert_eq!(
+        g_none["type"],
+        Value::String("Polygon".to_string()),
+        "None は素通し → Polygon"
+    );
+    let rings = g_none["coordinates"].as_array().expect("リング配列");
+    assert_eq!(rings.len(), 1, "リング 1 本, got {}", rings.len());
+    let r0 = ring_coords(&rings[0]);
+    assert_eq!(
+        r0.len(),
+        6,
+        "入力 5 点 + 先頭複製 = 6 点（極頂点を生やさない）, got {}: {r0:?}",
+        r0.len()
+    );
+    assert_ring_coords_eq(
+        &r0,
+        &[
+            (-150.0, -75.0),
+            (-60.0, -78.0),
+            (30.0, -75.0),
+            (120.0, -78.0),
+            (170.0, -72.0),
+        ],
+        "None は原座標のまま素通し",
+    );
+    assert!(
+        !r0.iter()
+            .any(|&(lon, lat)| close(lon.abs(), 180.0) || close(lat.abs(), 90.0)),
+        "None では ±180 / ±90 の頂点を 1 つも作らない, got {r0:?}"
+    );
+    assert!(
+        close(signed_area(&r0), 885.0),
+        "面積は入力どおり +885（捏造も消失もなし）, got {}",
+        signed_area(&r0)
+    );
+}
+
+/// **ISSUE-051 §確定仕様 4（偶数跨ぎは極引数に影響されない）**: 跨ぎ **2 回**のリングでは
+/// `Some(North)` / `Some(South)` / `None` / 既存 `geojson_geometry()` の 4 出力が**完全に同一**。
+/// 極のロジックが**奇数跨ぎでしか発火しない**ことを縛る。
+///
+/// 入力は既存テスト `geo_polygon_antimeridian_east_crossing_splits_into_two_polygons` と同じ矩形
+/// `(165,10),(−172,10),(−172,40),(165,40)`（東進・跨ぎ 2 回・巻き数 0）。
+/// 同一性に加えて具体構造（MultiPolygon 2 枚・東西断片の座標と面積 +450 / +240・
+/// **±90 の頂点が 1 つも無い**）も縛り、「4 つとも同じように壊れる」変異を殺す。
+///
+/// 殺す実装: 極引数を偶数跨ぎにも適用して極頂点を生やす／断片を結合する・
+///   極判定の偶奇を取り違える（偶数回を「極を囲む」と見る）・引数の有無で分割経路を変える。
+#[test]
+fn geojson_with_pole_even_crossing_ring_is_unaffected_by_pole_argument() {
+    let lons = [165.0_f64, -172.0, -172.0, 165.0];
+    let (crossings, winding) = crossings_and_winding(&lons);
+    assert_eq!(crossings, 2, "前提: 跨ぎは 2 回（偶数）, got {crossings}");
+    assert!(
+        close(winding, 0.0),
+        "前提: 巻き数 0（極を囲まない）, got {winding}"
+    );
+
+    let poly = GeoPolygon::new(vec![ring(&[
+        (10.0, 165.0),
+        (10.0, -172.0),
+        (40.0, -172.0),
+        (40.0, 165.0),
+    ])]);
+    let g_none = poly.geojson_geometry_with_pole(None);
+    let g_north = poly.geojson_geometry_with_pole(Some(EnclosedPole::North));
+    let g_south = poly.geojson_geometry_with_pole(Some(EnclosedPole::South));
+    let g_legacy = poly.geojson_geometry();
+
+    assert_eq!(g_north, g_none, "偶数跨ぎ: North と None で出力が違う");
+    assert_eq!(g_south, g_none, "偶数跨ぎ: South と None で出力が違う");
+    assert_eq!(g_legacy, g_none, "偶数跨ぎ: 既存 API と None で出力が違う");
+
+    // 具体構造（(3g) の期待そのまま）。
+    assert_eq!(
+        g_none["type"],
+        Value::String("MultiPolygon".to_string()),
+        "偶数跨ぎ → MultiPolygon（従来どおり分割）"
+    );
+    let ps = sorted_polys(&g_none);
+    assert_eq!(ps.len(), 2, "断片は 2 枚, got {}", ps.len());
+    let west = &ps[0];
+    let east = &ps[1];
+    assert_ring_coords_eq(
+        &east[0],
+        &[(180.0, 40.0), (165.0, 40.0), (165.0, 10.0), (180.0, 10.0)],
+        "東断片の外環",
+    );
+    assert_ring_coords_eq(
+        &west[0],
+        &[
+            (-180.0, 10.0),
+            (-172.0, 10.0),
+            (-172.0, 40.0),
+            (-180.0, 40.0),
+        ],
+        "西断片の外環",
+    );
+    assert!(
+        close(signed_area(&east[0]), 450.0),
+        "東断片 CCW・面積 +450, got {}",
+        signed_area(&east[0])
+    );
+    assert!(
+        close(signed_area(&west[0]), 240.0),
+        "西断片 CCW・面積 +240, got {}",
+        signed_area(&west[0])
+    );
+    for (i, p) in ps.iter().enumerate() {
+        assert!(
+            !p[0].iter().any(|&(_, lat)| close(lat.abs(), 90.0)),
+            "偶数跨ぎの断片{i} に極頂点を生やさない, got {:?}",
+            p[0]
+        );
+    }
+}
+
+/// **ISSUE-051 §確定仕様 4（非跨ぎも極引数に影響されない）**: 跨ぎ **0 回**のリングでは
+/// 4 出力（None / North / South / 既存 API）が完全に同一で、`type="Polygon"`・原座標・
+/// **±180 も ±90 も現れない**。
+///
+/// 入力は既存テストと同じ `(170,5),(179,8),(174,21)`（+180 に近いが跨がない・CCW）。
+///
+/// 殺す実装: 極引数があれば無条件に極で閉じる・跨ぎ 0 を「奇数」と誤判定する・
+///   極引数の有無で環向き正規化の経路を変える。
+#[test]
+fn geojson_with_pole_non_crossing_ring_is_unaffected_by_pole_argument() {
+    let lons = [170.0_f64, 179.0, 174.0];
+    let (crossings, winding) = crossings_and_winding(&lons);
+    assert_eq!(crossings, 0, "前提: 跨ぎは 0 回, got {crossings}");
+    assert!(close(winding, 0.0), "前提: 巻き数 0, got {winding}");
+
+    let poly = GeoPolygon::new(vec![ring(&[(5.0, 170.0), (8.0, 179.0), (21.0, 174.0)])]);
+    let g_none = poly.geojson_geometry_with_pole(None);
+    let g_north = poly.geojson_geometry_with_pole(Some(EnclosedPole::North));
+    let g_south = poly.geojson_geometry_with_pole(Some(EnclosedPole::South));
+    let g_legacy = poly.geojson_geometry();
+
+    assert_eq!(g_north, g_none, "非跨ぎ: North と None で出力が違う");
+    assert_eq!(g_south, g_none, "非跨ぎ: South と None で出力が違う");
+    assert_eq!(g_legacy, g_none, "非跨ぎ: 既存 API と None で出力が違う");
+
+    assert_eq!(
+        g_none["type"],
+        Value::String("Polygon".to_string()),
+        "非跨ぎは Polygon のまま"
+    );
+    let rings = g_none["coordinates"].as_array().expect("リング配列");
+    assert_eq!(rings.len(), 1, "リング 1 本, got {}", rings.len());
+    let r0 = ring_coords(&rings[0]);
+    assert_ring_coords_eq(
+        &r0,
+        &[(170.0, 5.0), (179.0, 8.0), (174.0, 21.0)],
+        "非跨ぎリング（原座標・CCW のまま）",
+    );
+    assert!(
+        !r0.iter()
+            .any(|&(lon, lat)| close(lon.abs(), 180.0) || close(lat.abs(), 90.0)),
+        "±180 / ±90 の頂点を作らない, got {r0:?}"
+    );
+}
+
+/// **ISSUE-051 §確定仕様 3（退化: 交点緯度が既に極上）**: 交点緯度がちょうど `−90` になる
+/// 極を囲むリングでは、極で閉じるために挿入すべき点 `(±180,−90)` が**補間交点そのもの**と一致し、
+/// 「子午線を極まで辿る」区間が**長さ 0** になる。
+///
+/// 入力（(lon,lat)）: `(−150,−90),(−60,−78),(30,−75),(120,−78),(170,−90)`。
+/// 閉じ辺 (170,−90)→(−150,−90) は `Δlon = −320` ＝東進跨ぎ **1 回（奇数）**・巻き数 +1。
+/// 水平辺なので `lat_c = −90` ちょうど。`EastLongitude` の正規化は緯度に触れないので
+/// `lat = ±90` の入力頂点は**構成可能**＝この退化は到達しうる（構成不能ではない）。
+///
+/// 仕様は重複頂点の除去を定めていないため**頂点数は縛らない**（`(±180,−90)` が 1 つでも
+/// 2 つ連続でも可）。代わりに退化しても壊れない性質を縛る:
+/// (a) panic せず断片 1 枚、(b) 閉リング、(c) 極以外に経度幅 >180 の辺が無い、
+/// (d) 全頂点が「入力頂点 ∪ (±180,−90)」に属する（捏造なし）、(e) 両子午線の極頂点が存在する、
+/// (f) 面積は **+3270**（重複頂点は面積に寄与しないので除去の有無に依らず一意・CCW）。
+///
+/// 殺す実装: 退化を検出して素通しに落とす（逆走辺 320 が残る）・長さ 0 の子午線区間で
+///   0 除算 / unwrap して panic する・極頂点を捏造経度で足す・向きを CW のまま出す。
+#[test]
+fn geojson_with_pole_degenerate_crossing_at_pole_latitude() {
+    let outer = ring(&[
+        (-90.0, -150.0),
+        (-78.0, -60.0),
+        (-75.0, 30.0),
+        (-78.0, 120.0),
+        (-90.0, 170.0),
+    ]);
+    // 前提: 跨ぎ 1 回（奇数）・巻き数 +1・交点緯度ちょうど −90。
+    let lons = [-150.0_f64, -60.0, 30.0, 120.0, 170.0];
+    let (crossings, winding) = crossings_and_winding(&lons);
+    assert_eq!(crossings, 1, "前提: 跨ぎ 1 回（奇数）, got {crossings}");
+    assert!(close(winding, 360.0), "前提: 巻き数 +1, got {winding}");
+    let lat_c = lat_c_east(170.0, -90.0, -150.0, -90.0);
+    assert!(
+        close(lat_c, -90.0),
+        "前提: 交点緯度は極ちょうど, got {lat_c}"
+    );
+
+    let g = GeoPolygon::new(vec![outer]).geojson_geometry_with_pole(Some(EnclosedPole::South));
+
+    // (a) panic せず Polygon（断片 1 枚）。
+    assert_eq!(
+        g["type"],
+        Value::String("Polygon".to_string()),
+        "断片 1 枚 → Polygon"
+    );
+    let rings = g["coordinates"].as_array().expect("リング配列");
+    assert_eq!(rings.len(), 1, "リング 1 本, got {}", rings.len());
+    let r0 = ring_coords(&rings[0]);
+
+    // (b) 閉リング。
+    assert_eq!(r0.first(), r0.last(), "閉リング（先頭==末尾）");
+
+    // (c) 極以外に逆走辺が無い。
+    let span = max_non_polar_lon_span(&r0);
+    assert!(
+        span <= 180.0 + EPS,
+        "極以外に経度幅 >180 の辺がある（退化で素通しに落ちた）: max={span}, ring={r0:?}"
+    );
+
+    // (d) 捏造なし。
+    let allowed = [
+        (-150.0, -90.0),
+        (-60.0, -78.0),
+        (30.0, -75.0),
+        (120.0, -78.0),
+        (170.0, -90.0),
+        (180.0, -90.0),
+        (-180.0, -90.0),
+    ];
+    assert_all_vertices_allowed(&r0, &allowed, "退化（交点が極上）のリング");
+
+    // (e) 両子午線に極頂点。
+    assert!(
+        r0.iter()
+            .any(|&(lon, lat)| close(lon, 180.0) && close(lat, -90.0)),
+        "(+180,−90) が無い, got {r0:?}"
+    );
+    assert!(
+        r0.iter()
+            .any(|&(lon, lat)| close(lon, -180.0) && close(lat, -90.0)),
+        "(−180,−90) が無い, got {r0:?}"
+    );
+
+    // (f) 面積 +3270（CCW・重複頂点の有無に依らず一意）。
+    assert!(
+        close(signed_area(&r0), 3270.0),
+        "CCW・面積 +3270（重複頂点は面積に寄与しない）, got {}",
+        signed_area(&r0)
+    );
 }

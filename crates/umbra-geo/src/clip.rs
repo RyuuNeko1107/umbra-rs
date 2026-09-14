@@ -31,7 +31,7 @@
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
 
-use crate::geometry::{GeoPoint, GeoPolygon};
+use crate::geometry::{EnclosedPole, GeoPoint, GeoPolygon};
 
 /// 端点量子化グリッド \[度\]（≈0.1 mm）。環再結合の端点一致を整数比較で厳密にする。
 const SNAP: f64 = 1.0e-9;
@@ -521,20 +521,20 @@ const ANTIMERIDIAN_DELTA: f64 = 180.0;
 /// `lat_c = lat1 + t·(lat2−lat1)`）、弧を子午線上で結んで閉じる。結線の向きは**リングの実際の向きが
 /// 内部を左に保つ**ように取る（実 CCW なら東側は北向き・西側は南向き。実 CW なら反転）。出力の環向き
 /// 正規化は**呼び出し側が分割の後に**行う（§11.8(c)）。点を捏造しない（子午線上の頂点は全て補間点＝境界上）。
-pub(crate) fn split_ring_at_antimeridian(ring: &[P]) -> Vec<Vec<P>> {
+pub(crate) fn split_ring_at_antimeridian(ring: &[P], pole: Option<EnclosedPole>) -> Vec<Vec<P>> {
     if ring.len() < 3 {
         return vec![ring.to_vec()];
     }
-    // 極を囲むリングは分割しない（§11.8(d)）。閉リングの跨ぎ回数は経度の巻き数に等しく、**奇数回＝経度が
-    // 一周する＝極を囲む**。このとき弧は対を成さず子午線上で閉じられないので、**元のリングをそのまま返す**
-    // （面積を失わず・捏造もしない）。偶数回なら通常の跨ぎとして分割する。
-    if antimeridian_crossings(ring) % 2 == 1 {
+    // 極を囲むリング（§11.8(d) / ISSUE-051）。閉リングの跨ぎ回数は経度の巻き数に等しく、
+    // **奇数回＝経度が一周する＝極を囲む**。このとき弧は対を成さず子午線だけでは閉じられない。
+    // `pole` が与えられていれば**その極を通して閉じる**（ISSUE-051）。無ければ従来どおり
+    // **元のリングをそのまま返す**（面積を失わず・捏造もしない）。
+    if antimeridian_crossings(ring) % 2 == 1 && pole.is_none() {
         return vec![ring.to_vec()];
     }
-    // 結線の向きは**リング自身の実際の向き**で決まる（出力の期待向きではない＝正規化は分割の後）。
-    // 跨ぐリングの平面 shoelace は経度が折り返すため意味を持たないので、経度を連続化
-    // （跨ぎごとに ±360 を累積）してから面積の符号を取る。
-    let ccw = signed_area2(&unwrap_longitudes(ring)) > 0.0;
+    // **リングの向きは結線に不要**（ISSUE-051）。子午線の結線はパリティ（極から数えた内外の反転）で
+    // 決まり、リングをどちら回りに辿っていても同じ対応になる。従来はここで経度を連続化して向きを
+    // 求めていたが、パリティ規則への一般化で不要になったので削除した（死コードを残さない）。
     // 1. 跨ぎ位置で弧に切る。閉曲線なので最後の辺（末尾→先頭）も走査する。
     //    弧は `(始点が子午線上か, 点列)` を持ち、最初の弧は途中から始まりうるので最後に連結する。
     let n = ring.len();
@@ -580,76 +580,119 @@ pub(crate) fn split_ring_at_antimeridian(ring: &[P]) -> Vec<Vec<P>> {
         arcs.insert(0, current);
     }
 
-    // 2. 半球ごとに弧を分け、子午線上で結んで閉じる。
-    let mut east: Vec<Vec<P>> = Vec::new();
-    let mut west: Vec<Vec<P>> = Vec::new();
-    for arc in arcs {
-        if arc.len() < 2 {
-            continue;
-        }
-        // 弧の両端は子午線上（±180）。どちらの半球かは端点の経度で決まる。
-        if arc[0][0] >= ANTIMERIDIAN_DELTA {
-            east.push(arc);
-        } else {
-            west.push(arc);
-        }
-    }
-    let arc_count = east.len() + west.len();
-    let mut out = Vec::new();
-    let mut consumed = 0;
-    // 東側（子午線 +180）: 実際の向きが CCW なら北向き（緯度増）。西側（−180）は逆向き。
-    for (arcs, northward) in [(east, ccw), (west, !ccw)] {
-        let (rings, used) = close_arcs_along_meridian(arcs, northward);
-        consumed += used;
-        out.extend(rings);
-    }
-    // **全弧が閉環に使い切られなければ分割を諦め、元のリングをそのまま返す**。弧が対を成さないのは
-    // 入力が自己交差している場合（単純リングなら子午線上の端点は start/end が緯度順に交互に並ぶので
-    // 必ず対になる）で、部分的な結果を返すと**面積を黙って失う**。捏造もしない（§11.8(d) と同じ退避）。
-    if out.is_empty() || consumed != arc_count {
+    // 2. 子午線上の端点を**緯度順に並べて隣どうしを対にする**（§11.8(b)・ISSUE-051 で一般化）。
+    //    どの子午線区間が領域の内部かは**パリティ**で決まる: 極から緯度を上げていくと、境界と交わる
+    //    たびに内外が反転する。極を囲まない領域は `lat=−90` が外部なので下から (1,2),(3,4),… が内部。
+    //    極を囲む領域はその極が内部なので、**極を端点リストの極側に挿入**してから同じ規則で対にする。
+    //    これで偶数跨ぎ（従来）と奇数跨ぎ（極を囲む）が同じ規則で扱える。
+    //
+    //    **「両端が同じ子午線に載る弧は自己閉じ」という規則は誤り**（ISSUE-051 で判明）: 子午線の
+    //    結線が許されるのはその区間が**内部**のときだけで、弧の帳簿ではなくパリティが決める。
+    //    誤った規則は外部の帯を内部として塗り、同時に内部の帯を落とす。
+    // 極が効くのは**奇数跨ぎ（経度が一周する＝極を囲む）ときだけ**。偶数跨ぎでは極の指定は
+    // 結果に影響しない（§確定仕様 4）。
+    let encircles_pole = antimeridian_crossings(ring) % 2 == 1;
+    let pole_lat = pole.filter(|_| encircles_pole).map(|p| match p {
+        EnclosedPole::North => 90.0_f64,
+        EnclosedPole::South => -90.0_f64,
+    });
+    let Some(links) = pair_meridian_endpoints(&arcs, pole_lat) else {
+        return vec![ring.to_vec()];
+    };
+    let Some(out) = walk_arc_cycles(&arcs, &links, pole_lat) else {
+        return vec![ring.to_vec()];
+    };
+    if out.is_empty() {
         vec![ring.to_vec()]
     } else {
         out
     }
 }
 
-/// 子午線上に端点を持つ弧列を、緯度順の結線で閉環にする（§11.8(b) の結線規則）。
+/// 弧の端点の識別子。`(弧の番号, 終端か)`。
+type EndpointId = (usize, bool);
+
+/// 子午線上の端点を緯度順に並べ、隣どうしを対にする（ISSUE-051 §確定仕様 3 の一般化規則）。
 ///
-/// `northward=true` なら弧の終点 `lat_e` から**それより大きい始点のうち最小のもの**へ結ぶ（＝北向き）。
-/// `false` なら**それより小さい始点のうち最大のもの**へ結ぶ（＝南向き）。後継は弧の端点だけで一意に決まる
-/// （自分自身も候補＝1 本で閉じる弧）ので、先に後継表を作ってから巡回を取り出す。対応する始点が無い
-/// （入力が不正）弧は歩行ごと捨てる（捏造しない）。返り値は `(閉環, 閉環に使い切った弧の本数)` で、
-/// 本数が入力弧数に満たなければ呼び出し側が分割そのものを諦める（面積を黙って失わないため）。
-fn close_arcs_along_meridian(arcs: Vec<Vec<P>>, northward: bool) -> (Vec<Vec<P>>, usize) {
-    // 後継表: 終点 lat_e から結線方向に最も近い始点を持つ弧。
-    let successor: Vec<Option<usize>> = arcs
-        .iter()
-        .map(|arc| {
-            let lat_e = arc[arc.len() - 1][1];
-            let mut best: Option<(f64, usize)> = None;
-            for (j, other) in arcs.iter().enumerate() {
-                let lat_s = other[0][1];
-                // 結線方向に進んで到達できる始点のみ候補（同値＝長さ 0 の結線も可）。
-                let ahead = if northward {
-                    lat_s >= lat_e
-                } else {
-                    lat_s <= lat_e
-                };
-                if !ahead {
+/// 極を囲む場合（`pole_lat` が `Some`）は、**その極側の端**に極を表す番兵を挿入してから対にする。
+/// 対にできない（端点数の偶奇が合わない）場合は `None`＝呼び出し側が分割を諦める。
+/// 返り値は端点 → 相方の対応表で、相方が `None` の端点は**極へ接続する**。
+#[allow(clippy::type_complexity)]
+fn pair_meridian_endpoints(
+    arcs: &[Vec<P>],
+    pole_lat: Option<f64>,
+) -> Option<HashMap<EndpointId, Option<EndpointId>>> {
+    let mut links: HashMap<EndpointId, Option<EndpointId>> = HashMap::new();
+    for east_side in [true, false] {
+        // この子午線に載る端点を集める（緯度・識別子）。
+        let mut points: Vec<(f64, EndpointId)> = Vec::new();
+        for (i, arc) in arcs.iter().enumerate() {
+            for is_end in [false, true] {
+                let p = if is_end { arc[arc.len() - 1] } else { arc[0] };
+                if p[0].abs() < ANTIMERIDIAN_DELTA {
                     continue;
                 }
-                let d = (lat_s - lat_e).abs();
-                if best.map_or(true, |(bd, _)| d < bd) {
-                    best = Some((d, j));
+                if (p[0] > 0.0) == east_side {
+                    points.push((p[1], (i, is_end)));
                 }
             }
-            best.map(|(_, j)| j)
-        })
-        .collect();
+        }
+        if points.is_empty() {
+            continue;
+        }
+        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        // 極を囲むなら、極側の端に「極へ抜ける」枠を 1 つ足す（南極なら先頭・北極なら末尾）。
+        let mut slots: Vec<Option<EndpointId>> = points.iter().map(|&(_, id)| Some(id)).collect();
+        match pole_lat {
+            Some(lat) if lat < 0.0 => slots.insert(0, None),
+            Some(_) => slots.push(None),
+            None => {}
+        }
+        if slots.len() % 2 != 0 {
+            return None; // 対にならない（不正入力）。捏造せず諦める。
+        }
+        for pair in slots.chunks(2) {
+            match (pair[0], pair[1]) {
+                (Some(a), Some(b)) => {
+                    links.insert(a, Some(b));
+                    links.insert(b, Some(a));
+                }
+                // 極に接する枠。相方が極であることを `None` で表す。
+                (Some(a), None) | (None, Some(a)) => {
+                    links.insert(a, None);
+                }
+                (None, None) => return None,
+            }
+        }
+    }
+    Some(links)
+}
+
+/// 対応表に従って弧を辿り、閉環を取り出す（ISSUE-051）。
+///
+/// 弧の終点から相方の端点へ渡り、その弧を順方向に辿る。相方が極（`None`）なら**極の 2 頂点**
+/// （`(±180, ±90)`）を挿入して反対側の子午線の極接続端点へ渡る。全弧をちょうど 1 回ずつ使い切れない
+/// 場合は `None`＝分割を諦める（面積を黙って失わない・捏造しない）。
+fn walk_arc_cycles(
+    arcs: &[Vec<P>],
+    links: &HashMap<EndpointId, Option<EndpointId>>,
+    pole_lat: Option<f64>,
+) -> Option<Vec<Vec<P>>> {
+    // 極へ抜ける端点は両子午線に 1 つずつ。互いの相手として繋ぐ。
+    let pole_ends: Vec<EndpointId> = {
+        let mut v: Vec<EndpointId> = links
+            .iter()
+            .filter_map(|(&id, &to)| if to.is_none() { Some(id) } else { None })
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    if pole_lat.is_some() && pole_ends.len() != 2 {
+        return None;
+    }
 
     let mut used = vec![false; arcs.len()];
     let mut rings = Vec::new();
-    let mut consumed = 0usize;
     for start in 0..arcs.len() {
         if used[start] {
             continue;
@@ -657,27 +700,54 @@ fn close_arcs_along_meridian(arcs: Vec<Vec<P>>, northward: bool) -> (Vec<Vec<P>>
         let mut ring: Vec<P> = Vec::new();
         let mut cur = start;
         let mut closed = false;
-        let mut walked = 0usize;
-        loop {
-            used[cur] = true;
-            walked += 1;
-            ring.extend(arcs[cur].iter().copied());
-            match successor[cur] {
-                Some(next) if next == start => {
-                    closed = true;
-                    break;
-                }
-                Some(next) if !used[next] => cur = next,
-                // 後継が無い／既に使われた弧へ戻る＝閉環にならない歩行。捨てる。
-                _ => break,
+        for _ in 0..=arcs.len() {
+            if used[cur] {
+                return None; // 同じ弧を 2 度使う＝対応表が壊れている。
             }
+            used[cur] = true;
+            ring.extend(arcs[cur].iter().copied());
+            // 終点の相方へ渡る。
+            let partner = links.get(&(cur, true)).copied();
+            let next_start = match partner {
+                Some(Some(id)) => id,
+                Some(None) => {
+                    // 極を経由して反対側の子午線の極接続端点へ。
+                    let lat = pole_lat?;
+                    let here = arcs[cur][arcs[cur].len() - 1][0];
+                    let other = *pole_ends.iter().find(|&&id| id != (cur, true))?;
+                    let other_lon = arc_endpoint(arcs, other)[0];
+                    ring.push([here, lat]);
+                    ring.push([other_lon, lat]);
+                    other
+                }
+                None => return None,
+            };
+            // 相方が弧の始点なら順方向に続く。終点なら向きが不整合。
+            if next_start.1 {
+                return None;
+            }
+            if next_start.0 == start {
+                closed = true;
+                break;
+            }
+            cur = next_start.0;
         }
-        if closed && ring.len() >= 3 {
-            consumed += walked;
-            rings.push(ring);
+        if !closed || ring.len() < 3 {
+            return None;
         }
+        rings.push(ring);
     }
-    (rings, consumed)
+    Some(rings)
+}
+
+/// 端点識別子から実際の座標を引く。
+fn arc_endpoint(arcs: &[Vec<P>], id: EndpointId) -> P {
+    let arc = &arcs[id.0];
+    if id.1 {
+        arc[arc.len() - 1]
+    } else {
+        arc[0]
+    }
 }
 
 /// 多角形（外環＋穴・`[経度, 緯度]` の**非閉**列）を反子午線で分割し、GeoJSON 用の多角形列
@@ -687,12 +757,15 @@ fn close_arcs_along_meridian(arcs: Vec<Vec<P>>, northward: bool) -> (Vec<Vec<P>>
 /// (2) 各断片の環向きを正規化（外環由来 CCW・穴由来 CW。**分割の後**に行う＝跨ぐリングの平面 shoelace は
 /// 意味を持たないため）、(3) 穴の断片を、それを含む外環断片のうち**最小面積**のものへ割り当てる
 /// （§11.7 手順 8 と同一規則・含む外環が無ければ捨てる）。多角形は外環の面積降順で返す。
-pub(crate) fn split_polygon_at_antimeridian(rings: &[Vec<P>]) -> Vec<Vec<Vec<P>>> {
+pub(crate) fn split_polygon_at_antimeridian(
+    rings: &[Vec<P>],
+    pole: Option<EnclosedPole>,
+) -> Vec<Vec<Vec<P>>> {
     let Some(outer_ring) = rings.first() else {
         return Vec::new();
     };
     // (1)(2) 外環: 分割して CCW へ正規化。
-    let mut outers: Vec<Vec<P>> = split_ring_at_antimeridian(outer_ring)
+    let mut outers: Vec<Vec<P>> = split_ring_at_antimeridian(outer_ring, pole)
         .into_iter()
         .map(|mut r| {
             if signed_area2(&r) < 0.0 {
@@ -704,7 +777,7 @@ pub(crate) fn split_polygon_at_antimeridian(rings: &[Vec<P>]) -> Vec<Vec<Vec<P>>
     // (1)(2) 穴: 分割して CW へ正規化。
     let holes: Vec<Vec<P>> = rings[1..]
         .iter()
-        .flat_map(|h| split_ring_at_antimeridian(h))
+        .flat_map(|h| split_ring_at_antimeridian(h, None))
         .map(|mut r| {
             if signed_area2(&r) > 0.0 {
                 r.reverse();
@@ -754,27 +827,6 @@ pub(crate) fn split_polygon_at_antimeridian(rings: &[Vec<P>]) -> Vec<Vec<Vec<P>>
         }
     }
     polygons
-}
-
-/// リングの経度を連続化する（反子午線の跨ぎごとに ±360 を累積）。跨ぐリングの向き判定に使う
-/// （折り返したままの経度では shoelace が意味を持たない・§11.8(c)）。緯度は不変。
-fn unwrap_longitudes(ring: &[P]) -> Vec<P> {
-    let mut out = Vec::with_capacity(ring.len());
-    let mut offset = 0.0;
-    let mut prev: Option<f64> = None;
-    for p in ring {
-        if let Some(prev_lon) = prev {
-            let delta = p[0] - prev_lon;
-            if delta < -ANTIMERIDIAN_DELTA {
-                offset += 360.0;
-            } else if delta > ANTIMERIDIAN_DELTA {
-                offset -= 360.0;
-            }
-        }
-        prev = Some(p[0]);
-        out.push([p[0] + offset, p[1]]);
-    }
-    out
 }
 
 /// 閉リングが反子午線を跨ぐ回数（§11.8(b) の跨ぎ判定・末尾→先頭の辺も含む）。

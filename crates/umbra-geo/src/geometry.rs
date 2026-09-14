@@ -119,6 +119,19 @@ impl GeoLine {
     }
 }
 
+/// 部分食域が囲んでいる極（ISSUE-051・§確定仕様 2）。
+///
+/// 経度の巻き数が ±1 のリング（反子午線の跨ぎが**奇数**回）は極を囲むが、**どちらの極かは幾何だけでは
+/// 決まらない**（巻くリングは平面 shoelace が意味を持たない）。領域の定義を持つ側
+/// （`umbra-eclipse`）が判定して渡す。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnclosedPole {
+    /// 北極（`lat = +90`）を含む。
+    North,
+    /// 南極（`lat = −90`）を含む。
+    South,
+}
+
 /// 多角形（部分食域。外周＋穴のリング列）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeoPolygon {
@@ -141,8 +154,19 @@ impl GeoPolygon {
     /// **反子午線（M9 残(3) 3g・§11.8）**: ±180 を跨ぐリングは `MultiPolygon` へ**分割**する
     /// （跨ぎ判定・補間式は [`GeoLine::geojson_geometry`] と同一規約。`|Δlon|=180` ちょうどは跨ぎとしない）。
     /// 跨ぎが無ければ従来どおり単一 `Polygon`（**出力はバイト不変**）。分割後の多角形は外環の面積降順。
-    /// **極を囲む領域は未対応**（経度が単調に一周するため跨ぎ判定で分割できない・§11.8(d)）。
+    /// 極を囲む外環は [`GeoPolygon::geojson_geometry_with_pole`] に極を渡すと閉じられる（ISSUE-051）。
+    /// 本メソッド（極を渡さない）では従来どおり**分割せず元のリングを返す**（§11.8(d)）。
     pub fn geojson_geometry(&self) -> serde_json::Value {
+        self.geojson_geometry_with_pole(None)
+    }
+
+    /// GeoJSON 多角形ジオメトリ。**極を囲む外環を `pole` で閉じる**（ISSUE-051・§確定仕様 3）。
+    ///
+    /// 反子午線の跨ぎが**奇数**回の外環は経度が一周する＝極を囲む。`pole` を与えると、弧の終点から
+    /// 子午線を極まで辿り、極上で反対の子午線へ渡って閉じる（**挿入する頂点は極の 2 点のみ**・
+    /// 他の点は作らない）。`None` なら従来どおり分割せず元のリングを返す。
+    /// **跨がない／偶数跨ぎのリングでは `pole` は結果に影響しない**。
+    pub fn geojson_geometry_with_pole(&self, pole: Option<EnclosedPole>) -> serde_json::Value {
         // [経度, 緯度] の非閉列へ。閉表現で渡された場合は末尾の重複を落とす（分割は非閉列を前提）。
         let open_rings: Vec<Vec<[f64; 2]>> = self
             .rings
@@ -184,7 +208,7 @@ impl GeoPolygon {
         }
 
         // 反子午線分割（§11.8）。
-        let polygons = crate::clip::split_polygon_at_antimeridian(&open_rings);
+        let polygons = crate::clip::split_polygon_at_antimeridian(&open_rings, pole);
         let closed: Vec<Vec<Vec<[f64; 2]>>> = polygons
             .into_iter()
             .map(|rings| rings.into_iter().map(close_ring).collect())
