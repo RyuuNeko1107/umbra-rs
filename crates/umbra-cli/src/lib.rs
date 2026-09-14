@@ -3003,6 +3003,74 @@ mod tests {
         );
     }
 
+    /// 【SLOW】【ISSUE-048 §確定仕様 4・`PathOptions` 構築】`--interval` が **実際に**
+    /// `PathOptions::sample_interval_seconds` として engine へ渡ることを、出力そのもので縛る。
+    /// 同一日食（2024-04-08）を 2 つの間隔で解き、**細かい方が中心線の点数が厳密に多い**ことを
+    /// assert する。点数の絶対値は外部表から取らず、2 回の実行を相互比較するだけ（自己参照）。
+    ///
+    /// 殺す実装: 「要求された `--interval` を捨てて既定値を黙って使う」
+    /// （`PathOptions { .. }` から `sample_interval_seconds` の指定が落ち、構造体更新構文で
+    /// `PathOptions::default()` の 60 s に戻る）。
+    ///
+    /// **間隔の選び方（この選択でなければ変異を殺せない理由）**: 2 値とも
+    /// `PathOptions::default().sample_interval_seconds` と**異なる**値（既定の 2 倍と 6 倍）を選ぶ。
+    /// こうすると、この変異下では 2 回の実行がどちらも既定 60 s で走り、
+    /// 同一入力・同一 options ＝**点数が等しく**なるため、厳密不等号 `fine > coarse` が破れて
+    /// テストが落ちる。正しい実装では 120 s と 360 s で走り、走査点数が 3 倍差になるので通る。
+    /// （どちらか一方を既定値に選ぶと、変異下でも「既定 vs 既定」でなく偶然差が出るか等号になるかが
+    /// 入力依存になり、殺せる保証が無い。）
+    /// 実エンジンを 2 回実走するため SLOW（2 回に限定する）。
+    // SLOW
+    #[test]
+    fn run_path_interval_is_wired_into_path_options_finer_gives_more_points() {
+        /// text 出力の `  中心線: {n} 点 ...` 行から点数 `n` を取り出す（列位置に依存しない）。
+        fn center_point_count(out: &str) -> usize {
+            let line = out
+                .lines()
+                .find(|l| l.contains("中心線"))
+                .unwrap_or_else(|| panic!("出力に「中心線」行が無い: {out}"));
+            let rest = line
+                .split_once("中心線:")
+                .unwrap_or_else(|| panic!("「中心線:」の区切りが無い: {line}"))
+                .1;
+            let token = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or_else(|| panic!("「中心線:」の後に値が無い: {line}"));
+            token.parse::<usize>().unwrap_or_else(|e| {
+                panic!("中心線の点数をパースできない（{token:?}: {e}）: {line}")
+            })
+        }
+
+        let default_interval = PathOptions::default().sample_interval_seconds;
+        let fine = default_interval * 2.0;
+        let coarse = default_interval * 6.0;
+        assert!(
+            fine != default_interval && coarse != default_interval && fine < coarse,
+            "オラクル自己検証: 2 値とも既定 {default_interval} s と異なり fine < coarse \
+             （fine={fine}, coarse={coarse}）"
+        );
+
+        let mut args = path_args("2024-04-08", PathFormatArg::Text);
+        args.interval = fine;
+        let fine_out = run_path(&args).expect("2024-04-08・細かい interval の経路計算は成功する");
+        args.interval = coarse;
+        let coarse_out = run_path(&args).expect("2024-04-08・粗い interval の経路計算は成功する");
+
+        let fine_n = center_point_count(&fine_out);
+        let coarse_n = center_point_count(&coarse_out);
+        assert!(
+            coarse_n > 0,
+            "オラクル自己検証: 粗い方も中心線は存在する（got {coarse_n}）"
+        );
+        assert!(
+            fine_n > coarse_n,
+            "細かい interval（{fine} s）の中心線点数 {fine_n} は粗い interval（{coarse} s）の \
+             {coarse_n} より厳密に多い＝--interval が PathOptions へ配線されている\n\
+             fine:\n{fine_out}\ncoarse:\n{coarse_out}"
+        );
+    }
+
     // ------------------------------------------------------------------
     // 5. サンプル数上限（ISSUE-048 §確定仕様 4 追補・ハング防止）
     // ------------------------------------------------------------------
@@ -3295,5 +3363,413 @@ mod tests {
             }
             other => panic!("expected Err(IntervalTooSmall {{..}}), got {other:?}"),
         }
+    }
+
+    // ==================================================================
+    // 6. text 整形の純関数単体（FAST・合成データのみ／ISSUE-048 §5）
+    // ==================================================================
+    // ## なぜ上の `run_path` テストと重複して見えるか（意図的）
+    // 上節（区分「出力契約」）は同じ §5 契約を **実エンジン経由**で縛るため 1 件あたり数十秒かかり、
+    // `docs/reviews/mutation-cli-path.md` のとおり text 整形系 32 変異の判別力が **未証明**のまま
+    // 残った（完走に 3〜4 時間）。本節は `format_path_text` / `format_limit_line` を
+    // **合成 `SolarEclipse` + `EclipsePath` で直接呼ぶ**（エンジン・探索・日付解決なし＝ミリ秒）。
+    // 役割分担: 上節＝「実データでも契約が成り立つ」、本節＝「整形分岐の全経路を高速に殺す」。
+    // どちらも消さない（上を消すと配線が、下を消すと分岐が無検証になる）。
+    //
+    // ## オラクル戦略
+    // - 値はすべて **相互に異なる非対称値**（点数 5/7/3、環数 2・外環 9・穴 4、samples 6、
+    //   lat≠lon・始点≠終点・符号違い）。取り違え（lat↔lon、始↔終、環数↔頂点数、北↔南）が
+    //   必ず出力差になるよう選ぶ。
+    // - `format_limit_line` は crate 内の私有関数だが、本テストモジュールは同一 crate 内なので
+    //   `super::*` 経由で **直接呼べる**（境界 `n > 0` を単体で縛る）。
+
+    use umbra_eclipse::PathSample;
+    use umbra_geo::{GeoLine, GeoPolygon};
+
+    /// 度の組から折れ線を組む。
+    fn synth_line(points: &[(f64, f64)]) -> GeoLine {
+        GeoLine::new(points.iter().map(|&(la, lo)| geo(la, lo)).collect())
+    }
+
+    /// 度の組の列から環（`Vec<GeoPoint>`）を組む。
+    fn synth_ring(points: &[(f64, f64)]) -> Vec<GeoPoint> {
+        points.iter().map(|&(la, lo)| geo(la, lo)).collect()
+    }
+
+    /// `n` 個のサンプル（内容は整形に使われないので最小・件数だけが契約）。
+    fn synth_samples(n: usize) -> Vec<PathSample> {
+        std::iter::repeat_with(|| PathSample {
+            time_utc: utc(2024, 4, 8, 18, 0, 0.0),
+            center: geo(1.5, -2.75),
+            duration_seconds: 201.0,
+            sun_altitude: Degrees(60.0),
+            path_width: Kilometers(190.0),
+            kind: SolarEclipseKind::Total,
+        })
+        .take(n)
+        .collect()
+    }
+
+    /// 全要素 `None`・samples 空の経路（最大食点だけを持つ骨組み）。
+    fn synth_empty_path() -> EclipsePath {
+        EclipsePath {
+            center_line: None,
+            northern_limit: None,
+            southern_limit: None,
+            partial_limit: None,
+            // lat と lon は絶対値・符号ともに異なる（取り違えが必ず出力差になる）。
+            greatest_point: geo(17.5, -66.25),
+            samples: vec![],
+        }
+    }
+
+    /// 全要素 `Some` かつ非空・各件数が相互に異なる経路。
+    /// 中心線 5 点（始点≠終点）／北限 7 点／南限 3 点／環数 2・外環 9 頂点・穴 4 頂点／samples 6 件。
+    fn synth_full_path() -> EclipsePath {
+        EclipsePath {
+            center_line: Some(synth_line(&[
+                (11.25, -33.5),
+                (12.5, -20.0),
+                (13.75, -10.0),
+                (-5.0, 60.0),
+                (-44.75, 122.25),
+            ])),
+            northern_limit: Some(synth_line(&[
+                (1.0, 2.0),
+                (3.0, 4.0),
+                (5.0, 6.0),
+                (7.0, 8.0),
+                (9.0, 10.0),
+                (11.0, 12.0),
+                (13.0, 14.0),
+            ])),
+            southern_limit: Some(synth_line(&[(-1.0, -2.0), (-3.0, -4.0), (-5.0, -6.0)])),
+            partial_limit: Some(GeoPolygon::new(vec![
+                // 外環 9 頂点（環数 2 とも穴 4 とも異なる＝取り違え検出可能）。
+                synth_ring(&[
+                    (0.0, 0.0),
+                    (10.0, 0.0),
+                    (20.0, 5.0),
+                    (30.0, 10.0),
+                    (35.0, 20.0),
+                    (30.0, 30.0),
+                    (20.0, 35.0),
+                    (10.0, 30.0),
+                    (0.0, 20.0),
+                ]),
+                // 穴 4 頂点。
+                synth_ring(&[(15.0, 15.0), (16.0, 15.0), (16.0, 16.0), (15.0, 16.0)]),
+            ])),
+            greatest_point: geo(17.5, -66.25),
+            samples: synth_samples(6),
+        }
+    }
+
+    /// §5 のラベル表の全ラベルが **過不足なく 1 回ずつ・表の順序で** 出る
+    /// （種別 → 最大食 → 中心線 → 北限 → 南限 → 部分食域 → samples）。
+    /// 殺す変異: いずれかの行を落とす（サイレントドロップ）、行を二重に出す、順序を入れ替える、
+    ///   ラベル文字列を別語に変える。
+    #[test]
+    fn format_path_text_prints_all_spec_labels_once_in_order() {
+        let out = format_path_text(&total_eclipse(), &synth_full_path());
+        let labels = [
+            "種別",
+            "最大食",
+            "中心線",
+            "北限",
+            "南限",
+            "部分食域",
+            "samples",
+        ];
+        let mut previous = 0usize;
+        for label in labels {
+            assert_eq!(
+                out.matches(label).count(),
+                1,
+                "ラベル '{label}' はちょうど 1 回だけ出る: {out}"
+            );
+            let at = out.find(label).expect("ラベルが存在する");
+            assert!(
+                at > previous,
+                "ラベル '{label}' は §5 表の順序（前のラベルより後ろ）に出る: {out}"
+            );
+            previous = at;
+        }
+    }
+
+    /// §5「`None` の要素は行を省略せず『なし』」— `center_line` のみ `None`。
+    /// 他要素は `Some` のまま残すので、「全部なしにする」実装では落ちる。
+    /// 殺す変異: 中心線が `None` のとき行ごと省く、空文字にする、0 点と偽って書く、
+    ///   `None` 判定を他フィールドへ流用する。
+    #[test]
+    fn format_path_text_center_line_none_reads_nashi() {
+        let mut path = synth_full_path();
+        path.center_line = None;
+        let out = format_path_text(&total_eclipse(), &path);
+        assert_eq!(
+            line_containing(&out, "中心線"),
+            "  中心線: なし",
+            "center_line=None は「中心線: なし」の 1 行: {out}"
+        );
+        assert!(
+            !line_containing(&out, "北限").contains("なし"),
+            "他要素（北限）は Some のまま件数を出す: {out}"
+        );
+    }
+
+    /// §5「`None` の要素は行を省略せず『なし』」— `northern_limit` のみ `None`。
+    /// 南限を非空のまま残すので、北限と南限を取り違える実装も落ちる。
+    /// 殺す変異: 北限行の省略、北限に南限の点数を書く、`None` を 0 点として書く。
+    #[test]
+    fn format_path_text_northern_limit_none_reads_nashi() {
+        let mut path = synth_full_path();
+        path.northern_limit = None;
+        let out = format_path_text(&total_eclipse(), &path);
+        assert_eq!(
+            line_containing(&out, "北限"),
+            "  北限: なし",
+            "northern_limit=None は「北限: なし」: {out}"
+        );
+        assert_eq!(
+            line_containing(&out, "南限"),
+            "  南限: 3 点",
+            "南限は Some のまま 3 点（北↔南の取り違え検出）: {out}"
+        );
+    }
+
+    /// §5「`None` の要素は行を省略せず『なし』」— `southern_limit` のみ `None`。
+    /// 北限を非空のまま残すので、南限行に北限の値を流用する実装も落ちる。
+    /// 殺す変異: 南限行の省略、南限に北限の点数を書く、`None` を 0 点として書く。
+    #[test]
+    fn format_path_text_southern_limit_none_reads_nashi() {
+        let mut path = synth_full_path();
+        path.southern_limit = None;
+        let out = format_path_text(&total_eclipse(), &path);
+        assert_eq!(
+            line_containing(&out, "南限"),
+            "  南限: なし",
+            "southern_limit=None は「南限: なし」: {out}"
+        );
+        assert_eq!(
+            line_containing(&out, "北限"),
+            "  北限: 7 点",
+            "北限は Some のまま 7 点（南↔北の取り違え検出）: {out}"
+        );
+    }
+
+    /// §5「`None` の要素は行を省略せず『なし』」— `partial_limit` のみ `None`。
+    /// 殺す変異: 部分食域行の省略、`None` を「0 環 外環 0 頂点」と偽る、`Option` 分岐の反転。
+    #[test]
+    fn format_path_text_partial_limit_none_reads_nashi() {
+        let mut path = synth_full_path();
+        path.partial_limit = None;
+        let out = format_path_text(&total_eclipse(), &path);
+        assert_eq!(
+            line_containing(&out, "部分食域"),
+            "  部分食域: なし",
+            "partial_limit=None は「部分食域: なし」: {out}"
+        );
+        assert!(
+            line_containing(&out, "中心線").contains("5 点"),
+            "他要素（中心線）は Some のまま: {out}"
+        );
+    }
+
+    /// §5「中心線＝点数と始点・終点／北限・南限＝点数／部分食域＝環数と外環頂点数」を
+    /// **相互に異なる件数**（5 / 7 / 3 / 2 環・外環 9）で同時に縛る。
+    /// 殺す変異: `len()` を `len()±1` にする、北限と南限の値を入れ替える、環数と外環頂点数を
+    ///   入れ替える、穴の頂点数（4）を外環として書く、いずれかを定数にする。
+    #[test]
+    fn format_path_text_reports_distinct_counts_for_each_element() {
+        let out = format_path_text(&total_eclipse(), &synth_full_path());
+        assert!(
+            line_containing(&out, "中心線").starts_with("  中心線: 5 点"),
+            "中心線は 5 点: {out}"
+        );
+        assert_eq!(
+            line_containing(&out, "北限"),
+            "  北限: 7 点",
+            "北限は 7 点: {out}"
+        );
+        assert_eq!(
+            line_containing(&out, "南限"),
+            "  南限: 3 点",
+            "南限は 3 点: {out}"
+        );
+        assert_eq!(
+            line_containing(&out, "部分食域"),
+            "  部分食域: 2 環  外環 9 頂点",
+            "部分食域は 2 環・外環 9 頂点（穴の 4 ではない）: {out}"
+        );
+    }
+
+    /// §5「中心線は始点・終点を出す」— 始点 `(11.25, -33.5)`・終点 `(-44.75, 122.25)` は
+    /// 緯度経度も符号も互いに異なるので、**始↔終の転置**と **lat↔lon の転置**の双方が検出される。
+    /// 殺す変異: `points[0]` と `points[len-1]` を入れ替える、`points[1]`/`points[len-2]` を使う、
+    ///   lat と lon を入れ替えて書く、終点を始点で代用する。
+    #[test]
+    fn format_path_text_center_line_prints_first_then_last_point() {
+        let out = format_path_text(&total_eclipse(), &synth_full_path());
+        let line = line_containing(&out, "中心線");
+        assert_eq!(
+            line, "  中心線: 5 点  始 lat 11.2500° lon -33.5000°  終 lat -44.7500° lon 122.2500°",
+            "始点＝先頭要素・終点＝末尾要素を lat, lon の順で出す: {out}"
+        );
+    }
+
+    /// §5・conventions §11「空の成功出力を作らない」— `Some` でも **点列が空**の中心線は
+    /// 「0 点」ではなく「なし」（現行の確定挙動の固定）。
+    /// 殺す変異: 空点列で `points[0]` を触って panic する、`Some(空)` を「0 点」と書く、
+    ///   空判定 `!is_empty()` を落とす。
+    #[test]
+    fn format_path_text_empty_center_line_reads_nashi() {
+        let mut path = synth_full_path();
+        path.center_line = Some(GeoLine::new(vec![]));
+        let out = format_path_text(&total_eclipse(), &path);
+        assert_eq!(
+            line_containing(&out, "中心線"),
+            "  中心線: なし",
+            "空点列の Some も「なし」: {out}"
+        );
+    }
+
+    /// §5・conventions §11 — `Some` でも **点列が空**の北限・南限は「0 点」ではなく「なし」。
+    /// 北限のみ空・南限は非空にして、片側だけ壊す変異も捕まえる。
+    /// 殺す変異: 空点列を「0 点」と書く、`n > 0` の境界を `n >= 0` にする、空判定を落とす。
+    #[test]
+    fn format_path_text_empty_limit_lines_read_nashi() {
+        let mut path = synth_full_path();
+        path.northern_limit = Some(GeoLine::new(vec![]));
+        let out = format_path_text(&total_eclipse(), &path);
+        assert_eq!(
+            line_containing(&out, "北限"),
+            "  北限: なし",
+            "空点列の北限は「なし」: {out}"
+        );
+        assert_eq!(
+            line_containing(&out, "南限"),
+            "  南限: 3 点",
+            "南限は非空のまま 3 点: {out}"
+        );
+
+        let mut path = synth_full_path();
+        path.southern_limit = Some(GeoLine::new(vec![]));
+        let out = format_path_text(&total_eclipse(), &path);
+        assert_eq!(
+            line_containing(&out, "南限"),
+            "  南限: なし",
+            "空点列の南限は「なし」: {out}"
+        );
+        assert_eq!(
+            line_containing(&out, "北限"),
+            "  北限: 7 点",
+            "北限は非空のまま 7 点: {out}"
+        );
+    }
+
+    /// §5・conventions §11 — `Some` でも **環が 1 本も無い**部分食域は「0 環」ではなく「なし」。
+    /// 殺す変異: 空 `rings` で `rings[0]` に触って panic する、「0 環  外環 0 頂点」と書く、
+    ///   `!rings.is_empty()` の判定を落とす／反転する。
+    #[test]
+    fn format_path_text_empty_partial_limit_polygon_reads_nashi() {
+        let mut path = synth_full_path();
+        path.partial_limit = Some(GeoPolygon::new(vec![]));
+        let out = format_path_text(&total_eclipse(), &path);
+        assert_eq!(
+            line_containing(&out, "部分食域"),
+            "  部分食域: なし",
+            "環の無い Some も「なし」: {out}"
+        );
+    }
+
+    /// §5「部分食域＝環数と外環頂点数」— 穴つき多角形（環数 2・外環 9 頂点・穴 4 頂点）で、
+    /// **報告されるのは外環（`rings[0]`）の頂点数**であることを縛る。3 数が相互に異なるので
+    /// どの取り違えも検出できる。
+    /// 殺す変異: `rings[1]`（穴）の頂点数を外環として書く、環数と頂点数を入れ替える、
+    ///   全環の頂点合計（13）を書く、環数を定数 1 にする。
+    #[test]
+    fn format_path_text_partial_limit_reports_rings_and_outer_ring_vertices() {
+        let out = format_path_text(&total_eclipse(), &synth_full_path());
+        let line = line_containing(&out, "部分食域");
+        assert_eq!(
+            line, "  部分食域: 2 環  外環 9 頂点",
+            "環数 2・外環頂点数 9（穴の 4 でも合計 13 でもない）: {out}"
+        );
+    }
+
+    /// §5「`samples` は `None` ではなく 0 件で表現」— 空と 6 件の双方を縛る。
+    /// 殺す変異: samples 行を落とす、件数を定数にする、0 件を「なし」と書く（§5 表は `0`）、
+    ///   `len()±1`。
+    #[test]
+    fn format_path_text_samples_count_includes_zero() {
+        let out = format_path_text(&total_eclipse(), &synth_empty_path());
+        assert_eq!(
+            line_containing(&out, "samples"),
+            "  samples: 0",
+            "空 samples は 0 件と書く（「なし」でも行省略でもない）: {out}"
+        );
+
+        let out = format_path_text(&total_eclipse(), &synth_full_path());
+        assert_eq!(
+            line_containing(&out, "samples"),
+            "  samples: 6",
+            "6 件の samples は 6 と書く: {out}"
+        );
+    }
+
+    /// §5「種別」「最大食＝UTC 時刻と地点」— fixture の最大食 UTC は 2024-04-08 18:17:00.0、
+    /// TT は同日 12:00 + 0.123 日（≒14:57）なので **UTC/TT 取り違えは時刻差として現れる**。
+    /// 地点は lat 17.5 / lon -66.25 と符号も絶対値も異なるので **lat↔lon 転置も検出**される。
+    /// 座標は `SolarEclipse` 側の `greatest.position` ではなく `EclipsePath::greatest_point` から
+    /// 取る契約（fixture 側は lat 25 / lon -104 と別値にしてある）。
+    /// 殺す変異: `time_tt` を印字する、地点の lat と lon を入れ替える、
+    ///   `eclipse.global.greatest.position` を使う、種別行を落とす／固定値にする。
+    #[test]
+    fn format_path_text_prints_kind_and_greatest_time_and_position() {
+        let out = format_path_text(&total_eclipse(), &synth_full_path());
+        assert_eq!(
+            line_containing(&out, "種別"),
+            "  種別: Total",
+            "種別は SolarEclipseKind の表示: {out}"
+        );
+        let line = line_containing(&out, "最大食");
+        assert!(
+            line.contains("2024-04-08 18:17:00.0 UTC"),
+            "最大食は UTC 時刻（TT の 14:57 ではない）: {out}"
+        );
+        assert!(
+            line.contains("lat 17.5000°") && line.contains("lon -66.2500°"),
+            "最大食地点は EclipsePath::greatest_point の lat/lon（転置なし）: {out}"
+        );
+        assert!(
+            !line.contains("25.0000") && !line.contains("-104.0000"),
+            "SolarEclipse 側の greatest.position（25, -104）ではない: {out}"
+        );
+
+        // 種別は fixture 依存（固定文字列でない）ことを別 fixture で確認。
+        let out = format_path_text(&partial_eclipse(), &synth_empty_path());
+        assert_eq!(
+            line_containing(&out, "種別"),
+            "  種別: Partial",
+            "部分食 fixture では Partial: {out}"
+        );
+        assert!(
+            line_containing(&out, "最大食").contains("2025-03-29 10:47:00.0 UTC"),
+            "最大食時刻も fixture 依存: {out}"
+        );
+    }
+
+    /// §5 限界線行の整形単体（私有関数 `format_limit_line` を同一 crate 内から直接呼ぶ）。
+    /// `None` と `Some(0)` はいずれも「なし」、`Some(n>0)` は「n 点」。境界は `n > 0`。
+    /// 殺す変異: `n > 0` を `n >= 0` にする（`Some(0)` が「0 点」になる）、`None` 分岐を消す、
+    ///   ラベルを引数でなく定数にする、改行を落とす。
+    #[test]
+    fn format_limit_line_none_and_zero_are_nashi_positive_is_count() {
+        assert_eq!(format_limit_line("北限", None), "  北限: なし\n");
+        assert_eq!(format_limit_line("南限", Some(0)), "  南限: なし\n");
+        assert_eq!(format_limit_line("北限", Some(1)), "  北限: 1 点\n");
+        assert_eq!(format_limit_line("南限", Some(7)), "  南限: 7 点\n");
+        // ラベルは引数どおり（定数化・入れ替えを撃破）。
+        assert_eq!(format_limit_line("南限", Some(3)), "  南限: 3 点\n");
     }
 }

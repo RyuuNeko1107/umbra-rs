@@ -19,7 +19,8 @@
 
 ## 0. 実在 Issue と宙吊り参照
 
-`docs/issues/` に実在するファイル: **001–049（連番完備・欠番なし）**（計 49 Issue）＋ 本 INDEX。
+`docs/issues/` に実在するファイル: **001–050（連番完備・欠番なし）**（計 50 Issue）＋ 本 INDEX。
+※ **050（`search` の範囲フィルタ）は mutation から派生して発見した欠陥**（候補窓のぶん範囲外の日食が返り、`umbra local`/`path --date D` が前後日の日食を「その日の日食」として返す）。**未対応**。
 ※ **049（`path` のサンプル数上限）は ISSUE-048 実装レビューが発見した公開 API のハング欠陥への対応**（`EclipseEngine::path` が極小 `interval` で返らない）。
 ※ **048（`umbra path` CLI）は M9 完了後に追加**（ISSUE-031 が「別 issue」として先送りした経路サブコマンド・architecture §1 の `umbra-cli: search/local/path/...` を満たす）。
 
