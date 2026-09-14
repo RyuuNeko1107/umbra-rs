@@ -38,7 +38,7 @@ use crate::candidates::new_moon_candidates;
 use crate::config::EngineConfig;
 use crate::conjunction::{solve_conjunction, ConjunctionKind, RootConfig};
 use crate::eclipse_filter::assess_eclipse_possibility;
-use crate::error::EclipseError;
+use crate::error::{EclipseError, MAX_PATH_SAMPLES};
 use crate::global::{classify_global_kind, solve_greatest_eclipse, SolarEclipseKind};
 use crate::global_contacts::solve_global_contact_set;
 use crate::horizontal::{classify_visibility, sun_horizontal, RefractionModel, Visibility};
@@ -49,8 +49,8 @@ use crate::path::{EclipsePath, PathOptions, PathSample};
 use crate::position_angle::contact_position_angle;
 use crate::projection::{project_observer_to_fundamental, ObserverFundamental};
 use crate::results::{
-    GlobalCircumstances, LocalCircumstances, LocalContact, LocalContactSet, SolarEclipse,
-    VisibleSolarEclipse,
+    GlobalCircumstances, GlobalContact, LocalCircumstances, LocalContact, LocalContactSet,
+    SolarEclipse, VisibleSolarEclipse,
 };
 use crate::source::{BesselianSource, InstantaneousEvaluator};
 
@@ -553,6 +553,8 @@ impl<E: Ephemeris, D: DeltaTModel, O: EarthOrientation> EclipseEngine<E, D, O> {
         options: PathOptions,
     ) -> Result<EclipsePath, EclipseError> {
         let greatest_point = eclipse.global.greatest.position;
+        // 走査を始める前にサンプル数の上限を検査する（ISSUE-049・ハング防止）。
+        check_path_sample_limit(eclipse, options)?;
         // 中心食（U1/U4 両方 Some）でのみ中心線・限界線・サンプル列を追跡。片方でも None なら経路なし。
         let (center_line, northern_limit, southern_limit, samples) =
             match (&eclipse.global.central_begin, &eclipse.global.central_end) {
@@ -623,6 +625,66 @@ fn next_visible_is_observable(visibility: Visibility) -> bool {
 /// `RootNotBracketed` 以外の `Err`（`bessel.at`/`tt_to_utc` 等）は伝播。始点・終点を必ず含む（端は span に
 /// クランプ）。`interval_seconds` 非正は始点のみ（無限ループ回避）。前提 `start_tt ≤ end_tt`（U1≤U4・逆順は
 /// 始点のみの無害な縮退）。
+/// `path()` が走査する区間のサンプル数が [`MAX_PATH_SAMPLES`] を超えないか検査する（ISSUE-049）。
+///
+/// **走査を始める前**に呼ぶ。`sample_interval_seconds` が正の有限値でも極端に小さいと、走査回数が
+/// `span / interval` ＝事実上無限になり `path()` が返らないため、**エラーで弾く**（黙ってクランプしない
+/// ＝要求された分解能と異なる結果を無言で返さない・conventions §11）。
+///
+/// 検査対象の span は `path()` が**実際に走査する最長区間**:
+/// 部分食域を組む（P1/P4 両 `Some` かつ `include_limits`）なら P1〜P4、中心食（U1/U4 両 `Some`）なら
+/// U1〜U4、両方なら長い方（P1〜P4 ⊇ U1〜U4）。どちらも該当しなければ走査しないので**検査しない**。
+///
+/// `interval` が**非正**のときは検査しない（「始点のみ」の既定義挙動でハングしない）。**NaN** は
+/// 比較が常に false で素通りするうえ走査側のループ条件も false のままになるため、**明示的に弾く**。
+fn check_path_sample_limit(
+    eclipse: &SolarEclipse,
+    options: PathOptions,
+) -> Result<(), EclipseError> {
+    let interval = options.sample_interval_seconds;
+    if interval.is_nan() {
+        return Err(EclipseError::PathIntervalTooSmall {
+            interval_seconds: interval,
+            estimated_samples: f64::NAN,
+        });
+    }
+    // 非正は「始点のみ」＝走査は 1 回で終わる（既定義挙動・ISSUE-049 非目的）。
+    if interval <= 0.0 {
+        return Ok(());
+    }
+
+    let span_of = |a: &GlobalContact, b: &GlobalContact| -> f64 {
+        b.time_tt.jd2().days_since(a.time_tt.jd2()) * SECONDS_PER_DAY
+    };
+    let central_span = match (&eclipse.global.central_begin, &eclipse.global.central_end) {
+        (Some(u1), Some(u4)) => Some(span_of(u1, u4)),
+        _ => None,
+    };
+    let partial_span = match (&eclipse.global.partial_begin, &eclipse.global.partial_end) {
+        (Some(p1), Some(p4)) if options.include_limits => Some(span_of(p1, p4)),
+        _ => None,
+    };
+    // 走査する区間が無ければ検査しない（サンプルを生まないので上限の意味が無い）。
+    let Some(span) = [central_span, partial_span]
+        .into_iter()
+        .flatten()
+        .fold(None, |acc: Option<f64>, s| {
+            Some(acc.map_or(s, |a| a.max(s)))
+        })
+    else {
+        return Ok(());
+    };
+
+    let estimated_samples = span / interval;
+    if estimated_samples > MAX_PATH_SAMPLES {
+        return Err(EclipseError::PathIntervalTooSmall {
+            interval_seconds: interval,
+            estimated_samples,
+        });
+    }
+    Ok(())
+}
+
 #[allow(clippy::type_complexity)]
 fn trace_central<M: DeltaTModel>(
     bessel: &BesselianPolynomial,

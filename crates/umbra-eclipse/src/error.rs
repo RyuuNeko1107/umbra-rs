@@ -70,7 +70,27 @@ pub enum EclipseError {
     /// 「対応年代外」専用語義の流用はしない（未実装は本 variant）。
     #[error("not implemented")]
     NotImplemented,
+
+    /// 経路サンプル間隔が小さすぎて走査が終わらない（ISSUE-049）。`path()` が走査を**始める前**に返す。
+    ///
+    /// 黙ってクランプせずエラーにする（要求された分解能と異なる結果を無言で返さない・conventions §11）。
+    #[error(
+        "path sample interval {interval_seconds} is too small: it would need about {estimated_samples} samples (limit {MAX_PATH_SAMPLES})"
+    )]
+    PathIntervalTooSmall {
+        /// 要求されたサンプル間隔 \[s\]。
+        interval_seconds: f64,
+        /// 推定サンプル数（走査区間の秒数 ÷ 間隔）。NaN 間隔では NaN。
+        estimated_samples: f64,
+    },
 }
+
+/// `EclipseEngine::path` が許す経路サンプル数の上限（ISSUE-049）。
+///
+/// これを超える要求は [`EclipseError::PathIntervalTooSmall`] で弾く。既定の 60 s 間隔では実日食で
+/// 数百点なので、通常利用を制限しない。上限が無いと、正の有限値でも極端に小さい間隔
+/// （例 `1e-300`）で走査回数が事実上無限になり **`path()` が返らない**。
+pub const MAX_PATH_SAMPLES: f64 = 100_000.0;
 
 #[cfg(test)]
 mod tests {

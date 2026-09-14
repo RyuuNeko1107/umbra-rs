@@ -129,3 +129,12 @@ ISSUE-043（Engine 結線・完了）、ISSUE-045（path 本体・M9 完了）�
 | 純関数単体 | 4 | 境界が厳密 `>`（2 進厳密な span/interval で固定）／1 ULP 上は拒否／`None` span は `Ok`／payload が `interval` と推定値 |
 
 fmt / clippy `-D warnings` / 全テスト通過（Docker 内）。
+
+### mutation（部分実行）
+
+`docs/reviews/mutation-cli-path.md`。**38 変異中 6 件で中断**（`umbra-cli` は実エンジン SLOW テストを含み
+baseline だけで約 236 秒＝完走に 3〜4 時間かかるため。マシン負荷を優先）。実行分は全て caught で、
+**`check_path_sample_count` が生む 5 変異は全て TIMEOUT＝ハング検出で caught**
+（ガードを壊すと `run_path` が実際に返らなくなる＝ガードの存在意義の証明）。
+未実行の 32 件は text 整形系で、**テストは存在するが mutation での判別力は未証明**。
+残作業として CLI テストの FAST/SLOW 分離を記録した。

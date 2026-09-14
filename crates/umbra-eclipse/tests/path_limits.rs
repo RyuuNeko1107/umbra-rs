@@ -43,9 +43,10 @@ use umbra_core::ellipsoid::{observer_geocentric, Ellipsoid};
 use umbra_core::{JulianDate2, Radians, TimeInterval, TtInstant, UtcInstant};
 use umbra_eclipse::{
     project_observer_to_fundamental, standard_engine, AccuracyProfile, BesselFitError,
-    BesselianPolynomial, BesselianSource, CalculationMetadata, EclipseMagnitude,
+    BesselianPolynomial, BesselianSource, CalculationMetadata, EclipseError, EclipseMagnitude,
     GlobalCircumstances, GlobalContact, GreatestEclipse, InstantaneousBesselianElements,
     Obscuration, ObserverFundamental, PathOptions, Polynomial, SolarEclipse, SolarEclipseKind,
+    MAX_PATH_SAMPLES,
 };
 use umbra_ephemeris::bundled_time_data;
 
@@ -2500,4 +2501,510 @@ fn real_2016_eclipse_partial_limit_geojson_splits_at_antimeridian() {
         total_abs_area > 0.0,
         "断片の外環面積の総和が 0（分割で領域を失っている）, got {total_abs_area}"
     );
+}
+
+// ============================================================
+// ISSUE-049: `path()` のサンプル数上限（ハング防止・入力検証）
+//
+// 確定仕様（docs/issues/ISSUE-049-path-sample-limit.md §確定仕様）:
+//  1. 検査は `path()` の冒頭・いかなる走査も始める前。
+//  2. 検査対象 span は `path()` が**実際に走査する区間の最大**:
+//     部分食域を組む（P1/P4 両 Some かつ include_limits）なら P1〜P4、
+//     そうでなく中心食（U1/U4 両 Some）なら U1〜U4、どちらでもないなら**検査しない**。
+//  3. `estimated_samples = span_seconds / interval_seconds` が `MAX_PATH_SAMPLES` を
+//     **厳密に超える**（`>`）とき `Err(EclipseError::PathIntervalTooSmall { .. })`。
+//     `interval_seconds` が**非正**なら検査しない（既定義の「始点のみ」挙動）。NaN は**明示的に弾く**。
+//  4. 黙ったクランプはしない（conventions §11「誤差・制限を隠さない」）＝必ずエラーにする。
+//
+// これらのテストが**返ってくること自体**が「ハングしない」の証拠である（極小 interval で
+// 走査に入ると `span/interval` 回のループになり事実上返らない）。
+//
+// オラクル独立性: span は fixture の**接触時刻（公開 API）から**独立に組み、外部表の値は使わない。
+// ============================================================
+
+/// 2 つの TT 時刻の間隔 [s]（`path()` 実装と同じ公開 API 経路で独立に組む）。
+fn span_seconds(start: TtInstant, end: TtInstant) -> f64 {
+    end.jd2().days_since(start.jd2()) * 86_400.0
+}
+
+/// `x` を ULP 単位で `steps` だけ動かす（正の有限値専用）。境界テストの 1-ULP 構成に使う。
+fn ulp_shift(x: f64, steps: i64) -> f64 {
+    assert!(x > 0.0 && x.is_finite(), "ULP 操作は正の有限値のみ: {x}");
+    f64::from_bits((x.to_bits() as i64 + steps) as u64)
+}
+
+/// `span / interval` が **二進で厳密に** `MAX_PATH_SAMPLES` と一致する `interval` を返す。
+///
+/// `span` は接触時刻の JD 差から来るため 2 の冪に選べない。そこで `span / MAX_PATH_SAMPLES` を
+/// 起点に ULP 近傍を探索し、**厳密一致する候補を見つけたことをアサートで自己検証**してから返す
+/// （丸めに依存した境界テストにしない）。
+///
+/// `span / iv` は `iv` について単調なので、厳密に `MAX_PATH_SAMPLES` へ丸まる `iv` の集合は
+/// **連続した狭い帯**であり、その帯は**空になりうる**。実例: `span = 7200` では `7200 / 0.072` が
+/// `100000` の隣の値へ丸まり、ULP 窓をいくら広げても厳密一致は存在しない（単調ゆえ窓の拡大は無意味）。
+/// よって**呼び側は「帯が空でない span」を持つ fixture を選ぶ責務**を負い、本関数は帯が空だったことを
+/// panic で明示する（境界条件を「ほぼ上限」へ緩めて誤魔化さない）。
+fn interval_hitting_exact_limit(span: f64) -> f64 {
+    // ULP 操作自体の健全性を、依存する前に小さなケースで自己検証する
+    //（符号・指数境界のバグは「候補が見つからない」と同じ見た目になるため）。
+    let probe = 0.054_f64;
+    assert!(
+        ulp_shift(probe, 1) > probe && ulp_shift(probe, -1) < probe,
+        "ulp_shift が単調に隣接値を返していない"
+    );
+    assert_eq!(
+        ulp_shift(ulp_shift(probe, 1), -1),
+        probe,
+        "ulp_shift が往復しない（±1 ULP が隣接表現でない）"
+    );
+    assert_eq!(ulp_shift(probe, 0), probe, "ulp_shift(x, 0) は恒等");
+
+    let base = span / MAX_PATH_SAMPLES;
+    for step in 0..=1024_i64 {
+        for signed in [step, -step] {
+            let iv = ulp_shift(base, signed);
+            if span / iv == MAX_PATH_SAMPLES {
+                return iv;
+            }
+        }
+    }
+    panic!(
+        "span={span} に対し span/interval == MAX_PATH_SAMPLES へ厳密に丸まる interval が \
+         ±1024 ULP 窓に存在しない（この span では上限ちょうどを構成できない。\
+         境界を緩めるのではなく span を選び直すこと）"
+    );
+}
+
+/// 境界テスト（上限ちょうど／1 ULP 超過）専用 fixture。U1〜U4 = **±0.75 h ＝ span 5400 s**。
+///
+/// 既定の `central_eclipse()`（±1 h ＝ span 7200 s）では `7200 / 0.072` が `100000` へ
+/// **厳密に丸まらない**ため「上限ちょうど」を構成できない（`interval_hitting_exact_limit` の doc 参照）。
+/// `span = 5400` なら `5400 / 0.054 == 100000`（厳密）で、その 1 ULP 下の interval は
+/// `100000.00000000001`＝上限をわずかに超える。この 1 ULP 対が `>` と `>=` を分離する。
+/// span は `central_bessel` の fit_interval（epoch±2 h）に十分収まり、影軸 x = 0.05·t は
+/// 全サンプルで地表に当たる。
+fn boundary_central_eclipse() -> SolarEclipse {
+    central_eclipse_with_bessel(central_bessel(), 0.75)
+}
+
+/// FAST / ISSUE-049 §確定仕様 1・3（**主検証: ハングしない**）: 中心食に極小の正 `interval`
+/// （1e-300）を与えると、走査に入らず `EclipseError::PathIntervalTooSmall` を返す。
+/// payload の `interval_seconds` がそのまま往復し、`estimated_samples` が
+/// **U1〜U4 の span / interval**（fixture の接触時刻から独立に計算）と一致する。
+///
+/// **このテストが有限時間で終了すること自体が「もはやハングしない」の証拠**である
+/// （現行実装は span/1e-300 ≈ 7e303 回のループに入り返らない）。
+///
+/// 殺す変異: 検査を入れない（＝ハング／タイムアウト）・走査を始めてから検査する・
+///   interval を上限へ黙ってクランプして `Ok` を返す（§確定仕様 4 違反）・
+///   payload に別の値（クランプ後の interval、丸めた sample 数、span そのもの）を載せる。
+#[test]
+fn tiny_positive_interval_errors_instead_of_hanging() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = central_eclipse(geo(0.0, 0.0));
+    let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+    let span = span_seconds(u1, u4);
+    let interval = 1.0e-300_f64;
+
+    let err = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                sample_interval_seconds: interval,
+                ..PathOptions::default()
+            },
+        )
+        .expect_err("極小 interval では PathIntervalTooSmall を返す（走査せず・ハングしない）");
+
+    match err {
+        EclipseError::PathIntervalTooSmall {
+            interval_seconds,
+            estimated_samples,
+        } => {
+            assert_eq!(
+                interval_seconds, interval,
+                "payload の interval_seconds は要求値をそのまま往復する（クランプしない）"
+            );
+            assert_eq!(
+                estimated_samples,
+                span / interval,
+                "payload の estimated_samples は span(U1〜U4)/interval と一致する"
+            );
+            assert!(
+                estimated_samples > MAX_PATH_SAMPLES,
+                "推定サンプル数 {estimated_samples} は上限 {MAX_PATH_SAMPLES} を超える"
+            );
+        }
+        other => panic!("PathIntervalTooSmall を期待したが {other:?}"),
+    }
+}
+
+/// FAST / ISSUE-049 §確定仕様 3（**厳密 `>` の固定・受理側**）: `span / interval` が
+/// `MAX_PATH_SAMPLES` に**ちょうど等しい**とき `path()` は**成功**する。
+/// interval は ULP 近傍探索で「割り算が二進で厳密に `MAX_PATH_SAMPLES` になる」ものを選び、
+/// 呼び出し**前に**その厳密一致をアサートして自己検証する（丸め依存の境界にしない）。
+///
+/// 殺す変異: 判定を `>=` にする（上限ちょうどを誤って拒否）・上限を 1 小さく取る・
+///   `estimated_samples` を切り上げてから比較する。
+///
+/// 注: 検査を通ると実際に 100 001 点まわりの走査が走るため、`include_limits=false` にして
+/// 中心線 1 本のみに絞る（FAST 域に収める）。fixture は span=5400 s の
+/// `boundary_central_eclipse`（±1 h=7200 s では上限ちょうどが構成できない。helper の doc 参照）。
+#[test]
+fn interval_exactly_at_limit_succeeds() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = boundary_central_eclipse();
+    let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+    let span = span_seconds(u1, u4);
+    let interval = interval_hitting_exact_limit(span);
+
+    // 自己検証: この構成が本当に「上限ちょうど」である（丸めで超えていない）。
+    assert_eq!(
+        span / interval,
+        MAX_PATH_SAMPLES,
+        "境界テストの前提: span/interval が厳密に MAX_PATH_SAMPLES と一致する"
+    );
+
+    let path = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                sample_interval_seconds: interval,
+                include_limits: false,
+                ..PathOptions::default()
+            },
+        )
+        .expect("上限ちょうど（厳密 > なので超えていない）は成功する");
+    assert!(
+        path.center_line.is_some(),
+        "上限ちょうどでも通常どおり中心線を生成する（検査が副作用で経路を消していない）"
+    );
+}
+
+/// FAST / ISSUE-049 §確定仕様 3（**厳密 `>` の固定・拒否側**）: 上限ちょうどの interval から
+/// **1 ULP だけ小さく**すると `span / interval` は `MAX_PATH_SAMPLES` を**わずかに超え**、
+/// `PathIntervalTooSmall` になる。上限ちょうど（受理）との差は 1 ULP しかないので、
+/// この 2 本の対で `>` と `>=` を曖昧さなく分離する。
+///
+/// 殺す変異: 判定を `>=`／`>` 以外の緩い比較にする・上限に余裕（例 +1 サンプル）を足す・
+///   浮動小数の比較前に丸める。
+///
+/// fixture は受理側テストと**同一**の `boundary_central_eclipse`（span=5400 s）。同じ span で
+/// interval だけを 1 ULP 動かすので、2 本の差分は「上限ちょうど」か「わずかに超過」かだけになる。
+#[test]
+fn interval_one_ulp_below_limit_fails() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = boundary_central_eclipse();
+    let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+    let span = span_seconds(u1, u4);
+    let interval = ulp_shift(interval_hitting_exact_limit(span), -1);
+    let estimated = span / interval;
+
+    // 自己検証: 超過はあくまで「ぎりぎり」＝ `>` と `>=` の境目にいる。
+    assert!(
+        estimated > MAX_PATH_SAMPLES && estimated < MAX_PATH_SAMPLES + 1.0,
+        "境界テストの前提: 推定 {estimated} が上限をわずかに（1 サンプル未満）超える"
+    );
+
+    let err = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                sample_interval_seconds: interval,
+                ..PathOptions::default()
+            },
+        )
+        .expect_err("上限をわずかでも超えたら拒否する（厳密 >）");
+    match err {
+        EclipseError::PathIntervalTooSmall {
+            interval_seconds,
+            estimated_samples,
+        } => {
+            assert_eq!(interval_seconds, interval, "interval_seconds が往復する");
+            assert_eq!(
+                estimated_samples, estimated,
+                "estimated_samples が span/interval と一致する"
+            );
+        }
+        other => panic!("PathIntervalTooSmall を期待したが {other:?}"),
+    }
+}
+
+/// FAST / ISSUE-049 §確定仕様 3（**NaN は明示的に弾く**）: `interval = NaN` では
+/// `estimated_samples` も NaN となり素朴な比較は false になるが、NaN のままループに入ると
+/// `t_sec >= span` が永久に false でハングしうる。よって NaN は**明示的に**
+/// `PathIntervalTooSmall` にする。payload は NaN を載せる（NaN は `==` で比較できないため
+/// `is_nan()` で検証）。**このテストが終了すること自体がハングしない証拠**である。
+///
+/// 殺す変異: NaN の明示チェックを落として比較 (`estimated > MAX`) だけに頼る（NaN が素通り→ハング）・
+///   NaN を非正扱いにして `Ok` を返す（ハング）・NaN を 0 や既定値へ黙って置換する（§確定仕様 4 違反）。
+#[test]
+fn nan_interval_errors_instead_of_hanging() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = central_eclipse(geo(0.0, 0.0));
+
+    let err = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                sample_interval_seconds: f64::NAN,
+                ..PathOptions::default()
+            },
+        )
+        .expect_err("NaN interval は PathIntervalTooSmall（ハングしない）");
+
+    match err {
+        EclipseError::PathIntervalTooSmall {
+            interval_seconds,
+            estimated_samples,
+        } => {
+            assert!(
+                interval_seconds.is_nan(),
+                "payload の interval_seconds は要求された NaN をそのまま載せる, got {interval_seconds}"
+            );
+            assert!(
+                estimated_samples.is_nan(),
+                "NaN interval では estimated_samples も NaN（span/NaN）, got {estimated_samples}"
+            );
+        }
+        other => panic!("PathIntervalTooSmall を期待したが {other:?}"),
+    }
+}
+
+/// FAST / ISSUE-049 §非目的・§確定仕様 3（**非正 interval は従来どおり成功**・回帰ガード）:
+/// `interval = 0.0` と負値では検査しない。既定義の「始点のみサンプル」挙動（ループ規約）が
+/// そのまま残り、中心線・北/南限界線・samples はいずれも**ちょうど 1 点**になる。
+/// 非正はハングしないので、これをエラーにするのは**仕様変更（退行）**である。
+///
+/// 殺す変異: 非正 interval をまとめて `PathIntervalTooSmall` にする（`interval <= 0` を
+///   エラー扱い／`!(interval > 0)` で弾く＝NaN 対応のついでに非正まで巻き込む）・
+///   `span/0 = inf > MAX` を検査に通してしまう・負 interval で `span/interval < 0` を絶対値化して弾く。
+#[test]
+fn nonpositive_intervals_still_succeed_with_start_point_only() {
+    let engine = standard_engine(bundled_time_data());
+
+    for interval in [0.0_f64, -60.0_f64] {
+        let eclipse = central_eclipse(geo(0.0, 0.0));
+        let path = engine
+            .path(
+                &eclipse,
+                PathOptions {
+                    sample_interval_seconds: interval,
+                    ..PathOptions::default()
+                },
+            )
+            .unwrap_or_else(|e| {
+                panic!("非正 interval {interval} でも成功する（既定義挙動）: {e:?}")
+            });
+
+        let center = path
+            .center_line
+            .as_ref()
+            .unwrap_or_else(|| panic!("interval={interval}: 中心食なら center_line=Some"));
+        let north = path.northern_limit.as_ref().expect("northern_limit=Some");
+        let south = path.southern_limit.as_ref().expect("southern_limit=Some");
+
+        assert_eq!(
+            center.points.len(),
+            1,
+            "interval={interval}: 非正なら始点のみ＝中心線 1 点"
+        );
+        assert_eq!(
+            north.points.len(),
+            1,
+            "interval={interval}: 非正なら始点のみ＝北限界線 1 点"
+        );
+        assert_eq!(
+            south.points.len(),
+            1,
+            "interval={interval}: 非正なら始点のみ＝南限界線 1 点"
+        );
+        assert_eq!(
+            path.samples.len(),
+            1,
+            "interval={interval}: 非正なら始点のみ＝samples 1 点"
+        );
+    }
+}
+
+/// FAST / ISSUE-049 §受け入れテスト戦略（**上限が通常利用を制限しない**）: 既定
+/// `PathOptions::default()`（60 s）は合成 fixture（中心食・部分食 phase 付き）で成功する。
+/// 推定サンプル数が上限に遠く及ばないことを独立に確認してから `path()` を呼ぶ。
+///
+/// 殺す変異: 上限を桁違いに小さく取る（例 100 / 1000）・比較の左右を入れ替える
+///   （`MAX > estimated` でエラー）・interval と span を取り違えて掛け算/逆数にする。
+#[test]
+fn default_options_are_well_within_the_limit() {
+    let engine = standard_engine(bundled_time_data());
+    let interval = PathOptions::default().sample_interval_seconds;
+
+    // (a) 中心食のみ（span = U1〜U4）。
+    let central = central_eclipse(geo(0.0, 0.0));
+    let u1 = central.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = central.global.central_end.as_ref().unwrap().time_tt;
+    assert!(
+        span_seconds(u1, u4) / interval <= MAX_PATH_SAMPLES,
+        "前提: 既定 interval では U1〜U4 の推定サンプル数が上限以下"
+    );
+    assert!(
+        engine.path(&central, PathOptions::default()).is_ok(),
+        "既定オプションは中心食で成功する（上限が通常利用を妨げない）"
+    );
+
+    // (b) 部分食 phase 付き（span = P1〜P4 ⊇ U1〜U4）。
+    let partial = partial_eclipse_with_bessel(rigorous_bessel(), 1.0, 1.5);
+    let p1 = partial.global.partial_begin.as_ref().unwrap().time_tt;
+    let p4 = partial.global.partial_end.as_ref().unwrap().time_tt;
+    assert!(
+        span_seconds(p1, p4) / interval <= MAX_PATH_SAMPLES,
+        "前提: 既定 interval では P1〜P4 の推定サンプル数が上限以下"
+    );
+    assert!(
+        engine.path(&partial, PathOptions::default()).is_ok(),
+        "既定オプションは部分食域付きでも成功する"
+    );
+}
+
+/// FAST / ISSUE-049 §確定仕様 2（**走査区間が無いなら検査しない**）: 非中心
+/// （central_begin/central_end が None）**かつ** `include_limits=false` では、中心線も部分食域も
+/// 走査しない＝ループが 1 回も回らないので、極小 interval でも**ハングせず**、したがって
+/// エラーにする理由が無い。ここで弾くと「走査しない呼び出しを理由なく拒否する」ことになる
+/// （検査は**実際に走査する区間**に対してのみ意味を持つ、§確定仕様 2「どちらも該当しないなら
+/// 走査しないので検査しない」）。
+///
+/// 殺す変異: span が取れないとき無条件にエラーにする・span を 0 とみなして `interval` の
+///   小ささだけで弾く（走査しない呼び出しまで拒否）・include_limits を無視して P1〜P4 で
+///   検査する（この fixture は P1/P4=Some を持つので誤検査が観測できる）。
+#[test]
+fn no_traced_span_means_no_check_even_for_tiny_interval() {
+    let engine = standard_engine(bundled_time_data());
+    // 非中心（U1/U4 なし）だが P1/P4 は Some。include_limits=false なので部分食域も組まない。
+    let eclipse = noncentral_eclipse(geo(-33.0, 151.0), false, false);
+
+    let path = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                sample_interval_seconds: 1.0e-300,
+                include_limits: false,
+                ..PathOptions::default()
+            },
+        )
+        .expect("走査区間が無いので極小 interval でも検査は発火せず成功する");
+
+    assert!(path.center_line.is_none(), "非中心では center_line=None");
+    assert!(
+        path.northern_limit.is_none() && path.southern_limit.is_none(),
+        "非中心では限界線 None"
+    );
+    assert!(
+        path.partial_limit.is_none(),
+        "include_limits=false では partial_limit=None（＝走査していない）"
+    );
+    assert!(path.samples.is_empty(), "走査していないので samples 空");
+}
+
+/// FAST / ISSUE-049 §確定仕様 2（**span は「実際に走査する最長区間」＝ P1〜P4**）:
+/// 部分食域を組む日食（P1/P4 両 Some・include_limits=true）では、P1〜P4（±1.5 h）で検査する。
+/// interval を「U1〜U4（±1.0 h）なら上限内だが P1〜P4 では上限超過」になるよう
+/// fixture の接触時刻から構成し、その大小関係を呼び出し前にアサートしてから `path()` を呼ぶ。
+/// 結果は `PathIntervalTooSmall`（かつ `estimated_samples` は **P1〜P4** の span で計算した値）。
+///
+/// 殺す変異: 中心食があると U1〜U4 だけで検査する（本ケースを見逃して build_partial_limit が
+///   ハングする＝このテストが返らない）・両区間の**短い方**を取る・min/max を取り違える・
+///   estimated_samples に U1〜U4 の値を載せる。
+#[test]
+fn partial_domain_span_p1_p4_is_used_for_the_check() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = partial_eclipse_with_bessel(rigorous_bessel(), 1.0, 1.5);
+    let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+    let p1 = eclipse.global.partial_begin.as_ref().unwrap().time_tt;
+    let p4 = eclipse.global.partial_end.as_ref().unwrap().time_tt;
+    let umbral_span = span_seconds(u1, u4);
+    let partial_span = span_seconds(p1, p4);
+    assert!(
+        partial_span > umbral_span,
+        "前提: P1〜P4 {partial_span} s は U1〜U4 {umbral_span} s より長い"
+    );
+
+    // U1〜U4 では上限以下・P1〜P4 では上限超過となる interval（両 span の中間）。
+    let interval = (umbral_span + partial_span) / (2.0 * MAX_PATH_SAMPLES);
+    assert!(
+        umbral_span / interval <= MAX_PATH_SAMPLES,
+        "前提: U1〜U4 基準なら上限以下（U1〜U4 で検査する実装は素通りしてしまう）"
+    );
+    assert!(
+        partial_span / interval > MAX_PATH_SAMPLES,
+        "前提: P1〜P4 基準では上限超過"
+    );
+
+    let err = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                sample_interval_seconds: interval,
+                include_limits: true,
+                ..PathOptions::default()
+            },
+        )
+        .expect_err("P1〜P4 を走査するので P1〜P4 基準で拒否する");
+    match err {
+        EclipseError::PathIntervalTooSmall {
+            interval_seconds,
+            estimated_samples,
+        } => {
+            assert_eq!(interval_seconds, interval, "interval_seconds が往復する");
+            assert_eq!(
+                estimated_samples,
+                partial_span / interval,
+                "estimated_samples は P1〜P4（最長の走査区間）から計算する"
+            );
+        }
+        other => panic!("PathIntervalTooSmall を期待したが {other:?}"),
+    }
+}
+
+/// FAST / ISSUE-049 §確定仕様 2（**中心線走査は include_limits に依らない**）:
+/// 中心食では `include_limits=false` でも `trace_central` が U1〜U4 を走査する（center_line は
+/// include_limits に依らず Some＝既存契約）。したがって極小 interval はこの場合も拒否される。
+///
+/// 殺す変異: 検査を `include_limits == true` のときだけ行う（include_limits=false の中心食で
+///   中心線走査がハングする＝このテストが返らない）・include_limits=false なら span を無しにする。
+#[test]
+fn central_span_is_checked_even_when_limits_are_excluded() {
+    let engine = standard_engine(bundled_time_data());
+    let eclipse = central_eclipse(geo(0.0, 0.0));
+    let u1 = eclipse.global.central_begin.as_ref().unwrap().time_tt;
+    let u4 = eclipse.global.central_end.as_ref().unwrap().time_tt;
+    let span = span_seconds(u1, u4);
+    let interval = 1.0e-300_f64;
+
+    let err = engine
+        .path(
+            &eclipse,
+            PathOptions {
+                sample_interval_seconds: interval,
+                include_limits: false,
+                ..PathOptions::default()
+            },
+        )
+        .expect_err("include_limits=false でも中心線は U1〜U4 を走査するので拒否する");
+    match err {
+        EclipseError::PathIntervalTooSmall {
+            interval_seconds,
+            estimated_samples,
+        } => {
+            assert_eq!(interval_seconds, interval, "interval_seconds が往復する");
+            assert_eq!(
+                estimated_samples,
+                span / interval,
+                "estimated_samples は U1〜U4 から計算する"
+            );
+        }
+        other => panic!("PathIntervalTooSmall を期待したが {other:?}"),
+    }
 }

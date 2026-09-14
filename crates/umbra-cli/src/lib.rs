@@ -204,7 +204,7 @@ pub enum CliError {
     InvalidInterval(f64),
     /// `--interval` が小さすぎて経路のサンプル数が上限を超える（`umbra path`・ISSUE-048 §4）。
     #[error(
-        "--interval {interval} is too small: it would need about {estimated_samples:.0} path          samples (limit {MAX_PATH_SAMPLES})"
+        "--interval {interval} is too small: it would need about {estimated_samples:.0} path samples (limit {MAX_PATH_SAMPLES})"
     )]
     IntervalTooSmall {
         /// 指定された間隔 \[s\]。
@@ -214,12 +214,13 @@ pub enum CliError {
     },
 }
 
-/// `umbra path` が許す経路サンプル数の上限（ISSUE-048 §4・実装レビュー指摘の防御）。
+/// `umbra path` が許す経路サンプル数の上限。
 ///
-/// 既定 60 s では実日食で数百点なので、通常利用を制限しない。極端に小さい `--interval`
-/// （例 `1e-300`）は `EclipseEngine::path` の走査回数を事実上無限にし CLI をハングさせるため、
-/// `path` を呼ぶ**前に**弾く。
-pub const MAX_PATH_SAMPLES: f64 = 100_000.0;
+/// **正本は [`umbra_eclipse::MAX_PATH_SAMPLES`]**（ISSUE-049 でエンジン側に入力検証を置いた）。
+/// CLI 側は数値を重複定義せず再輸出するだけにして、上限が二重管理で食い違わないようにする。
+/// CLI の検査は「`path` を呼ぶ前に、より親切なメッセージで早期に弾く」ためのもので、
+/// **安全性の正本はエンジン側**（CLI を経由しない呼び出し元も守られる）。
+pub use umbra_eclipse::MAX_PATH_SAMPLES;
 
 /// `--interval` が経路サンプル数の上限に収まるかを検査する（ISSUE-048 §4）。
 ///
@@ -3014,7 +3015,7 @@ mod tests {
     // 導出する（100_000 という定数以外の数値をハードコードしない）。
 
     /// 本テスト節が縛る上限定数（確定仕様 §4 追補）。
-    const MAX_PATH_SAMPLES_ORACLE: f64 = 100_000.0;
+    use umbra_eclipse::MAX_PATH_SAMPLES as MAX_PATH_SAMPLES_ORACLE;
 
     /// 当日最初の日食を公開 API で取得する（上限検査の span オラクル用）。
     fn day_first_eclipse(date: &str) -> Option<SolarEclipse> {

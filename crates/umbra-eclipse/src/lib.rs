@@ -38,7 +38,7 @@ pub use besselian::{
 pub use calc_metadata::CalculationMetadata;
 pub use config::{AccuracyProfile, EngineConfig, LunarRadiusModel, SolarRadiusModel};
 pub use engine::{standard_engine, EclipseEngine, StandardEngine, UtcRange};
-pub use error::EclipseError;
+pub use error::{EclipseError, MAX_PATH_SAMPLES};
 pub use filter_margins::{
     aggregate_filter_margins, scan_filter_margins, FilterMarginStats, MarginSample,
     ECLIPSE_FILTER_SAFETY_MARGIN_RAD,
