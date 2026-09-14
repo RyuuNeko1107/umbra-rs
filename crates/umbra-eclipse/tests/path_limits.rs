@@ -2344,3 +2344,160 @@ fn real_2024_eclipse_partial_limit_is_plausible() {
         lon_deg(greatest)
     );
 }
+
+// ------------------------------------------------------------
+// SLOW: 実 2016-03-09 皆既 — partial_limit の GeoJSON が反子午線で MultiPolygon に割れる
+// ------------------------------------------------------------
+
+/// `serde_json::Value` の座標ペア `[lon, lat]` を取り出す（型・長さも検証）。
+fn geojson_coord_pair(v: &serde_json::Value) -> (f64, f64) {
+    let arr = v.as_array().expect("座標ペアは配列");
+    assert_eq!(arr.len(), 2, "座標ペアは [lon, lat] の長さ 2, got {arr:?}");
+    (
+        arr[0].as_f64().expect("lon は数値"),
+        arr[1].as_f64().expect("lat は数値"),
+    )
+}
+
+/// (lon, lat) 度平面の符号付き面積（shoelace・独立計算オラクル）。
+fn geojson_ring_signed_area(coords: &[(f64, f64)]) -> f64 {
+    let n = coords.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut s = 0.0;
+    for i in 0..n {
+        let (x1, y1) = coords[i];
+        let (x2, y2) = coords[(i + 1) % n];
+        s += x1 * y2 - x2 * y1;
+    }
+    s / 2.0
+}
+
+/// SLOW / 新規（(3g)・§11.8 反子午線分割の**実データ結線**）: 実エンジンで **2016-03-09 皆既**（インドネシア〜
+/// 太平洋）を search → `path(PathOptions::default())` し、`EclipsePath::to_geojson()` の
+/// `role="partial_limit"` feature の geometry を検証する。
+///
+/// この日食を選ぶ理由（実測・2026-09-14）: 部分食域の外環が反子午線を **2 回**（＝偶数・真の跨ぎ）横切る
+/// ＝ §11.8(b) の前提を満たす**極を囲まない**跨ぎ領域であり、(3g) の分割が実データ経路で発火する唯一の
+/// 検証対象になる（実 2024-04-08 は跨がないので分割経路を通らない）。
+/// 奇数回跨ぎ（＝極を囲む・§11.8(d) 未対応）の 2021-12-04 / 2028-07-22 / 2037-07-13 は対象外。
+///
+/// 縛るもの（**構造性質のみ**・外部座標表は使わない＝本プロジェクトのオラクル ハードコード禁止に従う）:
+/// 1. geometry の `type` が **`"MultiPolygon"`**（跨ぐ領域が地球を一周する不正な単一 Polygon にならない）。
+/// 2. 断片は **2 枚以上**、各多角形は **≥1 リング**。
+/// 3. 全リングが **閉じている**（先頭==末尾）。
+/// 4. 全リングの座標数が **≥4**（閉じた面のある環の最小＝3 頂点 + 先頭複製。退化断片を出さない）。
+/// 5. 全頂点の経度が **[−180, 180]**・緯度が [−90, 90]（0..360 への付け替え・跨ぎ残りの検出）。
+/// 6. 断片の **|符号付き面積| の総和 > 0**（分割で面積を失っていない）。
+/// 7. 各断片の外環（rings[0]）が **CCW**（面積 > 0・RFC 7946 §3.1.6・§11.8(c) の分割後正規化）。
+///
+/// 殺す実装: 跨ぎリングを分割せず単一 Polygon のまま出す（1 破れ）・弧のペアリングに失敗して
+///   片半球の弧を黙って捨てる（2 か 6 破れ）・子午線で閉じずに開いた弧を出す（3 破れ）・
+///   経度を 0..360 へ付け替えて跨ぎを誤魔化す（5 破れ）・分割後に環向き正規化をしない（7 破れ）・
+///   空/2 点の偽断片を生やす（4 破れ）・実データの unpaired 弧で panic する（テスト全体が落ちる）。
+///
+/// de440s 不要（解析暦）。
+#[test]
+fn real_2016_eclipse_partial_limit_geojson_splits_at_antimeridian() {
+    let engine = standard_engine(bundled_time_data());
+    let range = umbra_core::TimeRange {
+        start: utc(2016, 3, 9, 0, 0, 0.0),
+        end: utc(2016, 3, 10, 0, 0, 0.0),
+    };
+    let eclipses = engine
+        .search(range)
+        .expect("2016-03-09 範囲の search は成功する");
+    let eclipse = eclipses
+        .iter()
+        .find(|e| matches!(e.kind, SolarEclipseKind::Total))
+        .expect("2016-03-09 皆既が見つかる");
+
+    let path = engine
+        .path(eclipse, PathOptions::default())
+        .expect("実皆既の path() は成功する");
+    assert!(
+        path.partial_limit.is_some(),
+        "実 2016 は部分食 phase を持つので partial_limit=Some"
+    );
+
+    let json = path.to_geojson().expect("to_geojson は成功する");
+    let fc: serde_json::Value = serde_json::from_str(&json).expect("to_geojson は妥当な JSON");
+    let features = fc["features"].as_array().expect("features は配列");
+    let geom = features
+        .iter()
+        .find(|f| f["properties"]["role"] == serde_json::Value::String("partial_limit".into()))
+        .map(|f| &f["geometry"])
+        .expect("role=partial_limit の feature がある");
+
+    // 1. 反子午線を跨ぐので MultiPolygon。
+    assert_eq!(
+        geom["type"],
+        serde_json::Value::String("MultiPolygon".into()),
+        "実 2016 の部分食域は反子午線を跨ぐので MultiPolygon になる, got {}",
+        geom["type"]
+    );
+
+    let polys = geom["coordinates"].as_array().expect("coordinates は配列");
+    // 2. 断片は 2 枚以上。
+    assert!(
+        polys.len() >= 2,
+        "跨ぎ分割の断片は 2 枚以上, got {}",
+        polys.len()
+    );
+
+    let mut total_abs_area = 0.0_f64;
+    for (pi, p) in polys.iter().enumerate() {
+        let rings = p.as_array().expect("多角形はリング配列");
+        assert!(
+            !rings.is_empty(),
+            "断片{pi} にリングが無い（空の多角形を捏造している）"
+        );
+        for (ri, r) in rings.iter().enumerate() {
+            let coords: Vec<(f64, f64)> = r
+                .as_array()
+                .expect("リングは座標配列")
+                .iter()
+                .map(geojson_coord_pair)
+                .collect();
+            // 4. 退化しない（閉じた面のある環は ≥4 座標）。
+            assert!(
+                coords.len() >= 4,
+                "断片{pi} リング{ri} の座標数が {} < 4（退化断片）",
+                coords.len()
+            );
+            // 3. 閉じている。
+            let (f_lon, f_lat) = coords[0];
+            let (l_lon, l_lat) = coords[coords.len() - 1];
+            assert!(
+                (f_lon - l_lon).abs() < 1e-9 && (f_lat - l_lat).abs() < 1e-9,
+                "断片{pi} リング{ri} が閉じていない: 先頭=[{f_lon},{f_lat}] 末尾=[{l_lon},{l_lat}]"
+            );
+            // 5. 座標域。
+            for (ci, &(lon, lat)) in coords.iter().enumerate() {
+                assert!(
+                    (-180.0..=180.0).contains(&lon),
+                    "断片{pi} リング{ri} 頂点{ci} の経度 {lon} が [−180,180] の外（0..360 付け替え/跨ぎ残り）"
+                );
+                assert!(
+                    (-90.0..=90.0).contains(&lat),
+                    "断片{pi} リング{ri} 頂点{ci} の緯度 {lat} が [−90,90] の外"
+                );
+            }
+            let area = geojson_ring_signed_area(&coords);
+            if ri == 0 {
+                // 7. 外環は CCW（面積 > 0）。
+                assert!(
+                    area > 0.0,
+                    "断片{pi} の外環が CCW でない（分割後の環向き正規化の欠落）: signed_area={area}"
+                );
+                total_abs_area += area.abs();
+            }
+        }
+    }
+    // 6. 面積が失われていない。
+    assert!(
+        total_abs_area > 0.0,
+        "断片の外環面積の総和が 0（分割で領域を失っている）, got {total_abs_area}"
+    );
+}

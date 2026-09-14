@@ -138,37 +138,77 @@ impl GeoPolygon {
     /// 平面の符号付き面積（shoelace・CCW>0）が規約と逆なら点列を反転する（元の `rings` は不変）。`rings` 空 →
     /// `coordinates:[]`。点 0/1/2 個の退行リングは面積ゼロゆえ反転せずそのまま閉じる（捏造しない）。
     ///
-    /// **v1 の限界（反子午線）**: ±180 跨ぎの**分割（MultiPolygon 化）は未対応**＝跨ぐリングも経度がそのまま並ぶ
-    /// 単一 Polygon になる（ポリゴンクリッピングは後続精緻化。GeoLine の MultiLineString 分割とは別問題）。
+    /// **反子午線（M9 残(3) 3g・§11.8）**: ±180 を跨ぐリングは `MultiPolygon` へ**分割**する
+    /// （跨ぎ判定・補間式は [`GeoLine::geojson_geometry`] と同一規約。`|Δlon|=180` ちょうどは跨ぎとしない）。
+    /// 跨ぎが無ければ従来どおり単一 `Polygon`（**出力はバイト不変**）。分割後の多角形は外環の面積降順。
+    /// **極を囲む領域は未対応**（経度が単調に一周するため跨ぎ判定で分割できない・§11.8(d)）。
     pub fn geojson_geometry(&self) -> serde_json::Value {
-        let coordinates: Vec<Vec<[f64; 2]>> = self
+        // [経度, 緯度] の非閉列へ。閉表現で渡された場合は末尾の重複を落とす（分割は非閉列を前提）。
+        let open_rings: Vec<Vec<[f64; 2]>> = self
             .rings
             .iter()
-            .enumerate()
-            .map(|(index, ring)| {
-                // [経度, 緯度] 列に変換。
+            .map(|ring| {
                 let mut coords: Vec<[f64; 2]> = ring
                     .iter()
                     .map(|p| [p.lon.degrees().0, p.lat.degrees().0])
                     .collect();
-                // 閉リング（先頭==末尾でなければ先頭を複製）。
-                if let (Some(first), Some(last)) = (coords.first().copied(), coords.last().copied())
-                {
-                    if first != last {
-                        coords.push(first);
-                    }
-                }
-                // 環向き正規化: 外環(index==0)=CCW(面積>0)・穴=CW(面積<0)。面積ゼロ（退行）は反転しない。
-                let area = signed_area_lonlat(&coords);
-                let want_ccw = index == 0;
-                if (want_ccw && area < 0.0) || (!want_ccw && area > 0.0) {
-                    coords.reverse();
+                if coords.len() > 1 && coords[0] == coords[coords.len() - 1] {
+                    coords.pop();
                 }
                 coords
             })
             .collect();
-        serde_json::json!({ "type": "Polygon", "coordinates": coordinates })
+
+        // 跨ぎが無ければ従来経路（リング単位の閉じ＋index による環向き正規化）。出力はバイト不変。
+        if !crate::clip::crosses_antimeridian(&open_rings) {
+            let coordinates: Vec<Vec<[f64; 2]>> = self
+                .rings
+                .iter()
+                .enumerate()
+                .map(|(index, ring)| {
+                    let coords: Vec<[f64; 2]> = ring
+                        .iter()
+                        .map(|p| [p.lon.degrees().0, p.lat.degrees().0])
+                        .collect();
+                    let mut coords = close_ring(coords);
+                    // 外環(index==0)=CCW(面積>0)・穴=CW(面積<0)。面積ゼロ（退行）は反転しない。
+                    let area = signed_area_lonlat(&coords);
+                    let want_ccw = index == 0;
+                    if (want_ccw && area < 0.0) || (!want_ccw && area > 0.0) {
+                        coords.reverse();
+                    }
+                    coords
+                })
+                .collect();
+            return serde_json::json!({ "type": "Polygon", "coordinates": coordinates });
+        }
+
+        // 反子午線分割（§11.8）。
+        let polygons = crate::clip::split_polygon_at_antimeridian(&open_rings);
+        let closed: Vec<Vec<Vec<[f64; 2]>>> = polygons
+            .into_iter()
+            .map(|rings| rings.into_iter().map(close_ring).collect())
+            .collect();
+
+        // 空入力・跨がない入力は上の分岐で処理済みなので、ここは必ず 1 枚以上。
+        match closed.len() {
+            1 => {
+                let coordinates = closed.into_iter().next().unwrap_or_default();
+                serde_json::json!({ "type": "Polygon", "coordinates": coordinates })
+            }
+            _ => serde_json::json!({ "type": "MultiPolygon", "coordinates": closed }),
+        }
     }
+}
+
+/// リングを閉じる（先頭==末尾でなければ先頭を複製・既に閉なら二重化しない）。空は空のまま（捏造しない）。
+fn close_ring(mut coords: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    if let (Some(first), Some(last)) = (coords.first().copied(), coords.last().copied()) {
+        if first != last {
+            coords.push(first);
+        }
+    }
+    coords
 }
 
 /// 閉リング（[経度, 緯度] 列）の符号付き面積（shoelace・2 倍値で十分＝符号のみ使う）。反時計回り CCW で正。

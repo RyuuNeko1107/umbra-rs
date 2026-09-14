@@ -506,3 +506,294 @@ pub fn union_rings(rings: &[Vec<GeoPoint>]) -> Vec<GeoPolygon> {
     }
     out
 }
+
+// ============================================================
+// 反子午線分割（(3g)・§11.8）
+// ============================================================
+
+/// 跨ぎ判定の閾値（度）。`|Δlon| = 180` ちょうどは跨ぎとしない（測度ゼロ境界・`GeoLine` と同一規約）。
+const ANTIMERIDIAN_DELTA: f64 = 180.0;
+
+/// 閉リング（`[経度, 緯度]` 列・**非閉表現**＝末尾に先頭を重複させない）を反子午線で分割し、
+/// 東半球側・西半球側の閉環に切り分ける（§11.8(b)）。跨ぎが無ければ入力をそのまま 1 要素で返す。
+///
+/// 跨ぎ点の緯度は子午線上に線形補間し（東進 `t=(180−lon1)/(360+Δlon)`・西進 `t=(lon1+180)/(360−Δlon)`、
+/// `lat_c = lat1 + t·(lat2−lat1)`）、弧を子午線上で結んで閉じる。結線の向きは**リングの実際の向きが
+/// 内部を左に保つ**ように取る（実 CCW なら東側は北向き・西側は南向き。実 CW なら反転）。出力の環向き
+/// 正規化は**呼び出し側が分割の後に**行う（§11.8(c)）。点を捏造しない（子午線上の頂点は全て補間点＝境界上）。
+pub(crate) fn split_ring_at_antimeridian(ring: &[P]) -> Vec<Vec<P>> {
+    if ring.len() < 3 {
+        return vec![ring.to_vec()];
+    }
+    // 極を囲むリングは分割しない（§11.8(d)）。閉リングの跨ぎ回数は経度の巻き数に等しく、**奇数回＝経度が
+    // 一周する＝極を囲む**。このとき弧は対を成さず子午線上で閉じられないので、**元のリングをそのまま返す**
+    // （面積を失わず・捏造もしない）。偶数回なら通常の跨ぎとして分割する。
+    if antimeridian_crossings(ring) % 2 == 1 {
+        return vec![ring.to_vec()];
+    }
+    // 結線の向きは**リング自身の実際の向き**で決まる（出力の期待向きではない＝正規化は分割の後）。
+    // 跨ぐリングの平面 shoelace は経度が折り返すため意味を持たないので、経度を連続化
+    // （跨ぎごとに ±360 を累積）してから面積の符号を取る。
+    let ccw = signed_area2(&unwrap_longitudes(ring)) > 0.0;
+    // 1. 跨ぎ位置で弧に切る。閉曲線なので最後の辺（末尾→先頭）も走査する。
+    //    弧は `(始点が子午線上か, 点列)` を持ち、最初の弧は途中から始まりうるので最後に連結する。
+    let n = ring.len();
+    let mut arcs: Vec<Vec<P>> = Vec::new();
+    let mut current: Vec<P> = vec![ring[0]];
+    let mut crossed = false;
+    for i in 0..n {
+        let a = ring[i];
+        let b = ring[(i + 1) % n];
+        let delta = b[0] - a[0];
+        if delta < -ANTIMERIDIAN_DELTA {
+            // 東進（+180 を越える）: a → +180 → −180 → b。
+            let t = (180.0 - a[0]) / (360.0 + delta);
+            let lat_c = a[1] + t * (b[1] - a[1]);
+            current.push([180.0, lat_c]);
+            arcs.push(std::mem::take(&mut current));
+            current.push([-180.0, lat_c]);
+            crossed = true;
+        } else if delta > ANTIMERIDIAN_DELTA {
+            // 西進（−180 を越える）: a → −180 → +180 → b。
+            let t = (a[0] + 180.0) / (360.0 - delta);
+            let lat_c = a[1] + t * (b[1] - a[1]);
+            current.push([-180.0, lat_c]);
+            arcs.push(std::mem::take(&mut current));
+            current.push([180.0, lat_c]);
+            crossed = true;
+        }
+        // b は次の辺の始点。最後の辺では先頭に戻るので積まない。
+        if i + 1 < n {
+            current.push(b);
+        }
+    }
+    if !crossed {
+        return vec![ring.to_vec()];
+    }
+    // 最後の弧は先頭の弧の続き（閉曲線の起点は任意）。先頭へ連結する。
+    if !current.is_empty() {
+        if arcs.is_empty() {
+            return vec![ring.to_vec()];
+        }
+        let head = arcs.remove(0);
+        current.extend(head);
+        arcs.insert(0, current);
+    }
+
+    // 2. 半球ごとに弧を分け、子午線上で結んで閉じる。
+    let mut east: Vec<Vec<P>> = Vec::new();
+    let mut west: Vec<Vec<P>> = Vec::new();
+    for arc in arcs {
+        if arc.len() < 2 {
+            continue;
+        }
+        // 弧の両端は子午線上（±180）。どちらの半球かは端点の経度で決まる。
+        if arc[0][0] >= ANTIMERIDIAN_DELTA {
+            east.push(arc);
+        } else {
+            west.push(arc);
+        }
+    }
+    let arc_count = east.len() + west.len();
+    let mut out = Vec::new();
+    let mut consumed = 0;
+    // 東側（子午線 +180）: 実際の向きが CCW なら北向き（緯度増）。西側（−180）は逆向き。
+    for (arcs, northward) in [(east, ccw), (west, !ccw)] {
+        let (rings, used) = close_arcs_along_meridian(arcs, northward);
+        consumed += used;
+        out.extend(rings);
+    }
+    // **全弧が閉環に使い切られなければ分割を諦め、元のリングをそのまま返す**。弧が対を成さないのは
+    // 入力が自己交差している場合（単純リングなら子午線上の端点は start/end が緯度順に交互に並ぶので
+    // 必ず対になる）で、部分的な結果を返すと**面積を黙って失う**。捏造もしない（§11.8(d) と同じ退避）。
+    if out.is_empty() || consumed != arc_count {
+        vec![ring.to_vec()]
+    } else {
+        out
+    }
+}
+
+/// 子午線上に端点を持つ弧列を、緯度順の結線で閉環にする（§11.8(b) の結線規則）。
+///
+/// `northward=true` なら弧の終点 `lat_e` から**それより大きい始点のうち最小のもの**へ結ぶ（＝北向き）。
+/// `false` なら**それより小さい始点のうち最大のもの**へ結ぶ（＝南向き）。後継は弧の端点だけで一意に決まる
+/// （自分自身も候補＝1 本で閉じる弧）ので、先に後継表を作ってから巡回を取り出す。対応する始点が無い
+/// （入力が不正）弧は歩行ごと捨てる（捏造しない）。返り値は `(閉環, 閉環に使い切った弧の本数)` で、
+/// 本数が入力弧数に満たなければ呼び出し側が分割そのものを諦める（面積を黙って失わないため）。
+fn close_arcs_along_meridian(arcs: Vec<Vec<P>>, northward: bool) -> (Vec<Vec<P>>, usize) {
+    // 後継表: 終点 lat_e から結線方向に最も近い始点を持つ弧。
+    let successor: Vec<Option<usize>> = arcs
+        .iter()
+        .map(|arc| {
+            let lat_e = arc[arc.len() - 1][1];
+            let mut best: Option<(f64, usize)> = None;
+            for (j, other) in arcs.iter().enumerate() {
+                let lat_s = other[0][1];
+                // 結線方向に進んで到達できる始点のみ候補（同値＝長さ 0 の結線も可）。
+                let ahead = if northward {
+                    lat_s >= lat_e
+                } else {
+                    lat_s <= lat_e
+                };
+                if !ahead {
+                    continue;
+                }
+                let d = (lat_s - lat_e).abs();
+                if best.map_or(true, |(bd, _)| d < bd) {
+                    best = Some((d, j));
+                }
+            }
+            best.map(|(_, j)| j)
+        })
+        .collect();
+
+    let mut used = vec![false; arcs.len()];
+    let mut rings = Vec::new();
+    let mut consumed = 0usize;
+    for start in 0..arcs.len() {
+        if used[start] {
+            continue;
+        }
+        let mut ring: Vec<P> = Vec::new();
+        let mut cur = start;
+        let mut closed = false;
+        let mut walked = 0usize;
+        loop {
+            used[cur] = true;
+            walked += 1;
+            ring.extend(arcs[cur].iter().copied());
+            match successor[cur] {
+                Some(next) if next == start => {
+                    closed = true;
+                    break;
+                }
+                Some(next) if !used[next] => cur = next,
+                // 後継が無い／既に使われた弧へ戻る＝閉環にならない歩行。捨てる。
+                _ => break,
+            }
+        }
+        if closed && ring.len() >= 3 {
+            consumed += walked;
+            rings.push(ring);
+        }
+    }
+    (rings, consumed)
+}
+
+/// 多角形（外環＋穴・`[経度, 緯度]` の**非閉**列）を反子午線で分割し、GeoJSON 用の多角形列
+/// （各要素は `[外環, 穴…]`）を返す（§11.8(c)）。
+///
+/// 手順: (1) 各リングを [`split_ring_at_antimeridian`] で分割（跨がないリングはそのまま）、
+/// (2) 各断片の環向きを正規化（外環由来 CCW・穴由来 CW。**分割の後**に行う＝跨ぐリングの平面 shoelace は
+/// 意味を持たないため）、(3) 穴の断片を、それを含む外環断片のうち**最小面積**のものへ割り当てる
+/// （§11.7 手順 8 と同一規則・含む外環が無ければ捨てる）。多角形は外環の面積降順で返す。
+pub(crate) fn split_polygon_at_antimeridian(rings: &[Vec<P>]) -> Vec<Vec<Vec<P>>> {
+    let Some(outer_ring) = rings.first() else {
+        return Vec::new();
+    };
+    // (1)(2) 外環: 分割して CCW へ正規化。
+    let mut outers: Vec<Vec<P>> = split_ring_at_antimeridian(outer_ring)
+        .into_iter()
+        .map(|mut r| {
+            if signed_area2(&r) < 0.0 {
+                r.reverse();
+            }
+            r
+        })
+        .collect();
+    // (1)(2) 穴: 分割して CW へ正規化。
+    let holes: Vec<Vec<P>> = rings[1..]
+        .iter()
+        .flat_map(|h| split_ring_at_antimeridian(h))
+        .map(|mut r| {
+            if signed_area2(&r) > 0.0 {
+                r.reverse();
+            }
+            r
+        })
+        .collect();
+
+    // 外環を面積降順に並べる（§11.7 手順 8 と同一・バイト安定な出力のため）。
+    outers.sort_by(|a, b| {
+        signed_area2(b)
+            .abs()
+            .partial_cmp(&signed_area2(a).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut polygons: Vec<Vec<Vec<P>>> = outers.into_iter().map(|o| vec![o]).collect();
+    // (3) 穴を、それを含む最小面積の外環断片へ割り当てる。
+    for hole in holes {
+        // 判定点は**子午線から外れた穴の頂点**を使う。分割後の穴は端点が子午線上（±180）に載り、外環断片の
+        // 境界と一致するため、その頂点では `pip` が不定になる。子午線外の頂点は（穴が外環に内包される限り）
+        // 外環断片の内部にある。頂点重心は外環が凹（C 字）のとき切り欠きに落ちて誤判定しうるので使わない。
+        // 全頂点が子午線上（退行）の場合のみ重心へ退避する。
+        // 全頂点が子午線上の穴は面積ゼロの退行なので、判定せず捨てる（捏造しない）。
+        let Some(probe) = hole
+            .iter()
+            .copied()
+            .find(|p| p[0].abs() < ANTIMERIDIAN_DELTA)
+        else {
+            continue;
+        };
+        let mut best: Option<usize> = None;
+        for (i, poly) in polygons.iter().enumerate() {
+            if !pip(&poly[0], probe) {
+                continue;
+            }
+            let take = match best {
+                None => true,
+                Some(j) => signed_area2(&poly[0]).abs() < signed_area2(&polygons[j][0]).abs(),
+            };
+            if take {
+                best = Some(i);
+            }
+        }
+        if let Some(i) = best {
+            polygons[i].push(hole);
+        }
+    }
+    polygons
+}
+
+/// リングの経度を連続化する（反子午線の跨ぎごとに ±360 を累積）。跨ぐリングの向き判定に使う
+/// （折り返したままの経度では shoelace が意味を持たない・§11.8(c)）。緯度は不変。
+fn unwrap_longitudes(ring: &[P]) -> Vec<P> {
+    let mut out = Vec::with_capacity(ring.len());
+    let mut offset = 0.0;
+    let mut prev: Option<f64> = None;
+    for p in ring {
+        if let Some(prev_lon) = prev {
+            let delta = p[0] - prev_lon;
+            if delta < -ANTIMERIDIAN_DELTA {
+                offset += 360.0;
+            } else if delta > ANTIMERIDIAN_DELTA {
+                offset -= 360.0;
+            }
+        }
+        prev = Some(p[0]);
+        out.push([p[0] + offset, p[1]]);
+    }
+    out
+}
+
+/// 閉リングが反子午線を跨ぐ回数（§11.8(b) の跨ぎ判定・末尾→先頭の辺も含む）。
+/// 偶奇が経度の巻き数の偶奇に一致するので、極を囲むかの判別（§11.8(d)）にも使う。
+fn antimeridian_crossings(ring: &[P]) -> usize {
+    let n = ring.len();
+    if n < 2 {
+        return 0;
+    }
+    (0..n)
+        .filter(|&i| {
+            let delta = ring[(i + 1) % n][0] - ring[i][0];
+            !(-ANTIMERIDIAN_DELTA..=ANTIMERIDIAN_DELTA).contains(&delta)
+        })
+        .count()
+}
+
+/// リング列のいずれかが反子午線を跨ぐか。跨がない入力では分割経路に入らず、従来の出力を
+/// **バイト不変**に保つために使う。
+pub(crate) fn crosses_antimeridian(rings: &[Vec<P>]) -> bool {
+    rings.iter().any(|ring| antimeridian_crossings(ring) > 0)
+}

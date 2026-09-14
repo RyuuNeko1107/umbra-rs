@@ -166,4 +166,4 @@
 |---|---|---|
 | 南北本影限界線 | d′（赤緯変化によるフレーム回転 ~1e-4 rad/h）を μ′ に対し無視 | accuracy.md §4.2 |
 | 部分食域 `partial_limit` | `(lon,lat)` 平面ユニオン（球面でない）・**反子午線/極 未対応**・複数成分時は最大面積成分のみ・同一 limb の交点が 3 点以上のとき中間点を捨てる・端点 1e-9 度量子化・外周頂点は「閉半影内かつ昼面側」（半影縁等号ではない） | accuracy.md §4.3 / algorithms §11.6・§11.7 |
-| `GeoPolygon` GeoJSON | 反子午線跨ぎの MultiPolygon 分割は未対応（単一 Polygon） | algorithms §11.4 (3d) |
+| `GeoPolygon` GeoJSON | 反子午線跨ぎは MultiPolygon へ分割する（(3g)）が、**極を囲む領域は未対応**（経度が単調に一周するため跨ぎ判定で分割できない）。跨ぎ点の緯度は平面線形補間 | algorithms §11.8 (3g) |
