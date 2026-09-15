@@ -107,6 +107,29 @@ fn pip(ring: &[P], q: P) -> bool {
     inside
 }
 
+/// 点 `q` がリング `ring` の**閉内部**（even-odd 内部または境界上）にあるか。
+///
+/// 穴の帰属判定（手順 7）で使う。穴の頂点は外環の頂点・辺の上に**乗る**ことが普通にあり
+/// （点接触・共有辺）、そこで [`pip`] の開内部判定は境界上の点を落としてしまう。
+fn point_in_or_on(ring: &[P], q: P) -> bool {
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    for i in 0..n {
+        let seg = (ring[i], ring[(i + 1) % n]);
+        let r = sub(seg.1, seg.0);
+        let d = sub(q, seg.0);
+        // 辺上（共線かつパラメータ範囲内）なら境界上。
+        if (r[0] * d[1] - r[1] * d[0]).abs() <= SNAP * (r[0].abs() + r[1].abs() + 1.0)
+            && param_on_segment(q, seg)
+        {
+            return true;
+        }
+    }
+    pip(ring, q)
+}
+
 /// 入力リングを量子化・連続重複点除去・非閉表現へ正規化する。頂点 3 未満は `None`。
 fn normalize(ring: &[GeoPoint]) -> Option<Vec<P>> {
     let mut v: Vec<P> = ring
@@ -482,16 +505,25 @@ pub fn union_rings(rings: &[Vec<GeoPoint>]) -> Vec<GeoPolygon> {
     }
     outers.sort_by(|a, b| signed_area2(b).abs().total_cmp(&signed_area2(a).abs()));
 
-    // 7. 穴を、その空洞側代表点を含む**最小面積**の外環へ割り当てる（穴の中の島の入れ子に対応）。
+    // 7. 穴を、**穴リング全体を含む**最小面積の外環へ割り当てる（穴の中の島の入れ子に対応）。
+    //
+    //    空洞側の代表点 1 点だけで判定すると、**代表点をたまたま含む微小な外環**が最小面積として
+    //    選ばれ、穴が外環より大きいまま割り当たる（ISSUE-053 の反例 C/D＝自己接触配置で実測）。
+    //    穴 H が外環 O の穴であるためには H ⊂ O が必要なので、**H の全頂点が O の閉内部**
+    //    （内部または境界上）であることを要求する。面積の必要条件 |O| > |H| も併せて課す。
+    //
+    //    含む外環が 1 つも無い CW 環は**穴として採用しない**（非有界面の境界成分＝偽の環）。
+    //    幾何的には H ⊂ O なら必ず |O| > |H| なので、正しい外環が面積条件で落ちることはない。
+    //    量子化 SNAP のぶんの誤差は `point_in_or_on` の境界許容が吸収する。
     let mut assigned: Vec<Vec<Vec<P>>> = outers.iter().map(|_| Vec::new()).collect();
     for h in holes {
-        // 穴は CW（内部が左）なので、空洞は走査方向の**右**側。
-        let Some((_, probe)) = probe_sides(h[0], h[1], &edges) else {
-            continue;
-        };
+        let h_area2 = signed_area2(&h).abs();
         let mut best: Option<usize> = None;
         for (i, o) in outers.iter().enumerate() {
-            if !pip(o, probe) {
+            if signed_area2(o).abs() <= h_area2 {
+                continue; // 穴以下の面積の外環は H を含み得ない。
+            }
+            if !h.iter().all(|&q| point_in_or_on(o, q)) {
                 continue;
             }
             let better = match best {

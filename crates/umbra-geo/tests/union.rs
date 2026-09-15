@@ -95,6 +95,8 @@ fn close(a: f64, b: f64, tol: f64) -> bool {
 /// - 外環 CCW（面積>0）・穴 CW（面積<0）
 /// - 各リングは非閉（先頭 != 末尾）・頂点 3 以上・連続重複頂点なし
 /// - 面積ゼロの環を返さない
+/// - `rings[1..]`（穴）は `rings[0]`（外環）の**内部**にある
+///   （穴の全頂点が外環の閉内部・穴の面積 < 外環の面積）— ISSUE-053 §確定仕様 2
 fn assert_polygon_structure(poly: &GeoPolygon) {
     assert!(!poly.rings.is_empty(), "多角形は最低 1 つの外環を持つ");
     for (index, r) in poly.rings.iter().enumerate() {
@@ -127,6 +129,154 @@ fn assert_polygon_structure(poly: &GeoPolygon) {
             assert!(area < 0.0, "穴は CW（符号付き面積<0）だが {area}");
         }
     }
+    assert_holes_inside_outer(poly);
+}
+
+/// **ISSUE-053 §確定仕様 2（構造契約）**: 穴は外環の内部にある。
+/// - 穴の符号なし面積 < 外環の符号なし面積
+/// - 穴の全頂点が外環の**閉内部**（even-odd 内部、または外環の辺の上）
+fn assert_holes_inside_outer(poly: &GeoPolygon) {
+    if poly.rings.len() < 2 {
+        return;
+    }
+    let outer = ring_coords(&poly.rings[0]);
+    let outer_area = signed_area(&poly.rings[0]).abs();
+    for (index, hole) in poly.rings[1..].iter().enumerate() {
+        let hole_area = signed_area(hole).abs();
+        assert!(
+            hole_area < outer_area - AREA_TOL,
+            "穴{index}の面積 {hole_area} が外環の面積 {outer_area} 以上（穴が外環の内部に無い）\
+             / 外環 {outer:?} / 穴 {:?}",
+            ring_coords(hole)
+        );
+        for pt in hole {
+            let q = lonlat(pt);
+            let inside = point_in_ring_evenodd(&outer, q)
+                || edges_of(&outer).any(|(a, b)| point_on_segment(q, a, b));
+            assert!(
+                inside,
+                "穴{index}の頂点 {q:?} が外環の閉内部に無い（穴が誤った外環に割り当たっている）\
+                 / 外環 {outer:?} / 穴 {:?}",
+                ring_coords(hole)
+            );
+        }
+    }
+}
+
+// ============================================================
+// 点オラクル（ISSUE-053 §確定仕様 1 を縛るための独立実装）
+//
+// 期待値は**入力リングの even-odd 内外を点ごとに直接評価した値**から導出する。
+// `union_rings` の出力は一切参照しない。
+// ============================================================
+
+/// `GeoPoint` 列を `(lon, lat)` 列へ。
+fn ring_coords(r: &[GeoPoint]) -> Vec<(f64, f64)> {
+    r.iter().map(lonlat).collect()
+}
+
+/// 閉リングとして解釈した辺の列（末尾→先頭を含む）。
+fn edges_of(r: &[(f64, f64)]) -> impl Iterator<Item = ((f64, f64), (f64, f64))> + '_ {
+    (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()]))
+}
+
+/// 点 `q` がリング `r`（閉リングとして解釈）の **even-odd 内部**か。
+/// 水平レイキャスト（+lon 方向）の交差本数の偶奇で判定する。境界上の点の結果は**不定**なので、
+/// 呼び出し側で境界近傍の点を除外すること。
+fn point_in_ring_evenodd(r: &[(f64, f64)], q: (f64, f64)) -> bool {
+    if r.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    for ((x1, y1), (x2, y2)) in edges_of(r) {
+        // 半開区間 [min, max) で辺を数えることで、頂点を通るレイの二重計上を避ける。
+        if (y1 > q.1) != (y2 > q.1) {
+            let t = (q.1 - y1) / (y2 - y1);
+            if x1 + t * (x2 - x1) > q.0 {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// **点オラクル**: 「いずれかの入力リングの even-odd 内部」か。
+fn oracle_inside(inputs: &[Vec<(f64, f64)>], q: (f64, f64)) -> bool {
+    inputs
+        .iter()
+        .any(|r| r.len() >= 3 && point_in_ring_evenodd(r, q))
+}
+
+/// 出力の内外: 「外環の内部 ∧ どの穴の内部でもない」の OR。
+fn output_inside(polys: &[GeoPolygon], q: (f64, f64)) -> bool {
+    polys.iter().any(|poly| {
+        let outer = ring_coords(&poly.rings[0]);
+        point_in_ring_evenodd(&outer, q)
+            && !poly.rings[1..]
+                .iter()
+                .any(|h| point_in_ring_evenodd(&ring_coords(h), q))
+    })
+}
+
+/// 点 `q` から線分 `a-b` までの距離。
+fn point_segment_distance(q: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (vx, vy) = (b.0 - a.0, b.1 - a.1);
+    let (wx, wy) = (q.0 - a.0, q.1 - a.1);
+    let len2 = vx * vx + vy * vy;
+    if len2 <= 0.0 {
+        return wx.hypot(wy);
+    }
+    let t = ((wx * vx + wy * vy) / len2).clamp(0.0, 1.0);
+    (q.0 - (a.0 + t * vx)).hypot(q.1 - (a.1 + t * vy))
+}
+
+/// 境界近傍の除外幅（even-odd レイキャストは境界上で不定なので、この距離未満の点は評価しない）。
+const ORACLE_CLEARANCE: f64 = 1e-6;
+
+/// 格子上の点で、出力の内外が**点オラクル**と一致することを検証する
+/// （ISSUE-053 §確定仕様 1）。入力辺から `ORACLE_CLEARANCE` 未満の点は判定不定なので飛ばす。
+///
+/// `label` は失敗時に配置を再現するための文脈（シード・リング座標など）。
+/// 戻り値は実際に評価した点の数（オラクルが全点を除外していないことの確認用）。
+fn check_point_oracle(
+    inputs: &[Vec<GeoPoint>],
+    polys: &[GeoPolygon],
+    lo: f64,
+    hi: f64,
+    step: f64,
+    label: &str,
+) -> usize {
+    let coords: Vec<Vec<(f64, f64)>> = inputs.iter().map(|r| ring_coords(r)).collect();
+    let input_edges: Vec<((f64, f64), (f64, f64))> = coords
+        .iter()
+        .filter(|r| r.len() >= 3)
+        .flat_map(|r| edges_of(r).collect::<Vec<_>>())
+        .collect();
+    // 格子は整数座標・半整数座標を避けるようオフセットする（入力頂点は整数格子上）。
+    let mut evaluated = 0;
+    let mut y = lo + 0.2417;
+    while y < hi {
+        let mut x = lo + 0.1731;
+        while x < hi {
+            let q = (x, y);
+            let clear = input_edges
+                .iter()
+                .all(|&(a, b)| point_segment_distance(q, a, b) >= ORACLE_CLEARANCE);
+            if clear {
+                evaluated += 1;
+                let want = oracle_inside(&coords, q);
+                let got = output_inside(polys, q);
+                assert_eq!(
+                    got, want,
+                    "{label}: 点 {q:?} の内外が点オラクルと違う（want={want} / got={got}）\
+                     ＝入力の even-odd 和と一致していない"
+                );
+            }
+            x += step;
+        }
+        y += step;
+    }
+    evaluated
 }
 
 /// 出力全体の構造＋外環面積降順を検証する。
@@ -2482,4 +2632,233 @@ fn union_all_gap_candidates_occupied_falls_back_without_panicking() {
         canonical(&second),
         "全候補が塞がれた入力での退避結果が決定的でない"
     );
+}
+
+// ============================================================
+// 回帰（ISSUE-053: 退化配置での穴の割り当て）
+// ============================================================
+
+/// **ISSUE-053 反例 C**（4 リング・複数リングが同一頂点で会合する退化配置）。
+///
+/// 期待値は**点オラクル**（入力リングの even-odd 和）から導出し、実装の出力からは取らない。
+/// 縛るのは §確定仕様 1（点ごとの一致）と §確定仕様 2（穴は外環の内部）。
+///
+/// 既知の症状: 微小な外環にそれより大きい穴が割り当たり、点 `(1.6731, 3.7417)` /
+/// `(2.1731, 3.7417)` が「どの入力リングの even-odd 内部でもない」のに出力では内部になる。
+///
+/// 殺す変異: 穴を面積や包含でなく別の基準（最初に見つかった外環・入力順）で割り当てる・
+/// 穴の帰属先を探す包含判定を落とす・自己接触頂点で環の後継選択を誤る。
+#[test]
+fn union_regression_issue053_counterexample_c_matches_point_oracle() {
+    let inputs = vec![
+        ring(&[(1.0, 4.0), (3.0, 4.0), (3.0, 5.0)]),
+        ring(&[(3.0, 3.0), (5.0, 5.0), (3.0, 5.0)]),
+        ring(&[(2.0, 2.0), (3.0, 3.0), (1.0, 4.0)]),
+        ring(&[(3.0, 0.0), (3.0, 4.0), (1.0, 3.0), (2.0, 2.0), (2.0, 4.0)]),
+    ];
+    let out = union_rings(&inputs);
+
+    // 構造契約（穴が外環の内部にあること）は共通ヘルパで縛る。
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+
+    // 点ごとの一致。issue 記載の反例点 2 つは、この格子（オフセット 0.1731/0.2417・刻み 0.5）に乗る。
+    let evaluated = check_point_oracle(&inputs, &out, 0.0, 5.0, 0.5, "ISSUE-053 反例 C");
+    assert!(evaluated > 50, "評価点が少なすぎる（{evaluated} 点）");
+}
+
+/// **ISSUE-053 反例 D**（3 リング・1 本目が `(4,0)` を 2 度通る**自己接触**）。
+///
+/// 期待値は**点オラクル**から導出する。既知の症状は点 `(1.6731, 1.2417)` /
+/// `(2.1731, 0.7417)` で `want=false / got=true`（微小な外環にそれより広い穴が割り当たる）。
+///
+/// 殺す変異: 自己接触頂点での環の後継選択を誤る（`back` の符号・角度差の比較）・
+/// 穴を包含関係でなく面積順だけで割り当てる・同一頂点を通る複数の環を 1 本に潰す。
+#[test]
+fn union_regression_issue053_counterexample_d_matches_point_oracle() {
+    let inputs = vec![
+        ring(&[
+            (4.0, 1.0),
+            (4.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 2.0),
+            (4.0, 0.0),
+            (0.0, 1.0),
+            (4.0, 3.0),
+            (0.0, 0.0),
+        ]),
+        ring(&[(4.0, 0.0), (3.0, 0.0), (0.0, 4.0)]),
+        ring(&[(2.0, 0.0), (2.0, 1.0), (0.0, 1.0)]),
+    ];
+    let out = union_rings(&inputs);
+
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+
+    let evaluated = check_point_oracle(&inputs, &out, 0.0, 5.0, 0.5, "ISSUE-053 反例 D");
+    assert!(evaluated > 50, "評価点が少なすぎる（{evaluated} 点）");
+}
+
+/// **ISSUE-053 反例 E**（3 リング・2 本目の 3 頂点リングと 3 本目の自己接触リングが
+/// 同一頂点 `(2,4)` / `(3,3)` で会合する退化配置）。
+///
+/// これは**環再結合の後継選択規則（角度規則）の判別テスト**である。期待値は
+/// **点オラクル**（入力リング群の even-odd 和）から導出し、**実装の出力からは一切取らない**。
+/// 後継選択規則の一部が誤っていると、出力の内外が点オラクルと点ごとに食い違う。
+/// 縛るのは §確定仕様 1（点ごとの一致）と §確定仕様 2（穴は外環の内部＝構造契約）。
+///
+/// 3 本目のリングは `(2,4)` と `(3,3)` をそれぞれ 2 度通る自己接触リング。契約上、入力リングは
+/// even-odd・自己交差可なので有効な入力である。代表的な不一致点は `(1.1731, 2.7417)`。
+///
+/// 殺す変異: 自己接触頂点での後継選択（角度差の比較・`back` 方向の符号・同角度のタイ処理）を誤る・
+/// 複数リングが会合する頂点で半辺を 1 本に潰す・穴を包含でなく面積順だけで割り当てる。
+#[test]
+fn union_regression_issue053_counterexample_e_matches_point_oracle() {
+    let inputs = vec![
+        ring(&[(3.0, 3.0), (6.0, 6.0), (3.0, 6.0)]),
+        ring(&[(2.0, 4.0), (5.0, 7.0), (2.0, 7.0)]),
+        ring(&[
+            (2.0, 4.0),
+            (3.0, 3.0),
+            (0.0, 2.0),
+            (2.0, 4.0),
+            (3.0, 2.0),
+            (3.0, 3.0),
+            (0.0, 1.0),
+        ]),
+    ];
+    let out = union_rings(&inputs);
+
+    assert_output_structure(&out);
+    assert_no_fabricated_vertices(&inputs, &out);
+
+    // 代表点 `(1.1731, 2.7417)` は格子（オフセット 0.1731/0.2417・刻み 0.5）に乗り、
+    // かつ境界近傍の除外に掛からない（＝評価対象である）ことを明示的に確かめる。
+    let coords: Vec<Vec<(f64, f64)>> = inputs.iter().map(|r| ring_coords(r)).collect();
+    let probe = (1.1731, 2.7417);
+    let clearance = coords
+        .iter()
+        .flat_map(|r| edges_of(r).collect::<Vec<_>>())
+        .map(|(a, b)| point_segment_distance(probe, a, b))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        clearance >= ORACLE_CLEARANCE,
+        "代表点 {probe:?} が境界近傍として除外されている（clearance={clearance}）"
+    );
+    assert_eq!(
+        output_inside(&out, probe),
+        oracle_inside(&coords, probe),
+        "代表点 {probe:?} の内外が点オラクルと違う"
+    );
+
+    // 格子全体（0..7 を覆う）でも点ごとに一致する。
+    let evaluated = check_point_oracle(&inputs, &out, 0.0, 7.0, 0.5, "ISSUE-053 反例 E");
+    assert!(evaluated > 50, "評価点が少なすぎる（{evaluated} 点）");
+}
+
+/// 決定的な擬似乱数（xorshift64*）。外部 crate に依存せず、**固定シードで完全に再現可能**。
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        // 0 を避ける（xorshift は 0 で固定点になる）。
+        Self(seed | 1)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// `[0, n)` の一様整数。
+    fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+}
+
+/// ランダムなリングを 1 本作る（軸平行矩形 / 三角形 / 自己交差・自己接触しうる自由多角形）。
+/// 返すのは格子 `0..=5` 上の `(lon, lat)` 整数座標列（ISSUE-053 の探索空間と同じ）。
+/// 自由多角形を 3/5 の比率で引く（頂点の一致・辺の共線重なりが起きやすく、退化配置に当たりやすい）。
+fn random_ring_coords(rng: &mut Rng) -> Vec<(f64, f64)> {
+    #[allow(clippy::cast_precision_loss)]
+    fn c(v: u64) -> f64 {
+        v as f64
+    }
+    match rng.below(5) {
+        0 => {
+            // 軸平行矩形（退化しないよう幅・高さを 1 以上にする）。
+            let x0 = rng.below(4);
+            let y0 = rng.below(4);
+            let x1 = x0 + 1 + rng.below(5 - x0);
+            let y1 = y0 + 1 + rng.below(5 - y0);
+            vec![
+                (c(x0), c(y0)),
+                (c(x1), c(y0)),
+                (c(x1), c(y1)),
+                (c(x0), c(y1)),
+            ]
+        }
+        1 => (0..3).map(|_| (c(rng.below(6)), c(rng.below(6)))).collect(),
+        _ => {
+            // 頂点 3〜8 の自由多角形（自己交差・自己接触・重複頂点を許す）。
+            let n = 3 + rng.below(6);
+            (0..n).map(|_| (c(rng.below(6)), c(rng.below(6)))).collect()
+        }
+    }
+}
+
+/// **ISSUE-053 §確定仕様 1・2 のランダム化差分テスト**（固定シード・有界反復・外部 crate 非依存）。
+///
+/// 格子 `0..=5` 上にリング 2〜5 本（頂点 3〜8・軸平行矩形/三角形/自己交差多角形の混合）を置き、
+/// - 出力の内外（外環 ∧ ¬穴 の OR）が**点オラクル**（入力リングの even-odd 和）と一致すること、
+/// - 出力の構造契約（穴が外環の内部・外環 CCW・穴 CW・非閉・面積降順）が保たれること、
+/// - 出力頂点が入力辺の上に乗る（点を捏造しない）こと
+///
+/// を縛る。失敗時はシードとリング座標をメッセージに出すので、その配置を決定的テストへ昇格できる。
+///
+/// 殺す変異: 退化配置での穴の割り当て・環の後継選択・交点の量子化に入る、
+/// 決定的テストが個別には捕まえきれない欠陥全般。
+#[test]
+fn union_randomized_differential_against_point_oracle() {
+    const ITERATIONS: u64 = 20000;
+    const BASE_SEED: u64 = 0x5155_1ED0_0053;
+
+    for iter in 0..ITERATIONS {
+        let seed = BASE_SEED ^ iter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut rng = Rng::new(seed);
+        let count = 2 + rng.below(4);
+        let coords: Vec<Vec<(f64, f64)>> =
+            (0..count).map(|_| random_ring_coords(&mut rng)).collect();
+        let inputs: Vec<Vec<GeoPoint>> = coords.iter().map(|r| ring(r)).collect();
+
+        let out = union_rings(&inputs);
+        // 失敗時に配置を再現できるよう、シードと全リング座標を文脈に載せる。
+        let label = format!("iter={iter} seed={seed:#x} rings={coords:?}");
+
+        // 共通ヘルパ（構造契約）は label を受け取れないので、捕捉して配置を添えて投げ直す。
+        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for poly in &out {
+                assert_polygon_structure(poly);
+            }
+            for w in out.windows(2) {
+                let a = signed_area(&w[0].rings[0]).abs();
+                let b = signed_area(&w[1].rings[0]).abs();
+                assert!(a >= b - AREA_TOL, "外環の面積降順が崩れている（{a} < {b}）");
+            }
+            assert_no_fabricated_vertices(&inputs, &out);
+            check_point_oracle(&inputs, &out, 0.0, 5.0, 0.5, &label);
+        }));
+        if let Err(payload) = checked {
+            let detail = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_else(|| "（メッセージ不明）".to_string());
+            panic!("{label}\n{detail}");
+        }
+    }
 }
